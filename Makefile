@@ -32,6 +32,7 @@ BUILD_USER   := $(shell whoami  2>/dev/null || echo unknown-user)
 
 CFLAGS = \
     -m32 \
+    -std=gnu11 \
     -ffreestanding \
     -O2 \
     -Wall \
@@ -111,7 +112,7 @@ ISO    = blueyos.iso
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso run version clean help tools-host
+.PHONY: all iso run version clean help tools-host toolinfo
 
 all: $(TARGET)
 	@echo ""
@@ -156,6 +157,17 @@ tools/mkfs_blueyfs: tools/mkfs_blueyfs.c
 	gcc -O2 -Wall -Wextra -o $@ $<
 	@echo "  [CC]  $< (host)"
 
+toolinfo:
+	@echo "BlueyOS Build Tool Versions"
+	@echo "---------------------------"
+	@printf "  CC  (%-4s) : " "$(CC)";  $(CC)  --version 2>&1 | head -1
+	@printf "  AS  (%-4s) : " "$(AS)";  $(AS)  --version 2>&1 | head -1
+	@printf "  LD  (%-4s) : " "$(LD)";  $(LD)  --version 2>&1 | head -1
+	@printf "  QEMU        : "; if command -v qemu-system-i386 >/dev/null 2>&1; then qemu-system-i386 --version 2>&1 | head -1; else echo "not installed"; fi
+	@printf "  grub-mkrescue: "; if command -v grub-mkrescue >/dev/null 2>&1; then grub-mkrescue --version 2>&1 | head -1; else echo "not installed"; fi
+	@printf "  xorriso     : "; if command -v xorriso >/dev/null 2>&1; then xorriso --version 2>&1 | head -1; else echo "not installed"; fi
+	@echo ""
+
 help:
 	@echo "BlueyOS Build System - 'Let's Play!' - Bluey"
 	@echo ""
@@ -163,6 +175,7 @@ help:
 	@echo "  make iso              - create bootable ISO (needs grub-mkrescue)"
 	@echo "  make run              - build ISO and launch in QEMU"
 	@echo "  make tools-host       - build host-side tools (mkfs.biscuitfs)"
+	@echo "  make toolinfo         - print versions of all build tools"
 	@echo "  make version          - print version information"
 	@echo "  make clean            - remove all build artifacts"
 	@echo "  make BUILD_NUMBER=N   - set build number (default: 1)"
