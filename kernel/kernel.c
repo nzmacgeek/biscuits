@@ -29,6 +29,7 @@
 #include "multiuser.h"
 #include "sysinfo.h"
 #include "elf.h"
+#include "swap.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/ata.h"
 #include "../drivers/driver.h"
@@ -36,6 +37,9 @@
 #include "../drivers/net/ne2000.h"
 #include "../fs/vfs.h"
 #include "../fs/fat.h"
+#include "../fs/blueyfs.h"
+#include "../net/tcpip.h"
+#include "../shell/shell.h"
 
 // Kernel end symbol from linker script
 extern uint32_t kernel_end;
@@ -127,16 +131,18 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 9: Driver framework
     driver_framework_init();
 
-    // Step 10: VFS and FAT16
+    // Step 10: VFS, FAT16, and BiscuitFS
     vfs_init();
     vfs_register_fs(fat_get_filesystem());
+    vfs_register_fs(biscuitfs_get_filesystem());
 
     // Step 11: ATA disk driver
     if (ata_init() == 0) {
-        // Attempt to mount FAT16 from first partition (LBA 63 is a common start)
-        // In QEMU with a proper FAT image, this will succeed
-        if (vfs_mount("/", "fat16", 63) != 0) {
-            kprintf("[VFS]  No FAT16 volume at LBA 63 - running diskless\n");
+        // Try BiscuitFS first (more capable), then fall back to FAT16
+        if (vfs_mount("/", "biscuitfs", 0) != 0) {
+            if (vfs_mount("/", "fat16", 63) != 0) {
+                kprintf("[VFS]  No recognised filesystem - running diskless\n");
+            }
         }
     }
 
@@ -151,11 +157,19 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     process_t *idle = process_create("bandit-idle", idle_task, 0, 0);
     if (idle) scheduler_add(idle);
 
-    // Step 14: Network
+    // Step 14: Network (Ethernet layer)
     net_init();
     ne2000_init();
 
-    // Step 15: ELF loader ready
+    // Step 15: TCP/IP IPv4 stack
+    tcpip_init();
+
+    // Step 16: Swap space (hdb at LBA 0, up to 4096 pages = 16 MB)
+    // In QEMU, the second disk (-hdb swap.img) is the swap device.
+    // We probe it with a fixed LBA; swap_init() validates the header.
+    swap_init(0x10000, 2048);   /* LBA 65536 = 32 MB into primary disk */
+
+    // Step 17: ELF loader ready
     kprintf("%s\n", MSG_ELF_INIT);
 
     // All done!
@@ -166,13 +180,17 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     kprintf("Timezone : %s (UTC+10, Brisbane - no DST because Queensland!)\n",
             sysinfo_get_timezone()->name);
     kprintf("Epoch    : %s\n", BANDIT_EPOCH_NAME);
-    kprintf("\nBlueyOS is ready. Type your commands below.\n");
+    kprintf("\nBlueyOS is ready.\n");
     kprintf("\"This is the best day EVER!\" - Bluey Heeler\n\n");
 
-    // Enable interrupts and drop into idle loop
-    // The scheduler (driven by IRQ0) will preempt as needed
+    // Enable interrupts
     __asm__ volatile("sti");
-    while (1) {
-        __asm__ volatile("hlt");
-    }
+
+    // Step 18: Shell - run interactively (never returns)
+    shell_init();
+    shell_run();
+
+    // Should never reach here
+    for (;;) __asm__ volatile("hlt");
 }
+

@@ -18,8 +18,20 @@ typedef uint32_t uintptr_t;
 typedef int      ssize_t;
 
 #define NULL  ((void*)0)
-#define true  1
-#define false 0
-typedef int bool;
+
+// bool / true / false
+// C23 (GCC 15+ default) promotes bool to a keyword; guard the typedef so we
+// don't collide. Using -std=gnu11 in CFLAGS avoids the issue for kernel
+// builds, but the guard ensures correctness if this header is ever included
+// in a different translation unit or a future standard revision.
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
+  // C23+: bool, true, false are keywords — nothing to define
+#elif defined(__cplusplus)
+  // C++: same deal
+#else
+  #define true  1
+  #define false 0
+  typedef int bool;
+#endif
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
