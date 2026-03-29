@@ -39,6 +39,22 @@ static char cwd[SHELL_CWD_MAX];
 // ---------------------------------------------------------------------------
 static char linebuf[SHELL_LINE_MAX];
 static int  linelen;
+#define SHELL_PAGE_SIZE_KB (PAGE_SIZE / 1024u)
+
+static uint32_t shell_ram_total_kb(uint32_t ram_boot_mb) {
+    if (ram_boot_mb == 0) return pmm_total_frames() * SHELL_PAGE_SIZE_KB;
+    if (ram_boot_mb > (0xFFFFFFFFu / 1024u)) return 0xFFFFFFFFu;
+    return ram_boot_mb * 1024u;
+}
+
+static uint32_t shell_ram_free_kb(uint32_t total_kb, uint32_t used_kb, int *clamped) {
+    if (used_kb >= total_kb) {
+        if (clamped) *clamped = 1;
+        return 0;
+    }
+    if (clamped) *clamped = 0;
+    return total_kb - used_kb;
+}
 
 static void shell_readline(void) {
     linelen = 0;
@@ -352,9 +368,11 @@ static void cmd_meminfo(int argc, char **argv) {
     (void)argc; (void)argv;
 
     uint32_t heap_total = 0, heap_used = 0, heap_free = 0;
-    uint32_t ram_total_kb = sysinfo_get_ram_mb() ? sysinfo_get_ram_mb() * 1024 : pmm_total_frames() * 4;
-    uint32_t mem_used_kb  = pmm_used_frames() * 4;
-    uint32_t mem_free_kb  = (mem_used_kb < ram_total_kb) ? (ram_total_kb - mem_used_kb) : 0;
+    uint32_t ram_boot_mb  = sysinfo_get_ram_mb();
+    uint32_t ram_total_kb = shell_ram_total_kb(ram_boot_mb);
+    uint32_t mem_used_kb  = pmm_used_frames() * SHELL_PAGE_SIZE_KB;
+    int mem_clamped = 0;
+    uint32_t mem_free_kb  = shell_ram_free_kb(ram_total_kb, mem_used_kb, &mem_clamped);
     uint32_t swap_total = swap_total_pages();
     uint32_t swap_used  = swap_used_pages();
 
@@ -363,24 +381,29 @@ static void cmd_meminfo(int argc, char **argv) {
     kprintf("MemTotal: %u kB\n", ram_total_kb);
     kprintf("MemUsed:  %u kB\n", mem_used_kb);
     kprintf("MemFree:  %u kB\n", mem_free_kb);
-    if (sysinfo_get_ram_mb()) {
-        kprintf("RAMBoot:  %u MB detected by bootloader\n", sysinfo_get_ram_mb());
+    if (ram_boot_mb) {
+        kprintf("RAMBoot:  %u MB detected by bootloader\n", ram_boot_mb);
+    }
+    if (mem_clamped) {
+        kprintf("MemWarn: tracked frame usage exceeds detected RAM size\n");
     }
     kprintf("HeapTotal:%u kB\n", heap_total / 1024);
     kprintf("HeapUsed: %u kB\n", heap_used / 1024);
     kprintf("HeapFree: %u kB\n", heap_free / 1024);
-    kprintf("SwapTotal:%u kB\n", swap_total * 4);
-    kprintf("SwapUsed: %u kB\n", swap_used * 4);
-    kprintf("SwapFree: %u kB\n", (swap_total - swap_used) * 4);
+    kprintf("SwapTotal:%u kB\n", swap_total * SHELL_PAGE_SIZE_KB);
+    kprintf("SwapUsed: %u kB\n", swap_used * SHELL_PAGE_SIZE_KB);
+    kprintf("SwapFree: %u kB\n", (swap_total - swap_used) * SHELL_PAGE_SIZE_KB);
 }
 
 static void cmd_free(int argc, char **argv) {
     (void)argc; (void)argv;
 
     uint32_t heap_total = 0, heap_used = 0, heap_free = 0;
-    uint32_t ram_total_kb = sysinfo_get_ram_mb() ? sysinfo_get_ram_mb() * 1024 : pmm_total_frames() * 4;
-    uint32_t mem_used_kb  = pmm_used_frames() * 4;
-    uint32_t mem_free_kb  = (mem_used_kb < ram_total_kb) ? (ram_total_kb - mem_used_kb) : 0;
+    uint32_t ram_boot_mb  = sysinfo_get_ram_mb();
+    uint32_t ram_total_kb = shell_ram_total_kb(ram_boot_mb);
+    uint32_t mem_used_kb  = pmm_used_frames() * SHELL_PAGE_SIZE_KB;
+    int mem_clamped = 0;
+    uint32_t mem_free_kb  = shell_ram_free_kb(ram_total_kb, mem_used_kb, &mem_clamped);
     uint32_t swap_total = swap_total_pages();
     uint32_t swap_used  = swap_used_pages();
 
@@ -389,7 +412,13 @@ static void cmd_free(int argc, char **argv) {
     kprintf("type  total_kB used_kB free_kB\n");
     kprintf("mem   %u %u %u\n", ram_total_kb, mem_used_kb, mem_free_kb);
     kprintf("heap  %u %u %u\n", heap_total / 1024, heap_used / 1024, heap_free / 1024);
-    kprintf("swap  %u %u %u\n", swap_total * 4, swap_used * 4, (swap_total - swap_used) * 4);
+    kprintf("swap  %u %u %u\n",
+            swap_total * SHELL_PAGE_SIZE_KB,
+            swap_used * SHELL_PAGE_SIZE_KB,
+            (swap_total - swap_used) * SHELL_PAGE_SIZE_KB);
+    if (mem_clamped) {
+        kprintf("note  tracked frame usage exceeds detected RAM size\n");
+    }
 }
 
 static void cmd_dmesg(int argc, char **argv) {
