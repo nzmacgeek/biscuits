@@ -55,7 +55,7 @@
 #define VIA1_T1LL   VIA1_REG(6)   /* Timer 1 latch low */
 #define VIA1_T1LH   VIA1_REG(7)   /* Timer 1 latch high */
 #define VIA1_T2CL   VIA1_REG(8)   /* Timer 2 counter low */
-#define VIA1_T2CH   VIA1_REG(9)   /* Timer 1 counter high */
+#define VIA1_T2CH   VIA1_REG(9)   /* Timer 2 counter high */
 #define VIA1_SR     VIA1_REG(10)  /* Shift register (ADB data) */
 #define VIA1_ACR    VIA1_REG(11)  /* Auxiliary control register */
 #define VIA1_PCR    VIA1_REG(12)  /* Peripheral control register */
