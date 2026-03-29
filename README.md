@@ -108,8 +108,8 @@ sudo apt-get install -y \
 ```bash
 make                   # Build kernel ELF (build #1)
 make BUILD_NUMBER=42   # Build with a specific build number
-make iso               # Create bootable ISO
-make run               # Launch in QEMU
+make iso               # Create bootable ISO + BiscuitFS root disk
+make run               # Launch in QEMU with the mounted root disk
 make version           # Print version info
 make clean             # Clean build artifacts
 ```

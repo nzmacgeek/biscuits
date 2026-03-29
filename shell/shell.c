@@ -19,6 +19,7 @@
 #include "../fs/vfs.h"
 #include "../kernel/process.h"
 #include "../kernel/sysinfo.h"
+#include "../kernel/kheap.h"
 #include "../kernel/swap.h"
 #include "../kernel/syslog.h"
 #include "../drivers/net/network.h"
@@ -136,6 +137,7 @@ static void cmd_help(int argc, char **argv) {
     kprintf("  mount           show mounted filesystems\n");
     kprintf("  ifconfig        show network interfaces\n");
     kprintf("  ping <ip>       send ICMP echo request\n");
+    kprintf("  meminfo         show memory usage\n");
     kprintf("  swapinfo        show swap statistics\n");
     kprintf("  dmesg           show kernel log (ring buffer)\n");
     kprintf("  date            show current time\n");
@@ -343,6 +345,32 @@ static void cmd_swapinfo(int argc, char **argv) {
     swap_print_info();
 }
 
+static void cmd_meminfo(int argc, char **argv) {
+    (void)argc; (void)argv;
+    uint32_t ram_mb    = sysinfo_get_total_ram_mb();
+    uint32_t heap_total = kheap_total_bytes();
+    uint32_t heap_used  = kheap_used_bytes();
+    uint32_t heap_free  = kheap_free_bytes();
+
+    kprintf("[MEM] System memory summary:\n");
+    if (ram_mb) {
+        kprintf("  RAM       : %u MB detected\n", ram_mb);
+    } else {
+        kprintf("  RAM       : unknown (bootloader did not report it)\n");
+    }
+    kprintf("  KHeap     : %u KB total, %u KB used, %u KB free\n",
+            heap_total / 1024, heap_used / 1024, heap_free / 1024);
+
+    if (swap_is_active()) {
+        uint32_t swap_total = swap_total_pages();
+        uint32_t swap_used  = swap_used_pages();
+        kprintf("  Swap      : %u KB total, %u KB used, %u KB free\n",
+                swap_total * 4, swap_used * 4, (swap_total - swap_used) * 4);
+    } else {
+        kprintf("  Swap      : inactive\n");
+    }
+}
+
 static void cmd_dmesg(int argc, char **argv) {
     (void)argc; (void)argv;
     syslog_dmesg();
@@ -414,6 +442,7 @@ static const shell_cmd_t commands[] = {
     { "mount",    cmd_mount    },
     { "ifconfig", cmd_ifconfig },
     { "ping",     cmd_ping     },
+    { "meminfo",  cmd_meminfo  },
     { "swapinfo", cmd_swapinfo },
     { "dmesg",    cmd_dmesg    },
     { "date",     cmd_date     },

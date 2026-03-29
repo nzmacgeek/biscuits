@@ -75,8 +75,9 @@ make iso
 ```
 BlueyOS: Building ISO image...
   (This is the best day EVER! - Bluey)
-Done! blueyos.iso created (~4.0M)
-Run with: bash tools/qemu-run.sh
+  Done! blueyos.iso created (~4.0M)
+  Root disk: blueyos-root.img (~64M)
+  Run with: bash tools/qemu-run.sh
 ```
 
 **Verify the ISO:**
@@ -193,7 +194,15 @@ BlueyOS is ready. Type your commands below.
 "This is the best day EVER!" - Bluey Heeler
 ```
 
-After this the kernel enters its idle loop (halting the CPU between timer interrupts).
+After this the built-in BlueyOS shell starts on the VGA console. You should be
+able to run:
+
+```text
+bluey@biscuit:/$ mount
+bluey@biscuit:/$ uname
+bluey@biscuit:/$ version
+bluey@biscuit:/$ meminfo
+```
 
 ---
 

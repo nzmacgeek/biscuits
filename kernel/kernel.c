@@ -138,6 +138,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     paging_init();
 
     // Step 7: System information (hostname, timezone, epoch)
+    sysinfo_set_total_ram_mb(i386_multiboot_ram_mb(mboot_info));
     sysinfo_init();
 
     // Step 8: Multi-user system (passwd + shadow)
@@ -215,4 +216,3 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Should never reach here
     for (;;) __asm__ volatile("hlt");
 }
-

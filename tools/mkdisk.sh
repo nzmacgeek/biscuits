@@ -23,8 +23,13 @@ mkdir -p isodir/boot/grub
 cp blueyos.elf isodir/boot/blueyos.elf
 cp grub.cfg    isodir/boot/grub/grub.cfg
 
+echo "BlueyOS: Creating BiscuitFS root image..."
+rm -f blueyos-root.img
+./tools/mkfs_blueyfs -F -q -L "BlueyRoot" -s 64 blueyos-root.img
+
 grub-mkrescue -o blueyos.iso isodir/ 2>&1
 echo ""
 echo "  Done! blueyos.iso created ($(du -sh blueyos.iso | cut -f1))"
+echo "  Root disk: blueyos-root.img ($(du -sh blueyos-root.img | cut -f1))"
 echo "  Run with: bash tools/qemu-run.sh"
 echo "  Or:       make run"

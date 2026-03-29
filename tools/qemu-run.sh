@@ -16,13 +16,19 @@ if [ ! -f blueyos.iso ]; then
     exit 1
 fi
 
+if [ ! -f blueyos-root.img ]; then
+    echo "ERROR: blueyos-root.img not found. Run 'make iso' first!"
+    exit 1
+fi
+
 echo "Starting BlueyOS in QEMU..."
-echo "  Memory: 256MB | Serial: stdio | No reboot on crash"
+echo "  Memory: 256MB | Root disk: blueyos-root.img | Serial: stdio | No reboot on crash"
 echo "  Press Ctrl+A then X to exit QEMU"
 echo ""
 
 exec qemu-system-i386 \
     -cdrom blueyos.iso \
+    -hda blueyos-root.img \
     -m 256M \
     -serial stdio \
     -no-reboot \
