@@ -171,7 +171,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     scheduler_init();
 
     // Create idle process (runs when nothing else is ready)
-    process_t *idle = process_create("bandit-idle", idle_task, 0, 0);
+    process_t *idle = process_create_kernel("bandit-idle", idle_task, 0, 0);
     if (idle) scheduler_add(idle);
 
     // Step 14: Network (Ethernet layer)
@@ -208,11 +208,16 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Enable interrupts
     __asm__ volatile("sti");
 
-    // Step 18: Shell - run interactively (never returns)
+    // Step 18: Kernel shell - run interactively (never returns). This is a
+    // kernel-mode console; user-mode programs cross into the kernel via int 0x80.
+    process_t *shell_proc = process_create_kernel("bluey-kernel-shell", shell_run, 0, 0);
+    if (shell_proc) {
+        shell_proc->state = PROC_RUNNING;
+        process_set_current(shell_proc);
+    }
     shell_init();
     shell_run();
 
     // Should never reach here
     for (;;) __asm__ volatile("hlt");
 }
-

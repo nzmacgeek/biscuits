@@ -19,14 +19,19 @@ static uint32_t   next_pid   = 1;
 
 uint32_t process_next_pid(void) { return next_pid++; }
 
+const char *process_mode_name(proc_mode_t mode) {
+    return (mode == PROC_MODE_USER) ? "user" : "kernel";
+}
+
 void process_init(void) {
     proc_list    = NULL;
     proc_current = NULL;
     kprintf("%s\n", MSG_PROC_INIT);
 }
 
-process_t *process_create(const char *name, void (*entry)(void),
-                          uint32_t uid, uint32_t gid) {
+static process_t *process_create_with_mode(const char *name, void (*entry)(void),
+                                           uint32_t uid, uint32_t gid,
+                                           proc_mode_t mode) {
     process_t *p = (process_t*)kheap_alloc(sizeof(process_t), 0);
     if (!p) { kprintf("[PRC] ERROR: out of memory for process!\n"); return NULL; }
     memset(p, 0, sizeof(process_t));
@@ -36,6 +41,7 @@ process_t *process_create(const char *name, void (*entry)(void),
     p->uid        = uid;
     p->gid        = gid;
     p->state      = PROC_READY;
+    p->mode       = mode;
     p->priority   = 5;
     p->exit_code  = 0;
     p->sleep_until = 0;
@@ -59,8 +65,24 @@ process_t *process_create(const char *name, void (*entry)(void),
     p->next = proc_list;
     proc_list = p;
 
-    kprintf("[PRC]  Created process '%s' (pid=%d uid=%d)\n", p->name, p->pid, p->uid);
+    kprintf("[PRC]  Created %s process '%s' (pid=%d uid=%d)\n",
+            process_mode_name(p->mode), p->name, p->pid, p->uid);
     return p;
+}
+
+process_t *process_create(const char *name, void (*entry)(void),
+                          uint32_t uid, uint32_t gid) {
+    return process_create_with_mode(name, entry, uid, gid, PROC_MODE_KERNEL);
+}
+
+process_t *process_create_kernel(const char *name, void (*entry)(void),
+                                 uint32_t uid, uint32_t gid) {
+    return process_create_with_mode(name, entry, uid, gid, PROC_MODE_KERNEL);
+}
+
+process_t *process_create_user(const char *name, void (*entry)(void),
+                               uint32_t uid, uint32_t gid) {
+    return process_create_with_mode(name, entry, uid, gid, PROC_MODE_USER);
 }
 
 void process_exit(int code) {

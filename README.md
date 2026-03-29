@@ -82,8 +82,16 @@ Every component is named after a Bluey character, and Bluey references are woven
 +------------------+
 |  Users           |  passwd/shadow, SHA-256 salted passwords
 |  System Info     |  Hostname, domain, Brisbane timezone, Bandit epoch
+|  Shell           |  Built-in kernel shell for diagnostics/admin tasks
++------------------+
+|  User Mode       |  ring3 segments + int 0x80 syscall boundary scaffolded
 +------------------+
 ```
+
+Today the interactive shell is intentionally a **kernel-mode shell**. The
+kernel/user-mode split is explicit in the architecture: shell/admin commands use
+kernel APIs directly in ring0, while the user-mode boundary is reserved for
+ELF-loaded programs that enter the kernel via `int 0x80`.
 
 ---
 

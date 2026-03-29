@@ -18,6 +18,7 @@
 #include "../drivers/vt100.h"
 #include "../fs/vfs.h"
 #include "../kernel/process.h"
+#include "../kernel/kheap.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/swap.h"
 #include "../kernel/syslog.h"
@@ -133,6 +134,8 @@ static void cmd_help(int argc, char **argv) {
     kprintf("  uname           print system information\n");
     kprintf("  whoami          print current user name\n");
     kprintf("  ps              list running processes\n");
+    kprintf("  mode            show the kernel/user-mode split for this shell\n");
+    kprintf("  meminfo         show kernel heap and swap usage\n");
     kprintf("  mount           show mounted filesystems\n");
     kprintf("  ifconfig        show network interfaces\n");
     kprintf("  ping <ip>       send ICMP echo request\n");
@@ -266,7 +269,7 @@ static void cmd_whoami(int argc, char **argv) {
 
 static void cmd_ps(int argc, char **argv) {
     (void)argc; (void)argv;
-    kprintf("  PID  UID  STATE     NAME\n");
+    kprintf("  PID  UID  MODE    STATE     NAME\n");
     for (uint32_t pid = 0; pid < MAX_PROCESSES; pid++) {
         process_t *p = process_get_by_pid(pid);
         if (!p || p->state == PROC_DEAD) continue;
@@ -278,7 +281,35 @@ static void cmd_ps(int argc, char **argv) {
             case PROC_ZOMBIE:   st = "ZOMBIE  "; break;
             default: break;
         }
-        kprintf("  %3d  %3d  %s  %s\n", pid, p->uid, st, p->name);
+        kprintf("  %d  %d  %s  %s  %s\n",
+                pid, p->uid, process_mode_name(p->mode), st, p->name);
+    }
+}
+
+static void cmd_mode(int argc, char **argv) {
+    (void)argc; (void)argv;
+    process_t *p = process_current();
+    kprintf("Interactive shell : kernel shell\n");
+    kprintf("Current process   : %s\n", p ? p->name : "(none)");
+    kprintf("Current mode      : %s\n", p ? process_mode_name(p->mode) : "unknown");
+    kprintf("Kernel entry      : direct function calls in ring0\n");
+    kprintf("User entry point  : int 0x80 syscalls + ELF loader groundwork\n");
+}
+
+static void cmd_meminfo(int argc, char **argv) {
+    uint32_t total = 0, used = 0, free = 0;
+    (void)argc; (void)argv;
+    kheap_get_stats(&total, &used, &free);
+    kprintf("Kernel heap total : %u bytes (%u KiB)\n", total, total / 1024);
+    kprintf("Kernel heap used  : %u bytes (%u KiB)\n", used, used / 1024);
+    kprintf("Kernel heap free  : %u bytes (%u KiB)\n", free, free / 1024);
+    if (swap_is_active()) {
+        uint32_t swap_total = swap_total_pages() * SWAP_PAGE_SIZE;
+        uint32_t swap_used  = swap_used_pages() * SWAP_PAGE_SIZE;
+        kprintf("Swap total        : %u bytes (%u KiB)\n", swap_total, swap_total / 1024);
+        kprintf("Swap used         : %u bytes (%u KiB)\n", swap_used, swap_used / 1024);
+    } else {
+        kprintf("Swap              : inactive\n");
     }
 }
 
@@ -411,6 +442,8 @@ static const shell_cmd_t commands[] = {
     { "uname",    cmd_uname    },
     { "whoami",   cmd_whoami   },
     { "ps",       cmd_ps       },
+    { "mode",     cmd_mode     },
+    { "meminfo",  cmd_meminfo  },
     { "mount",    cmd_mount    },
     { "ifconfig", cmd_ifconfig },
     { "ping",     cmd_ping     },
@@ -429,15 +462,16 @@ static const shell_cmd_t commands[] = {
 
 void shell_init(void) {
     cwd[0] = '/'; cwd[1] = '\0';
-    kprintf("[SHL]  Bluey's Command Post is open for business!\n");
+    kprintf("[SHL]  Bluey's kernel shell is open for business!\n");
 }
 
 void shell_run(void) {
     char *argv[SHELL_ARGS_MAX];
 
     vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
-    kprintf("\nWelcome to BlueyOS Shell!\n");
+    kprintf("\nWelcome to BlueyOS Kernel Shell!\n");
     kprintf("\"I'm in charge!\" - Bluey Heeler\n");
+    kprintf("This console runs in kernel mode; user programs cross via int 0x80.\n");
     kprintf("Type 'help' for a list of commands.\n\n");
     vga_set_color(VGA_WHITE, VGA_BLACK);
 
