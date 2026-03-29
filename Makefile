@@ -141,6 +141,7 @@ endif
 
 # i386 kernel sources (full featured)
 I386_C_SOURCES = \
+  kernel/bootui.c \
     kernel/kernel.c \
     kernel/gdt.c \
     kernel/idt.c \
@@ -191,6 +192,7 @@ I386_ASM_SOURCES = \
 
 # M68K kernel sources (stub — Macintosh LC III port in progress)
 M68K_C_SOURCES = \
+  kernel/bootui.c \
     arch/m68k/bootinfo.c \
     arch/m68k/kernel_m68k.c \
   arch/m68k/platform.c \
@@ -248,7 +250,7 @@ M68K_GENERATED_HEADERS = arch/m68k/boot_font.h
 # stamp is updated which forces object files to be rebuilt.
 ARCH_STAMP := .arch_record
 
-$(ARCH_STAMP):
+$(ARCH_STAMP): FORCE
 	@printf "%s\n" "$(ARCH)" > $(ARCH_STAMP).tmp
 	@if [ -f $(ARCH_STAMP) ] && cmp -s $(ARCH_STAMP) $(ARCH_STAMP).tmp; then \
 		rm -f $(ARCH_STAMP).tmp; \
@@ -257,6 +259,8 @@ $(ARCH_STAMP):
 	fi
 
 $(OBJECTS): $(ARCH_STAMP)
+
+FORCE:
 
 arch/m68k/boot_font.h: arch/m68k/boot_font.sbf tools/fonty_rg_to_c.py
 	$(PYTHON) tools/fonty_rg_to_c.py $< $@
@@ -268,7 +272,7 @@ endif
 
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso run run-m68k version clean help tools-host toolinfo
+.PHONY: all iso run run-m68k version clean help tools-host toolinfo FORCE
 
 all: $(TARGET)
 	@echo ""

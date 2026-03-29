@@ -23,6 +23,7 @@
 #include "timer.h"
 #include "kheap.h"
 #include "paging.h"
+#include "bootui.h"
 #include "process.h"
 #include "scheduler.h"
 #include "syscall.h"
@@ -46,6 +47,18 @@
 
 // Kernel end symbol from linker script
 extern uint32_t kernel_end;
+
+static uint32_t i386_multiboot_ram_mb(const uint32_t *mboot_info) {
+    if (!mboot_info) {
+        return 0;
+    }
+
+    if ((mboot_info[0] & 0x1u) == 0) {
+        return 0;
+    }
+
+    return (mboot_info[2] + 1024u) / 1024u;
+}
 
 // ---------------------------------------------------------------------------
 // bluey_panic - called by PANIC() macro everywhere in the kernel
@@ -81,9 +94,13 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 1: Screen up first so we can print messages
     vga_init();
-    vga_set_color(BLUEY_BLUE, VGA_BLACK);
-    kprintf(BLUEY_BANNER);
-    vga_set_color(VGA_WHITE, VGA_BLACK);
+
+    // Validate multiboot magic
+    if (magic != 0x2BADB002) {
+        bluey_panic("Not booted by a Multiboot-compliant bootloader! (Bandit: 'What?!')");
+    }
+
+    bluey_boot_show_splash("I386", i386_multiboot_ram_mb(mboot_info));
 
     // Step 1b: Syslog — initialise ring buffer before any other subsystem
     syslog_init();
@@ -93,23 +110,11 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     vt100_init();
     syslog_info("VT100", "VT100 terminal emulator ready (TERM=vt100)");
 
-    // Version and build information
     kprintf("  %s\n", BLUEYOS_VERSION_STRING);
     kprintf("  Codename : %s\n", BLUEYOS_CODENAME);
     kprintf("  Built by : %s@%s\n", BLUEYOS_BUILD_USER, BLUEYOS_BUILD_HOST);
     kprintf("  Date     : %s %s\n", BLUEYOS_BUILD_DATE, BLUEYOS_BUILD_TIME);
     kprintf("  %s\n\n", BLUEY_CHEEKY_MODE);
-
-    // Trademark and research notice
-    vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    kprintf("  Bluey (c) Ludo Studio Pty Ltd. Licensed by BBC Studios.\n");
-    kprintf("  BlueyOS is an unofficial AI research project. NOT FOR PRODUCTION.\n\n");
-    vga_set_color(VGA_WHITE, VGA_BLACK);
-
-    // Validate multiboot magic
-    if (magic != 0x2BADB002) {
-        bluey_panic("Not booted by a Multiboot-compliant bootloader! (Bandit: 'What?!')");
-    }
 
     // Step 2: CPU tables (must be done before enabling interrupts)
     gdt_init();

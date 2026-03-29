@@ -1,5 +1,6 @@
 // Minimal platform support for M68K build: console and tiny heap
 #include "bootinfo.h"
+#include "dafb.h"
 #include "mac_lc3.h"
 #include "../../include/types.h"
 #include "../../drivers/vga.h"
@@ -97,6 +98,10 @@ static void m68k_console_putchar_raw(char c) {
 }
 
 void vga_putchar(char c) {
+    if (dafb_console_mirror_enabled()) {
+        dafb_console_putchar(c);
+    }
+
     if (c == '\n') {
         m68k_console_putchar_raw('\r');
     }
@@ -105,6 +110,12 @@ void vga_putchar(char c) {
 }
 
 /* Minimal VGA wrappers so arch/m68k can use vga_puts / vga_set_color */
+void vga_clear(void) {
+    if (dafb_console_ready()) {
+        dafb_console_clear(VGA_BLACK);
+    }
+}
+
 void vga_puts(const char *s) {
     if (!s) return;
     while (*s) vga_putchar(*s++);
@@ -122,7 +133,15 @@ void vga_flush(void) {
 }
 
 void vga_set_color(uint8_t fg, uint8_t bg) {
-    (void)fg; (void)bg; /* no-op on serial/parallel fallback */
+    if (dafb_console_ready()) {
+        dafb_console_set_color(fg, bg);
+    }
+}
+
+void vga_set_cursor(int x, int y) {
+    if (dafb_console_ready()) {
+        dafb_console_set_cursor(x, y);
+    }
 }
 
 void vga_init(void) {

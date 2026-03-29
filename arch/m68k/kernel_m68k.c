@@ -17,9 +17,11 @@
 
 #include "../../include/types.h"
 #include "bootinfo.h"
+#include "dafb.h"
 #include "mac_lc3.h"
 #include "../../drivers/vga.h"
 #include "../../lib/stdio.h"
+#include "../../kernel/bootui.h"
 
 #define MAC_LC3_RAM_DEFAULT (32u * 1024u * 1024u)
 
@@ -39,12 +41,7 @@ static uint32_t m68k_read_u32(uintptr_t addr) {
 // ---------------------------------------------------------------------------
 void kernel_main_m68k(void) {
     const m68k_bootinfo_t *boot = m68k_bootinfo_get();
-
-    // Step 1: Bring up the shared serial-backed console immediately.
     vga_init();
-    vga_puts("\n\nBlueyOS M68K - Macintosh bootstrap\n");
-    vga_puts("\"It was the 80s!\" - Bandit Heeler\n");
-    vga_puts("(C) Ludo Studio Pty Ltd / BBC Studios. AI research project.\n\n");
 
     // Step 2: Read physical memory size from Mac low-memory globals.
     uint32_t memsize = m68k_read_u32((uintptr_t)MAC_LMG_MEMSIZE);
@@ -78,21 +75,16 @@ void kernel_main_m68k(void) {
 
     // Step 5: TODO — mount BiscuitFS / FAT16 from SCSI disk.
 
-    // Step 6: TODO — launch built-in shell over SCC (no VGA text mode on M68K).
-    kprintf("[OK]   BlueyOS M68K stub complete. Initialising framebuffer...\n");
-
-    // Initialise minimal DAFB driver and draw a test pattern so the
-    // QEMU VNC/framebuffer shows pixels. Implemented as a best-effort
-    // helper (may be emulator-dependent).
-    extern void dafb_init(void);
-    extern void dafb_draw_test(void);
+    kprintf("[BOOT] M68K console online, bringing up framebuffer\n");
     dafb_init();
+    if (dafb_console_enable()) {
+        bluey_boot_show_splash("M68K", memsize / (1024 * 1024));
+    }
     dafb_draw_test();
 
-    kprintf("[OK]   Framebuffer test drawn. Halting (work in progress).\n");
-    kprintf("       \"This is the best day EVER!\" - Bluey Heeler\n\n");
+    kprintf("[OK]   BlueyOS M68K kernel path entered. Waiting for next bring-up stage.\n");
 
-    // Halt — future work will loop here running the scheduler.
-    __asm__ volatile("stop #0x2700");
-    for (;;) {}
+    for (;;) {
+        __asm__ volatile("nop");
+    }
 }
