@@ -51,4 +51,5 @@ void kprintf(const char *fmt, ...) {
         }
     }
     va_end(ap);
+    vga_flush();
 }

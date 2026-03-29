@@ -23,6 +23,7 @@
 #include "timer.h"
 #include "kheap.h"
 #include "paging.h"
+#include "bootui.h"
 #include "process.h"
 #include "scheduler.h"
 #include "syscall.h"
@@ -35,14 +36,29 @@
 #include "../drivers/driver.h"
 #include "../drivers/net/network.h"
 #include "../drivers/net/ne2000.h"
+#include "../drivers/vt100.h"
 #include "../fs/vfs.h"
 #include "../fs/fat.h"
 #include "../fs/blueyfs.h"
 #include "../net/tcpip.h"
 #include "../shell/shell.h"
+#include "syslog.h"
+#include "netcfg.h"
 
 // Kernel end symbol from linker script
 extern uint32_t kernel_end;
+
+static uint32_t i386_multiboot_ram_mb(const uint32_t *mboot_info) {
+    if (!mboot_info) {
+        return 0;
+    }
+
+    if ((mboot_info[0] & 0x1u) == 0) {
+        return 0;
+    }
+
+    return (mboot_info[2] + 1024u) / 1024u;
+}
 
 // ---------------------------------------------------------------------------
 // bluey_panic - called by PANIC() macro everywhere in the kernel
@@ -74,31 +90,30 @@ static void idle_task(void) {
 // Arguments pushed by boot.asm: eax=multiboot magic, ebx=multiboot info ptr
 // ---------------------------------------------------------------------------
 void kernel_main(uint32_t magic, uint32_t *mboot_info) {
-    (void)mboot_info;
 
     // Step 1: Screen up first so we can print messages
     vga_init();
-    vga_set_color(BLUEY_BLUE, VGA_BLACK);
-    kprintf(BLUEY_BANNER);
-    vga_set_color(VGA_WHITE, VGA_BLACK);
-
-    // Version and build information
-    kprintf("  %s\n", BLUEYOS_VERSION_STRING);
-    kprintf("  Codename : %s\n", BLUEYOS_CODENAME);
-    kprintf("  Built by : %s@%s\n", BLUEYOS_BUILD_USER, BLUEYOS_BUILD_HOST);
-    kprintf("  Date     : %s %s\n", BLUEYOS_BUILD_DATE, BLUEYOS_BUILD_TIME);
-    kprintf("  %s\n\n", BLUEY_CHEEKY_MODE);
-
-    // Trademark and research notice
-    vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    kprintf("  Bluey (c) Ludo Studio Pty Ltd. Licensed by BBC Studios.\n");
-    kprintf("  BlueyOS is an unofficial AI research project. NOT FOR PRODUCTION.\n\n");
-    vga_set_color(VGA_WHITE, VGA_BLACK);
 
     // Validate multiboot magic
     if (magic != 0x2BADB002) {
         bluey_panic("Not booted by a Multiboot-compliant bootloader! (Bandit: 'What?!')");
     }
+
+    bluey_boot_show_splash("I386", i386_multiboot_ram_mb(mboot_info));
+
+    // Step 1b: Syslog — initialise ring buffer before any other subsystem
+    syslog_init();
+    syslog_info("KERN", "BlueyOS kernel starting up");
+
+    // Step 1c: VT100 terminal emulator — initialised here but output routing
+    // (kprintf → vt100_putchar) is deferred until the console path is wired.
+    // vt100_init();  /* TODO: wire kprintf/vga output through vt100_putchar */
+
+    kprintf("  %s\n", BLUEYOS_VERSION_STRING);
+    kprintf("  Codename : %s\n", BLUEYOS_CODENAME);
+    kprintf("  Built by : %s@%s\n", BLUEYOS_BUILD_USER, BLUEYOS_BUILD_HOST);
+    kprintf("  Date     : %s %s\n", BLUEYOS_BUILD_DATE, BLUEYOS_BUILD_TIME);
+    kprintf("  %s\n\n", BLUEY_CHEEKY_MODE);
 
     // Step 2: CPU tables (must be done before enabling interrupts)
     gdt_init();
@@ -144,6 +159,8 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
                 kprintf("[VFS]  No recognised filesystem - running diskless\n");
             }
         }
+        // Flush early boot log to /var/log/kernel.log
+        syslog_flush_to_fs();
     }
 
     // Step 12: Syscall interface (int 0x80)
@@ -163,6 +180,11 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 15: TCP/IP IPv4 stack
     tcpip_init();
+
+    // Apply network interface configuration from /etc/interfaces.
+    // Must be after tcpip_init() — tcpip_init() resets the config to compiled-in
+    // defaults, so any config loaded here correctly overrides those defaults.
+    netcfg_apply();
 
     // Step 16: Swap space (hdb at LBA 0, up to 4096 pages = 16 MB)
     // In QEMU, the second disk (-hdb swap.img) is the swap device.

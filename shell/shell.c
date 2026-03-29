@@ -15,10 +15,12 @@
 #include "../lib/stdlib.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/vga.h"
+#include "../drivers/vt100.h"
 #include "../fs/vfs.h"
 #include "../kernel/process.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/swap.h"
+#include "../kernel/syslog.h"
 #include "../drivers/net/network.h"
 #include "../net/tcpip.h"
 #include "../net/icmp.h"
@@ -135,6 +137,7 @@ static void cmd_help(int argc, char **argv) {
     kprintf("  ifconfig        show network interfaces\n");
     kprintf("  ping <ip>       send ICMP echo request\n");
     kprintf("  swapinfo        show swap statistics\n");
+    kprintf("  dmesg           show kernel log (ring buffer)\n");
     kprintf("  date            show current time\n");
     kprintf("  version         show BlueyOS version\n");
     kprintf("  reboot          restart the computer\n");
@@ -340,6 +343,11 @@ static void cmd_swapinfo(int argc, char **argv) {
     swap_print_info();
 }
 
+static void cmd_dmesg(int argc, char **argv) {
+    (void)argc; (void)argv;
+    syslog_dmesg();
+}
+
 static void cmd_date(int argc, char **argv) {
     (void)argc; (void)argv;
     const timezone_t *tz = sysinfo_get_timezone();
@@ -407,6 +415,7 @@ static const shell_cmd_t commands[] = {
     { "ifconfig", cmd_ifconfig },
     { "ping",     cmd_ping     },
     { "swapinfo", cmd_swapinfo },
+    { "dmesg",    cmd_dmesg    },
     { "date",     cmd_date     },
     { "version",  cmd_version  },
     { "halt",     cmd_halt     },
