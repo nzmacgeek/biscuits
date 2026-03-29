@@ -2,6 +2,7 @@
 // Episode ref: "Hammerbarn" - Bandit loves a good building project
 #include "../include/types.h"
 #include "../lib/stdio.h"
+#include "../lib/string.h"
 #include "gdt.h"
 
 #define GDT_ENTRIES 6
@@ -20,9 +21,10 @@ static void gdt_set(int i, uint32_t base, uint32_t limit, uint8_t access, uint8_
 
 static void tss_init(uint32_t idx, uint16_t ss0, uint32_t esp0) {
     uint32_t base  = (uint32_t)&tss;
-    uint32_t limit = base + sizeof(tss);
-    gdt_set(idx, base, limit, 0xE9, 0x00);
-    __builtin_memset(&tss, 0, sizeof(tss));
+    uint32_t limit = sizeof(tss_entry_t) - 1;  // GDT limit = size - 1, NOT an end address
+    // Access byte 0x89: Present=1, DPL=0 (kernel), S=0 (system), Type=9 (32-bit TSS available)
+    gdt_set(idx, base, limit, 0x89, 0x00);
+    memset(&tss, 0, sizeof(tss));
     tss.ss0  = ss0;
     tss.esp0 = esp0;
     tss.cs   = GDT_KERNEL_CODE | 0x3;

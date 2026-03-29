@@ -13,9 +13,10 @@ int strcmp(const char *a, const char *b) {
     return (unsigned char)*a - (unsigned char)*b;
 }
 int strncmp(const char *a, const char *b, size_t n) {
-    while (n-- && *a && *a == *b) { a++; b++; }
-    if (!n) return 0;
-    return (unsigned char)*a - (unsigned char)*b;
+    size_t i = 0;
+    while (i < n && a[i] && a[i] == b[i]) i++;
+    if (i == n) return 0;
+    return (unsigned char)a[i] - (unsigned char)b[i];
 }
 char *strcpy(char *dst, const char *src) {
     char *d = dst;
@@ -74,13 +75,22 @@ int memcmp(const void *a, const void *b, size_t n) {
 }
 char *itoa(int val, char *buf, int base) {
     char tmp[32]; int i = 0, neg = 0;
+    /* Validate base to avoid divide-by-zero or infinite loop */
+    if (base < 2 || base > 16) { buf[0] = '0'; buf[1] = 0; return buf; }
     if (val == 0) { buf[0]='0'; buf[1]=0; return buf; }
-    if (val < 0 && base == 10) { neg = 1; val = -val; }
-    unsigned int uval = (unsigned int)val;
+    /* Handle INT_MIN safely by working in unsigned arithmetic throughout */
+    unsigned int uval;
+    if (val < 0 && base == 10) {
+        neg = 1;
+        /* Cast through unsigned to avoid negating INT_MIN (UB) */
+        uval = (unsigned int)(-(val + 1)) + 1u;
+    } else {
+        uval = (unsigned int)val;
+    }
     while (uval) {
-        int r = uval % base;
+        int r = (int)(uval % (unsigned int)base);
         tmp[i++] = (r < 10) ? ('0'+r) : ('a'+r-10);
-        uval /= base;
+        uval /= (unsigned int)base;
     }
     if (neg) tmp[i++] = '-';
     int j = 0;

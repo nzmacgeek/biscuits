@@ -86,7 +86,9 @@ void bluey_panic(const char *msg);
 // Heap magic number - "B10E" loosely reads as "BLUE"
 // Episode ref: "Magic Xylophone" - magic numbers everywhere!
 // ---------------------------------------------------------------------------
+#ifndef BLUEY_HEAP_MAGIC
 #define BLUEY_HEAP_MAGIC  0xB10EB10E
+#endif
 
 // ---------------------------------------------------------------------------
 // Privilege rings

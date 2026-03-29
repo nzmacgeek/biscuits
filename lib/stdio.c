@@ -31,14 +31,21 @@ void kprintf(const char *fmt, ...) {
             case 'c': kprintf_putc((char)va_arg(ap, int)); break;
             case 'd': case 'i': {
                 int v = va_arg(ap, int);
-                if (v < 0) { kprintf_putc('-'); kprintf_uint((unsigned)-v, 10, 0); }
-                else kprintf_uint((unsigned)v, 10, 0);
+                unsigned int uv;
+                if (v < 0) {
+                    kprintf_putc('-');
+                    /* Use unsigned arithmetic to avoid UB for INT_MIN */
+                    uv = (unsigned int)(-(v + 1)) + 1u;
+                } else {
+                    uv = (unsigned int)v;
+                }
+                kprintf_uint(uv, 10, 0);
                 break;
             }
             case 'u': kprintf_uint(va_arg(ap, unsigned), 10, 0); break;
             case 'x': kprintf_uint(va_arg(ap, unsigned), 16, 0); break;
             case 'X': kprintf_uint(va_arg(ap, unsigned), 16, 1); break;
-            case 'p': kprintf_puts("0x"); kprintf_uint(va_arg(ap, unsigned), 16, 0); break;
+            case 'p': kprintf_puts("0x"); kprintf_uint((uintptr_t)va_arg(ap, void*), 16, 0); break;
             case '%': kprintf_putc('%'); break;
             default: kprintf_putc('%'); kprintf_putc(*fmt); break;
         }

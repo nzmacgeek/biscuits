@@ -29,28 +29,35 @@ void *kheap_alloc(size_t sz, int align) {
     if (!heap_start || sz == 0) return NULL;
     block_hdr_t *cur = heap_start;
     while (cur) {
-        if (cur->free && cur->size >= sz) {
-            uint32_t addr = (uint32_t)cur + sizeof(block_hdr_t);
-            if (align) {
-                uint32_t aligned = (addr + 0xFFF) & ~0xFFF;
-                if (aligned + sz <= (uint32_t)cur + sizeof(block_hdr_t) + cur->size) {
-                    addr = aligned;
-                }
-            }
-            // Split block if large enough
-            if (cur->size > sz + sizeof(block_hdr_t) + 16) {
-                block_hdr_t *newblk = (block_hdr_t*)((uint32_t)cur + sizeof(block_hdr_t) + sz);
-                newblk->magic = BLUEY_HEAP_MAGIC;
-                newblk->size  = cur->size - sz - sizeof(block_hdr_t);
-                newblk->free  = 1;
-                newblk->next  = cur->next;
-                cur->next = newblk;
-                cur->size = sz;
-            }
-            cur->free = 0;
-            return (void*)((uint32_t)cur + sizeof(block_hdr_t));
+        if (!cur->free) { cur = cur->next; continue; }
+
+        uint32_t base        = (uint32_t)cur + sizeof(block_hdr_t);
+        uint32_t alloc_start = base;
+        uint32_t total_needed = sz;
+
+        if (align) {
+            uint32_t aligned = (base + 0xFFF) & ~0xFFF;
+            uint32_t padding = aligned - base;
+            total_needed = padding + sz;
+            if (total_needed > cur->size) { cur = cur->next; continue; }
+            alloc_start = aligned;
+        } else {
+            if (sz > cur->size) { cur = cur->next; continue; }
         }
-        cur = cur->next;
+
+        // Split block: place new header immediately after the allocated region.
+        // alloc_start + sz = end of the allocated bytes = start of remaining free space.
+        if (cur->size > total_needed + sizeof(block_hdr_t) + 16) {
+            block_hdr_t *newblk = (block_hdr_t*)(alloc_start + sz);
+            newblk->magic = BLUEY_HEAP_MAGIC;
+            newblk->size  = cur->size - total_needed - sizeof(block_hdr_t);
+            newblk->free  = 1;
+            newblk->next  = cur->next;
+            cur->next = newblk;
+            cur->size = total_needed;
+        }
+        cur->free = 0;
+        return (void*)alloc_start;
     }
     return NULL;
 }

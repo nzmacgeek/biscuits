@@ -1,6 +1,7 @@
 // BlueyOS IDT - "Chilli configured the Interrupts - she's got it sorted!"
 #include "../include/types.h"
 #include "../lib/stdio.h"
+#include "../lib/string.h"
 #include "idt.h"
 #include "isr.h"
 #include "irq.h"
@@ -19,7 +20,7 @@ void idt_set_gate(uint8_t n, uint32_t base, uint16_t sel, uint8_t flags) {
 void idt_init(void) {
     idt_ptr.limit = sizeof(idt) - 1;
     idt_ptr.base  = (uint32_t)&idt;
-    __builtin_memset(&idt, 0, sizeof(idt));
+    memset(&idt, 0, sizeof(idt));
     isr_init();
     irq_init();
     idt_flush(&idt_ptr);
