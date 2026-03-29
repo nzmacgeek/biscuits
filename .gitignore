@@ -12,6 +12,9 @@ blueyos.iso
 # ISO build directory
 isodir/
 
+# Host-side compiled tools
+tools/mkfs_blueyfs
+
 # Editor junk
 *.swp
 *.swo
