@@ -12,23 +12,23 @@ PHDRS {
 SECTIONS {
     . = 0x100000;
 
-    .text : PHDRS text {
+    .text : {
         *(.multiboot)
         *(.text)
-    }
+    } :text
 
     .rodata : {
         *(.rodata*)
-    }
+    } :text
 
-    .data : PHDRS data {
+    .data : {
         *(.data)
-    }
+    } :data
 
-    .bss : PHDRS data {
+    .bss : {
         *(COMMON)
         *(.bss)
-    }
+    } :data
 
     kernel_end = .;
 }
