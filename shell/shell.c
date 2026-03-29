@@ -40,6 +40,10 @@ static char cwd[SHELL_CWD_MAX];
 static char linebuf[SHELL_LINE_MAX];
 static int  linelen;
 #define SHELL_PAGE_SIZE_KB (PAGE_SIZE / 1024u)
+/* VT100/ANSI formatting used by the booted shell prompt/banner. */
+#define ANSI_RESET         "\x1b[0m"
+#define ANSI_BOLD_GREEN    "\x1b[1;32m"
+#define ANSI_BOLD_BLUE     "\x1b[1;34m"
 
 static uint32_t shell_ram_total_kb(uint32_t ram_boot_mb) {
     if (ram_boot_mb == 0) return pmm_total_frames() * SHELL_PAGE_SIZE_KB;
@@ -515,20 +519,13 @@ void shell_init(void) {
 void shell_run(void) {
     char *argv[SHELL_ARGS_MAX];
 
-    vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
-    kprintf("\nWelcome to BlueyOS Shell!\n");
+    kprintf("\n" ANSI_BOLD_GREEN "Welcome to BlueyOS Shell!\n");
     kprintf("\"I'm in charge!\" - Bluey Heeler\n");
-    kprintf("Type 'help' for a list of commands.\n\n");
-    vga_set_color(VGA_WHITE, VGA_BLACK);
+    kprintf("Type 'help' for a list of commands.\n" ANSI_RESET "\n");
 
     for (;;) {
         // Print prompt: "bluey@biscuit:/path$ "
-        vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
-        kprintf("bluey@biscuit:");
-        vga_set_color(VGA_LIGHT_BLUE, VGA_BLACK);
-        kprintf("%s", cwd);
-        vga_set_color(VGA_WHITE, VGA_BLACK);
-        kprintf("$ ");
+        kprintf(ANSI_BOLD_GREEN "bluey@biscuit:" ANSI_BOLD_BLUE "%s" ANSI_RESET "$ ", cwd);
 
         shell_readline();
         if (linelen == 0) continue;
