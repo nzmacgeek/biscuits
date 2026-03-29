@@ -7,6 +7,7 @@
 #include "tty.h"
 
 static int tty_ready = 0;
+#define TTY_MAX_CHAR 0xFF
 
 void tty_init(void) {
     vt100_init();
@@ -34,8 +35,19 @@ char tty_getchar(void) {
 
 int tty_read(char *buf, size_t len) {
     if (!buf || len == 0) return 0;
-    buf[0] = tty_getchar();
-    return 1;
+
+    size_t nread = 0;
+    buf[nread] = tty_getchar();
+    nread++;
+
+    while (nread < len && keyboard_available()) {
+        int ch = keyboard_poll();
+        if (ch < 0 || ch > TTY_MAX_CHAR) break;
+        buf[nread] = (char)ch;
+        nread++;
+    }
+
+    return (int)nread;
 }
 
 void tty_flush(void) {

@@ -46,9 +46,15 @@ static int  linelen;
 #define ANSI_BOLD_BLUE     "\x1b[1;34m"
 
 static uint32_t shell_ram_total_kb(uint32_t ram_boot_mb) {
-    if (ram_boot_mb == 0) return pmm_total_frames() * SHELL_PAGE_SIZE_KB;
-    if (ram_boot_mb > (0xFFFFFFFFu / 1024u)) return 0xFFFFFFFFu;
-    return ram_boot_mb * 1024u;
+    uint32_t managed_kb = pmm_total_frames() * SHELL_PAGE_SIZE_KB;
+
+    if (ram_boot_mb == 0) return managed_kb;
+    if (ram_boot_mb > (0xFFFFFFFFu / 1024u)) return managed_kb;
+
+    uint32_t detected_kb = ram_boot_mb * 1024u;
+    if (detected_kb > managed_kb) return managed_kb;
+
+    return detected_kb;
 }
 
 static uint32_t shell_ram_free_kb(uint32_t total_kb, uint32_t used_kb, int *clamped) {

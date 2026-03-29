@@ -27,6 +27,8 @@ void syscall_init(void) {
 // SYS_WRITE (1): fd=1 -> stdout -> TTY
 static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
     if (fd == 1 || fd == 2) {
+        if (!buf) return -1;
+        if (len == 0) return 0;
         // Bounds check: refuse oversized writes to avoid flooding
         if (len > 4096) len = 4096;
         tty_write(buf, len);
@@ -39,6 +41,8 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
 // SYS_READ (0): fd=0 -> stdin -> TTY
 static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
     if (fd == 0) {
+        if (!buf) return -1;
+        if (len == 0) return 0;
         return tty_read(buf, len);
     }
     return -1;
