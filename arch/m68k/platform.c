@@ -1,38 +1,127 @@
 // Minimal platform support for M68K build: console and tiny heap
+#include "bootinfo.h"
 #include "mac_lc3.h"
 #include "../../include/types.h"
+#include "../../drivers/vga.h"
 
 extern char kernel_end;
 
-void vga_putchar(char c) {
-    uint8_t status;
-    /* Try SCC channel A first: poll TX buffer empty (bit 2 of RR0). */
-    /* Note: this is a conservative, best-effort poll for early boot. */
-    int tries = 1000;
-    do {
-        /* Touch control register to latch status */
-        (void)SCC_CHAN_A_CTRL;
-        asm volatile ("" ::: "memory");
-        status = SCC_CHAN_A_CTRL;
-        if (--tries <= 0) break;
-    } while (!(status & 0x04));
+static int console_initialised = 0;
 
-    /* Write to SCC data register */
-    SCC_CHAN_A_DATA = (uint8_t)c;
-    asm volatile ("" ::: "memory");
+static uintptr_t m68k_scc_base(void) {
+    const m68k_bootinfo_t *boot = m68k_bootinfo_get();
 
-    /* Also write to VIA1 ORB (parallel/printer) as a fallback/test path */
-    VIA1_DDRB = 0xFF; /* make PORTB outputs */
-    asm volatile ("" ::: "memory");
+    if (boot->mac_scc_base != 0) {
+        return (uintptr_t)boot->mac_scc_base;
+    }
+
+    return (uintptr_t)MAC_LC3_SCC_BASE;
+}
+
+static volatile uint8_t *scc_ctrl(int channel) {
+    return (volatile uint8_t *)(m68k_scc_base() + (channel ? 2 : 0));
+}
+
+static volatile uint8_t *scc_data(int channel) {
+    return (volatile uint8_t *)(m68k_scc_base() + (channel ? 6 : 4));
+}
+
+static void scc_write_reg(int channel, uint8_t reg, uint8_t val) {
+    volatile uint8_t *ctrl = scc_ctrl(channel);
+
+    *ctrl = reg;
+    mmio_barrier();
+    *ctrl = val;
+    mmio_barrier();
+}
+
+static void scc_init_channel(int channel) {
+    volatile uint8_t *ctrl = scc_ctrl(channel);
+
+    *ctrl = 0x00;
+    mmio_barrier();
+    *ctrl = 0x00;
+    mmio_barrier();
+
+    scc_write_reg(channel, 9, 0x80);
+    scc_write_reg(channel, 4, 0x44);
+    scc_write_reg(channel, 3, 0xC1);
+    scc_write_reg(channel, 5, 0x68);
+    scc_write_reg(channel, 11, 0x50);
+    scc_write_reg(channel, 12, 0x0A);
+    scc_write_reg(channel, 13, 0x00);
+    scc_write_reg(channel, 14, 0x01);
+}
+
+static int scc_wait_tx_ready(int channel) {
+    volatile uint8_t *ctrl = scc_ctrl(channel);
+    int tries = 100000;
+
+    while (tries-- > 0) {
+        *ctrl = 0x00;
+        mmio_barrier();
+        if ((*ctrl & 0x04) != 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void m68k_console_init(void) {
+    if (console_initialised) {
+        return;
+    }
+
+    scc_init_channel(0);
+    scc_init_channel(1);
+
+    VIA1_DDRB = 0xFF;
+    mmio_barrier();
+
+    console_initialised = 1;
+}
+
+static void m68k_console_putchar_raw(char c) {
+    m68k_console_init();
+
+    if (scc_wait_tx_ready(0)) {
+        *scc_data(0) = (uint8_t)c;
+        mmio_barrier();
+    }
+
+    if (scc_wait_tx_ready(1)) {
+        *scc_data(1) = (uint8_t)c;
+        mmio_barrier();
+    }
+
     VIA1_ORB = (uint8_t)c;
+    mmio_barrier();
+}
 
-    if (c == '\n') vga_putchar('\r');
+void vga_putchar(char c) {
+    if (c == '\n') {
+        m68k_console_putchar_raw('\r');
+    }
+
+    m68k_console_putchar_raw(c);
 }
 
 /* Minimal VGA wrappers so arch/m68k can use vga_puts / vga_set_color */
 void vga_puts(const char *s) {
     if (!s) return;
     while (*s) vga_putchar(*s++);
+    vga_flush();
+}
+
+void vga_flush(void) {
+    if (!console_initialised) {
+        return;
+    }
+
+    (void)scc_wait_tx_ready(0);
+    (void)scc_wait_tx_ready(1);
+    mmio_barrier();
 }
 
 void vga_set_color(uint8_t fg, uint8_t bg) {
@@ -40,9 +129,7 @@ void vga_set_color(uint8_t fg, uint8_t bg) {
 }
 
 void vga_init(void) {
-    /* Ensure VIA1 PORTB is output so parallel writes are visible in emulator */
-    VIA1_DDRB = 0xFF;
-    asm volatile ("" ::: "memory");
+    m68k_console_init();
 }
 
 static uintptr_t heap_ptr = 0;

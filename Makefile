@@ -189,6 +189,7 @@ I386_ASM_SOURCES = \
 
 # M68K kernel sources (stub — Macintosh LC III port in progress)
 M68K_C_SOURCES = \
+    arch/m68k/bootinfo.c \
     arch/m68k/kernel_m68k.c \
   arch/m68k/platform.c \
   arch/m68k/dafb.c \
@@ -256,7 +257,7 @@ $(OBJECTS): $(ARCH_STAMP)
 
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso run version clean help tools-host toolinfo
+.PHONY: all iso run run-m68k version clean help tools-host toolinfo
 
 all: $(TARGET)
 	@echo ""
@@ -291,6 +292,9 @@ run: iso
 	@if [ "$(ARCH)" != "i386" ]; then \
 	    echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi
 	@bash tools/qemu-run.sh
+
+run-m68k: blueyos-m68k.elf
+	@bash tools/qemu-run-m68k.sh
 
 version:
 	@echo "BlueyOS v0.1.0 (Codename: $(shell grep CODENAME include/version.h | head -1 | sed 's/.*\"\(.*\)\".*/\1/'))"
@@ -332,6 +336,7 @@ help:
 	@echo "  make ARCH=ppc         - build PowerPC kernel (iMac G4 Sunflower)"
 	@echo "  make iso              - create bootable ISO (i386 only)"
 	@echo "  make run              - build ISO and launch in QEMU (i386 only)"
+	@echo "  make run-m68k         - launch M68K QEMU with detached serial capture"
 	@echo "  make tools-host       - build host-side tools (mkfs.biscuitfs)"
 	@echo "  make toolinfo         - print versions of all build tools"
 	@echo "  make version          - print version information"

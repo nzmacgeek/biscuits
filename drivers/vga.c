@@ -70,4 +70,8 @@ void vga_putchar(char c) {
 
 void vga_puts(const char *s) {
     while (*s) vga_putchar(*s++);
+    vga_flush();
+}
+
+void vga_flush(void) {
 }

@@ -3,6 +3,7 @@
 // performs register readback diagnostics. Writes a simple 8bpp test
 // pattern into the frame buffer using the LC3 4MB RAM base.
 
+#include "bootinfo.h"
 #include "mac_lc3.h"
 #include "../../include/types.h"
 #include "../../drivers/vga.h"
@@ -25,8 +26,30 @@ static void dafb_delay(void) {
     for (volatile int i = 0; i < 20000; i++) asm volatile ("nop");
 }
 
+static int m68k_bootinfo_has_framebuffer(void) {
+    const m68k_bootinfo_t *boot = m68k_bootinfo_get();
+
+    return boot->mac_video_base != 0 &&
+           boot->mac_video_row != 0 &&
+           boot->mac_video_depth != 0 &&
+           m68k_bootinfo_video_width() != 0 &&
+           m68k_bootinfo_video_height() != 0;
+}
+
 // Initialise DAFB (best-effort; real hardware needs detailed setup).
 void dafb_init(void) {
+    const m68k_bootinfo_t *boot = m68k_bootinfo_get();
+
+    if (m68k_bootinfo_has_framebuffer()) {
+        kprintf("[FB]   Bootinfo framebuffer base=0x%x %ux%ux%u stride=%u\n",
+                boot->mac_video_base,
+                m68k_bootinfo_video_width(),
+                m68k_bootinfo_video_height(),
+                boot->mac_video_depth,
+                boot->mac_video_row);
+        return;
+    }
+
     // Construct a reasonable mode word (best-effort placeholder):
     // bit0 = enable, bits[8:15] = bpp (8), bits[16:31] = reserved
     uint32_t wanted_mode = (1u << 0) | (8u << 8);
@@ -60,7 +83,30 @@ void dafb_init(void) {
 
 // Draw a test pattern into the framebuffer (8bpp assumed).
 void dafb_draw_test(void) {
-    volatile uint8_t *fb = (volatile uint8_t *)MAC_LC3_FB_BASE_4MB;
+    const m68k_bootinfo_t *boot = m68k_bootinfo_get();
+    volatile uint8_t *fb;
+    int width;
+    int height;
+    int stride;
+
+    if (m68k_bootinfo_has_framebuffer()) {
+        fb = (volatile uint8_t *)(uintptr_t)boot->mac_video_base;
+        width = (int)m68k_bootinfo_video_width();
+        height = (int)m68k_bootinfo_video_height();
+        stride = (int)boot->mac_video_row;
+
+        if (boot->mac_video_depth != 8) {
+            kprintf("[FB]   Unsupported bootinfo depth %u, expected 8bpp\n",
+                    boot->mac_video_depth);
+            return;
+        }
+    } else {
+        fb = (volatile uint8_t *)MAC_LC3_FB_BASE_4MB;
+        width = DAFB_H_ACTIVE;
+        height = DAFB_V_TOTAL;
+        stride = DAFB_H_ACTIVE;
+    }
+
     // Defensive: if fb pointer seems invalid, bail out
     if ((uintptr_t)fb < 0x100) {
         kprintf("[DAFB] No framebuffer base configured (0x%p)\n", fb);
@@ -71,14 +117,11 @@ void dafb_draw_test(void) {
         return;
     }
 
-    const int width = DAFB_H_ACTIVE;
-    const int height = DAFB_V_TOTAL;
-
     // Simple pixel fill - 8bpp
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            uint8_t v = (uint8_t)(((x ^ y) & 0xFF));
-            fb[y * width + x] = v;
+            uint8_t v = (uint8_t)((x + (y * 3)) & 0xFF);
+            fb[y * stride + x] = v;
         }
     }
 
@@ -86,9 +129,9 @@ void dafb_draw_test(void) {
     mmio_barrier();
 
     // Verify first few bytes and print diagnostic
-    kprintf("[DAFB] test pattern written: fb[0]=0x%x fb[1]=0x%x fb[2]=0x%x\n",
+    kprintf("[FB]   test pattern written: fb[0]=0x%x fb[1]=0x%x fb[2]=0x%x\n",
             fb[0], fb[1], fb[2]);
 
     // Heartbeat: also directly emit a short ASCII banner via low-level putchar
-    vga_puts("[DAFB] framebuffer write complete - check display or hardware\n");
+    vga_puts("[FB]   framebuffer write complete - check display or hardware\n");
 }
