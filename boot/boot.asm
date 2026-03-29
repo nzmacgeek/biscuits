@@ -22,6 +22,7 @@ stack_top:
 
 section .text
 bits 32
+section .note.GNU-stack noalloc noexec nowrite progbits
 global _start
 extern kernel_main
 

@@ -1,0 +1,178 @@
+// BlueyOS Kernel Main Entry Point
+// "It's a big day!" - Bluey Heeler (every episode, without fail)
+//
+// ⚠️  VIBE CODED RESEARCH PROJECT — NOT FOR PRODUCTION USE ⚠️
+// This OS was created by an AI agent for learning and research purposes.
+// See README.md, SECURITY.md and TESTING.md for full details.
+//
+// Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
+// licensed by BBC Studios. BlueyOS is an unofficial fan/research project
+// with no affiliation to Ludo Studio or the BBC.
+//
+// Episode refs: Hammerbarn, Takeaway, Camping, The Creek, Magic Xylophone
+#include "../include/types.h"
+#include "../include/bluey.h"
+#include "../include/version.h"
+#include "../lib/stdio.h"
+#include "../lib/string.h"
+#include "../drivers/vga.h"
+#include "gdt.h"
+#include "idt.h"
+#include "isr.h"
+#include "irq.h"
+#include "timer.h"
+#include "kheap.h"
+#include "paging.h"
+#include "process.h"
+#include "scheduler.h"
+#include "syscall.h"
+#include "multiuser.h"
+#include "sysinfo.h"
+#include "elf.h"
+#include "../drivers/keyboard.h"
+#include "../drivers/ata.h"
+#include "../drivers/driver.h"
+#include "../drivers/net/network.h"
+#include "../drivers/net/ne2000.h"
+#include "../fs/vfs.h"
+#include "../fs/fat.h"
+
+// Kernel end symbol from linker script
+extern uint32_t kernel_end;
+
+// ---------------------------------------------------------------------------
+// bluey_panic - called by PANIC() macro everywhere in the kernel
+// "Oh no! [Bandit voice]: KERNEL PANIC!" - the worst playdate outcome
+// ---------------------------------------------------------------------------
+void bluey_panic(const char *msg) {
+    __asm__ volatile("cli");
+    vga_set_color(VGA_WHITE, VGA_RED);
+    kprintf("\n\n");
+    kprintf("  *** Oh no! [Bandit voice]: KERNEL PANIC! ***\n");
+    kprintf("  %s\n", msg);
+    kprintf("  The playdate is over. Please reset the computer.\n");
+    kprintf("  (BlueyOS research OS - see SECURITY.md for known limitations)\n");
+    kprintf("\n");
+    __asm__ volatile("hlt");
+    for (;;) {}
+}
+
+// ---------------------------------------------------------------------------
+// Idle process - runs when nothing else is scheduled
+// "Bandit stares at the ceiling." - Camping episode
+// ---------------------------------------------------------------------------
+static void idle_task(void) {
+    while (1) __asm__ volatile("hlt");
+}
+
+// ---------------------------------------------------------------------------
+// kernel_main - called from boot/boot.asm after setting up the stack
+// Arguments pushed by boot.asm: eax=multiboot magic, ebx=multiboot info ptr
+// ---------------------------------------------------------------------------
+void kernel_main(uint32_t magic, uint32_t *mboot_info) {
+    (void)mboot_info;
+
+    // Step 1: Screen up first so we can print messages
+    vga_init();
+    vga_set_color(BLUEY_BLUE, VGA_BLACK);
+    kprintf(BLUEY_BANNER);
+    vga_set_color(VGA_WHITE, VGA_BLACK);
+
+    // Version and build information
+    kprintf("  %s\n", BLUEYOS_VERSION_STRING);
+    kprintf("  Codename : %s\n", BLUEYOS_CODENAME);
+    kprintf("  Built by : %s@%s\n", BLUEYOS_BUILD_USER, BLUEYOS_BUILD_HOST);
+    kprintf("  Date     : %s %s\n", BLUEYOS_BUILD_DATE, BLUEYOS_BUILD_TIME);
+    kprintf("  %s\n\n", BLUEY_CHEEKY_MODE);
+
+    // Trademark and research notice
+    vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    kprintf("  Bluey (c) Ludo Studio Pty Ltd. Licensed by BBC Studios.\n");
+    kprintf("  BlueyOS is an unofficial AI research project. NOT FOR PRODUCTION.\n\n");
+    vga_set_color(VGA_WHITE, VGA_BLACK);
+
+    // Validate multiboot magic
+    if (magic != 0x2BADB002) {
+        bluey_panic("Not booted by a Multiboot-compliant bootloader! (Bandit: 'What?!')");
+    }
+
+    // Step 2: CPU tables (must be done before enabling interrupts)
+    gdt_init();
+    kprintf("%s\n", MSG_GDT_INIT);
+
+    idt_init();   // also calls isr_init() and irq_init() internally
+    kprintf("%s\n", MSG_IDT_INIT);
+    kprintf("%s\n", MSG_ISR_INIT);
+    kprintf("%s\n", MSG_IRQ_INIT);
+
+    // Step 3: Timer - enables IRQ0, enables interrupts
+    timer_init(1000);   // 1000 Hz = 1ms resolution
+
+    // Step 4: Keyboard - PS/2, IRQ1
+    keyboard_init();
+
+    // Step 5: Heap - uses memory just after kernel image
+    kheap_init((uint32_t)&kernel_end, 0x100000);  // 1MB heap
+    kprintf("%s\n", MSG_HEAP_INIT);
+
+    // Step 6: Paging / virtual memory
+    paging_init();
+
+    // Step 7: System information (hostname, timezone, epoch)
+    sysinfo_init();
+
+    // Step 8: Multi-user system (passwd + shadow)
+    multiuser_init();
+
+    // Step 9: Driver framework
+    driver_framework_init();
+
+    // Step 10: VFS and FAT16
+    vfs_init();
+    vfs_register_fs(fat_get_filesystem());
+
+    // Step 11: ATA disk driver
+    if (ata_init() == 0) {
+        // Attempt to mount FAT16 from first partition (LBA 63 is a common start)
+        // In QEMU with a proper FAT image, this will succeed
+        if (vfs_mount("/", "fat16", 63) != 0) {
+            kprintf("[VFS]  No FAT16 volume at LBA 63 - running diskless\n");
+        }
+    }
+
+    // Step 12: Syscall interface (int 0x80)
+    syscall_init();
+
+    // Step 13: Process management + scheduler
+    process_init();
+    scheduler_init();
+
+    // Create idle process (runs when nothing else is ready)
+    process_t *idle = process_create("bandit-idle", idle_task, 0, 0);
+    if (idle) scheduler_add(idle);
+
+    // Step 14: Network
+    net_init();
+    ne2000_init();
+
+    // Step 15: ELF loader ready
+    kprintf("%s\n", MSG_ELF_INIT);
+
+    // All done!
+    vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    kprintf("\n%s\n", MSG_DONE);
+    vga_set_color(VGA_WHITE, VGA_BLACK);
+    kprintf("Hostname : %s.%s\n", sysinfo_get_hostname(), sysinfo_get_domainname());
+    kprintf("Timezone : %s (UTC+10, Brisbane - no DST because Queensland!)\n",
+            sysinfo_get_timezone()->name);
+    kprintf("Epoch    : %s\n", BANDIT_EPOCH_NAME);
+    kprintf("\nBlueyOS is ready. Type your commands below.\n");
+    kprintf("\"This is the best day EVER!\" - Bluey Heeler\n\n");
+
+    // Enable interrupts and drop into idle loop
+    // The scheduler (driven by IRQ0) will preempt as needed
+    __asm__ volatile("sti");
+    while (1) {
+        __asm__ volatile("hlt");
+    }
+}

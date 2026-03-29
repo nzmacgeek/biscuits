@@ -1,5 +1,6 @@
 ; BlueyOS IRQ stubs - hardware interrupt entry points
 bits 32
+section .note.GNU-stack noalloc noexec nowrite progbits
 %macro IRQ 2
 global irq%1
 irq%1:
