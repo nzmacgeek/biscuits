@@ -352,20 +352,19 @@ static void cmd_meminfo(int argc, char **argv) {
     (void)argc; (void)argv;
 
     uint32_t heap_total = 0, heap_used = 0, heap_free = 0;
-    uint32_t mem_total_frames = pmm_total_frames();
-    uint32_t mem_used_frames  = pmm_used_frames();
-    uint32_t mem_free_frames  = mem_total_frames - mem_used_frames;
+    uint32_t ram_total_kb = sysinfo_get_ram_mb() ? sysinfo_get_ram_mb() * 1024 : pmm_total_frames() * 4;
+    uint32_t mem_used_kb  = pmm_used_frames() * 4;
+    uint32_t mem_free_kb  = (mem_used_kb < ram_total_kb) ? (ram_total_kb - mem_used_kb) : 0;
     uint32_t swap_total = swap_total_pages();
     uint32_t swap_used  = swap_used_pages();
-    uint32_t ram_total_mb = sysinfo_get_ram_mb();
 
     kheap_get_stats(&heap_total, &heap_used, &heap_free);
 
-    kprintf("MemTotal: %u kB\n", mem_total_frames * 4);
-    kprintf("MemUsed:  %u kB\n", mem_used_frames * 4);
-    kprintf("MemFree:  %u kB\n", mem_free_frames * 4);
-    if (ram_total_mb) {
-        kprintf("RAMBoot:  %u MB detected by bootloader\n", ram_total_mb);
+    kprintf("MemTotal: %u kB\n", ram_total_kb);
+    kprintf("MemUsed:  %u kB\n", mem_used_kb);
+    kprintf("MemFree:  %u kB\n", mem_free_kb);
+    if (sysinfo_get_ram_mb()) {
+        kprintf("RAMBoot:  %u MB detected by bootloader\n", sysinfo_get_ram_mb());
     }
     kprintf("HeapTotal:%u kB\n", heap_total / 1024);
     kprintf("HeapUsed: %u kB\n", heap_used / 1024);
@@ -379,16 +378,16 @@ static void cmd_free(int argc, char **argv) {
     (void)argc; (void)argv;
 
     uint32_t heap_total = 0, heap_used = 0, heap_free = 0;
-    uint32_t mem_total_frames = pmm_total_frames();
-    uint32_t mem_used_frames  = pmm_used_frames();
-    uint32_t mem_free_frames  = mem_total_frames - mem_used_frames;
+    uint32_t ram_total_kb = sysinfo_get_ram_mb() ? sysinfo_get_ram_mb() * 1024 : pmm_total_frames() * 4;
+    uint32_t mem_used_kb  = pmm_used_frames() * 4;
+    uint32_t mem_free_kb  = (mem_used_kb < ram_total_kb) ? (ram_total_kb - mem_used_kb) : 0;
     uint32_t swap_total = swap_total_pages();
     uint32_t swap_used  = swap_used_pages();
 
     kheap_get_stats(&heap_total, &heap_used, &heap_free);
 
     kprintf("type  total_kB used_kB free_kB\n");
-    kprintf("mem   %u %u %u\n", mem_total_frames * 4, mem_used_frames * 4, mem_free_frames * 4);
+    kprintf("mem   %u %u %u\n", ram_total_kb, mem_used_kb, mem_free_kb);
     kprintf("heap  %u %u %u\n", heap_total / 1024, heap_used / 1024, heap_free / 1024);
     kprintf("swap  %u %u %u\n", swap_total * 4, swap_used * 4, (swap_total - swap_used) * 4);
 }
