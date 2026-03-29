@@ -193,7 +193,20 @@ BlueyOS is ready. Type your commands below.
 "This is the best day EVER!" - Bluey Heeler
 ```
 
-After this the kernel enters its idle loop (halting the CPU between timer interrupts).
+After this the kernel enters the built-in **kernel shell**. The shell runs in
+ring0 for now and exposes diagnostic/admin commands while the user-mode
+boundary remains the `int 0x80` syscall interface.
+
+Try these basic commands:
+
+```text
+help
+mode
+version
+meminfo
+swapinfo
+ps
+```
 
 ---
 

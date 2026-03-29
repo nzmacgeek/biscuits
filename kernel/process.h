@@ -16,10 +16,16 @@ typedef enum {
     PROC_DEAD       // fully cleaned up
 } proc_state_t;
 
+typedef enum {
+    PROC_MODE_KERNEL,  // ring0 task / kernel-owned console worker
+    PROC_MODE_USER     // ring3 task / userspace process
+} proc_mode_t;
+
 typedef struct process {
     uint32_t      pid;
     char          name[32];
     proc_state_t  state;
+    proc_mode_t   mode;
     uint32_t      esp;           // saved stack pointer (context switch)
     uint32_t      eip;           // saved instruction pointer
     uint32_t      stack_base;    // bottom of this process's stack
@@ -34,9 +40,12 @@ typedef struct process {
 
 void       process_init(void);
 process_t *process_create(const char *name, void (*entry)(void), uint32_t uid, uint32_t gid);
+process_t *process_create_kernel(const char *name, void (*entry)(void), uint32_t uid, uint32_t gid);
+process_t *process_create_user(const char *name, void (*entry)(void), uint32_t uid, uint32_t gid);
 void       process_exit(int code);
 process_t *process_current(void);
 process_t *process_get_by_pid(uint32_t pid);
 uint32_t   process_getpid(void);
 void       process_sleep(uint32_t ms);
 void       process_wake(uint32_t pid);
+const char *process_mode_name(proc_mode_t mode);
