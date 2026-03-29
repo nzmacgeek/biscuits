@@ -2,6 +2,7 @@
 // "Dad, can you read me a story?" - Bluey  "Sure, but first let me format it." - Bandit
 #include "../include/types.h"
 #include "../drivers/vga.h"
+#include "../kernel/tty.h"
 #include "string.h"
 
 // variadic args without stdarg.h
@@ -10,8 +11,8 @@ typedef __builtin_va_list va_list;
 #define va_end(v)     __builtin_va_end(v)
 #define va_arg(v,t)   __builtin_va_arg(v,t)
 
-static void kprintf_puts(const char *s) { if (s) { while (*s) vga_putchar(*s++); } }
-static void kprintf_putc(char c) { vga_putchar(c); }
+static void kprintf_puts(const char *s) { if (s) { while (*s) tty_putchar(*s++); } }
+static void kprintf_putc(char c) { tty_putchar(c); }
 
 static void kprintf_uint(unsigned int v, int base, int upper) {
     char buf[32]; int i = 31; buf[31] = 0;
@@ -51,5 +52,5 @@ void kprintf(const char *fmt, ...) {
         }
     }
     va_end(ap);
-    vga_flush();
+    tty_flush();
 }

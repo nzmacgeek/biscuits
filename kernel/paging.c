@@ -32,6 +32,18 @@ void pmm_free_frame(uint32_t phys) {
     pmm_clear(phys / PAGE_SIZE);
 }
 
+uint32_t pmm_total_frames(void) {
+    return PMM_FRAMES;
+}
+
+uint32_t pmm_used_frames(void) {
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < PMM_FRAMES; i++) {
+        if (pmm_test(i)) used++;
+    }
+    return used;
+}
+
 // ---------------------------------------------------------------------------
 // Page directory and tables
 // We keep one kernel page directory, identity-mapped for the first 4MB.

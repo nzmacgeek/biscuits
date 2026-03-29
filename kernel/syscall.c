@@ -8,6 +8,7 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../drivers/vga.h"
+#include "tty.h"
 #include "idt.h"
 #include "syscall.h"
 #include "process.h"
@@ -23,25 +24,22 @@ void syscall_init(void) {
     kprintf("%s\n", MSG_SYSCALL_INIT);
 }
 
-// SYS_WRITE (1): fd=1 -> stdout -> VGA
+// SYS_WRITE (1): fd=1 -> stdout -> TTY
 static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
     if (fd == 1 || fd == 2) {
         // Bounds check: refuse oversized writes to avoid flooding
         if (len > 4096) len = 4096;
-        for (size_t i = 0; i < len; i++) vga_putchar(buf[i]);
+        tty_write(buf, len);
+        tty_flush();
         return (int32_t)len;
     }
     return -1; // other fds not yet implemented
 }
 
-// SYS_READ (0): fd=0 -> stdin -> keyboard
+// SYS_READ (0): fd=0 -> stdin -> TTY
 static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
     if (fd == 0) {
-        if (len == 0) return 0;
-        // Read one character from keyboard (blocking)
-        extern char keyboard_getchar(void);
-        buf[0] = keyboard_getchar();
-        return 1;
+        return tty_read(buf, len);
     }
     return -1;
 }

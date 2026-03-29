@@ -29,6 +29,7 @@
 #include "syscall.h"
 #include "multiuser.h"
 #include "sysinfo.h"
+#include "tty.h"
 #include "elf.h"
 #include "swap.h"
 #include "../drivers/keyboard.h"
@@ -90,24 +91,22 @@ static void idle_task(void) {
 // Arguments pushed by boot.asm: eax=multiboot magic, ebx=multiboot info ptr
 // ---------------------------------------------------------------------------
 void kernel_main(uint32_t magic, uint32_t *mboot_info) {
+    uint32_t ram_mb = i386_multiboot_ram_mb(mboot_info);
 
     // Step 1: Screen up first so we can print messages
     vga_init();
+    tty_init();
 
     // Validate multiboot magic
     if (magic != 0x2BADB002) {
         bluey_panic("Not booted by a Multiboot-compliant bootloader! (Bandit: 'What?!')");
     }
 
-    bluey_boot_show_splash("I386", i386_multiboot_ram_mb(mboot_info));
+    bluey_boot_show_splash("I386", ram_mb);
 
     // Step 1b: Syslog — initialise ring buffer before any other subsystem
     syslog_init();
     syslog_info("KERN", "BlueyOS kernel starting up");
-
-    // Step 1c: VT100 terminal emulator — initialised here but output routing
-    // (kprintf → vt100_putchar) is deferred until the console path is wired.
-    // vt100_init();  /* TODO: wire kprintf/vga output through vt100_putchar */
 
     kprintf("  %s\n", BLUEYOS_VERSION_STRING);
     kprintf("  Codename : %s\n", BLUEYOS_CODENAME);
@@ -138,6 +137,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     paging_init();
 
     // Step 7: System information (hostname, timezone, epoch)
+    sysinfo_set_ram_mb(ram_mb);
     sysinfo_init();
 
     // Step 8: Multi-user system (passwd + shadow)
@@ -215,4 +215,3 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Should never reach here
     for (;;) __asm__ volatile("hlt");
 }
-

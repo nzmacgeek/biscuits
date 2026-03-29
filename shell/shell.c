@@ -19,8 +19,11 @@
 #include "../fs/vfs.h"
 #include "../kernel/process.h"
 #include "../kernel/sysinfo.h"
+#include "../kernel/kheap.h"
+#include "../kernel/paging.h"
 #include "../kernel/swap.h"
 #include "../kernel/syslog.h"
+#include "../kernel/tty.h"
 #include "../drivers/net/network.h"
 #include "../net/tcpip.h"
 #include "../net/icmp.h"
@@ -42,7 +45,7 @@ static void shell_readline(void) {
     linebuf[0] = '\0';
 
     while (1) {
-        char c = keyboard_getchar();
+        char c = tty_getchar();
 
         if (c == '\n' || c == '\r') {
             kprintf("\n");
@@ -137,6 +140,8 @@ static void cmd_help(int argc, char **argv) {
     kprintf("  ifconfig        show network interfaces\n");
     kprintf("  ping <ip>       send ICMP echo request\n");
     kprintf("  swapinfo        show swap statistics\n");
+    kprintf("  meminfo         show kernel memory statistics\n");
+    kprintf("  free            show a summary of memory usage\n");
     kprintf("  dmesg           show kernel log (ring buffer)\n");
     kprintf("  date            show current time\n");
     kprintf("  version         show BlueyOS version\n");
@@ -250,8 +255,8 @@ static void cmd_cd(int argc, char **argv) {
 
 static void cmd_uname(int argc, char **argv) {
     (void)argc; (void)argv;
-    kprintf("BlueyOS %s %s blueyos i386 GNU/BlueyOS\n",
-            BLUEYOS_VERSION_STRING, BLUEYOS_CODENAME);
+    kprintf("BlueyOS %s %s %s i386 GNU/BlueyOS\n",
+            BLUEYOS_VERSION_STRING, BLUEYOS_CODENAME, sysinfo_get_hostname());
 }
 
 static void cmd_whoami(int argc, char **argv) {
@@ -343,6 +348,51 @@ static void cmd_swapinfo(int argc, char **argv) {
     swap_print_info();
 }
 
+static void cmd_meminfo(int argc, char **argv) {
+    (void)argc; (void)argv;
+
+    uint32_t heap_total = 0, heap_used = 0, heap_free = 0;
+    uint32_t mem_total_frames = pmm_total_frames();
+    uint32_t mem_used_frames  = pmm_used_frames();
+    uint32_t mem_free_frames  = mem_total_frames - mem_used_frames;
+    uint32_t swap_total = swap_total_pages();
+    uint32_t swap_used  = swap_used_pages();
+    uint32_t ram_total_mb = sysinfo_get_ram_mb();
+
+    kheap_get_stats(&heap_total, &heap_used, &heap_free);
+
+    kprintf("MemTotal: %u kB\n", mem_total_frames * 4);
+    kprintf("MemUsed:  %u kB\n", mem_used_frames * 4);
+    kprintf("MemFree:  %u kB\n", mem_free_frames * 4);
+    if (ram_total_mb) {
+        kprintf("RAMBoot:  %u MB detected by bootloader\n", ram_total_mb);
+    }
+    kprintf("HeapTotal:%u kB\n", heap_total / 1024);
+    kprintf("HeapUsed: %u kB\n", heap_used / 1024);
+    kprintf("HeapFree: %u kB\n", heap_free / 1024);
+    kprintf("SwapTotal:%u kB\n", swap_total * 4);
+    kprintf("SwapUsed: %u kB\n", swap_used * 4);
+    kprintf("SwapFree: %u kB\n", (swap_total - swap_used) * 4);
+}
+
+static void cmd_free(int argc, char **argv) {
+    (void)argc; (void)argv;
+
+    uint32_t heap_total = 0, heap_used = 0, heap_free = 0;
+    uint32_t mem_total_frames = pmm_total_frames();
+    uint32_t mem_used_frames  = pmm_used_frames();
+    uint32_t mem_free_frames  = mem_total_frames - mem_used_frames;
+    uint32_t swap_total = swap_total_pages();
+    uint32_t swap_used  = swap_used_pages();
+
+    kheap_get_stats(&heap_total, &heap_used, &heap_free);
+
+    kprintf("type  total_kB used_kB free_kB\n");
+    kprintf("mem   %u %u %u\n", mem_total_frames * 4, mem_used_frames * 4, mem_free_frames * 4);
+    kprintf("heap  %u %u %u\n", heap_total / 1024, heap_used / 1024, heap_free / 1024);
+    kprintf("swap  %u %u %u\n", swap_total * 4, swap_used * 4, (swap_total - swap_used) * 4);
+}
+
 static void cmd_dmesg(int argc, char **argv) {
     (void)argc; (void)argv;
     syslog_dmesg();
@@ -415,6 +465,8 @@ static const shell_cmd_t commands[] = {
     { "ifconfig", cmd_ifconfig },
     { "ping",     cmd_ping     },
     { "swapinfo", cmd_swapinfo },
+    { "meminfo",  cmd_meminfo  },
+    { "free",     cmd_free     },
     { "dmesg",    cmd_dmesg    },
     { "date",     cmd_date     },
     { "version",  cmd_version  },
