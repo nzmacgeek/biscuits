@@ -8,16 +8,36 @@
 # ⚠️  VIBE CODED RESEARCH PROJECT — NOT FOR PRODUCTION USE ⚠️
 #
 # Usage:
-#   make                     - build kernel ELF
-#   make iso                 - build bootable ISO image
-#   make run                 - build ISO and launch in QEMU
+#   make                     - build kernel ELF (i386)
+#   make ARCH=m68k           - build M68K kernel for Macintosh LC III
+#   make iso                 - build bootable ISO image (i386 only)
+#   make run                 - build ISO and launch in QEMU (i386 only)
 #   make version             - print version information
 #   make clean               - remove build artifacts
 #   make BUILD_NUMBER=N      - build with a specific build number
+#
+# M68K prerequisites (Ubuntu/Debian):
+#   sudo tools/install-m68k-toolchain.sh
 
-CC  = gcc
-AS  = nasm
-LD  = ld
+# ---------------------------------------------------------------------------
+# Architecture selection
+# Default: i386 (x86 32-bit, existing hardware).
+# Set ARCH=m68k to target the Macintosh LC III (Motorola MC68030).
+# ---------------------------------------------------------------------------
+ARCH ?= i386
+
+# ---------------------------------------------------------------------------
+# Per-architecture toolchain selection
+# ---------------------------------------------------------------------------
+ifeq ($(ARCH),m68k)
+  CC  = m68k-linux-gnu-gcc
+  AS  = m68k-linux-gnu-as
+  LD  = m68k-linux-gnu-ld
+else
+  CC  = gcc
+  AS  = nasm
+  LD  = ld
+endif
 
 # ---------------------------------------------------------------------------
 # Build version injection
@@ -30,28 +50,55 @@ BUILD_TIME   := $(shell date -u '+%H:%M:%S')
 BUILD_HOST   := $(shell hostname 2>/dev/null || echo unknown-host)
 BUILD_USER   := $(shell whoami  2>/dev/null || echo unknown-user)
 
-CFLAGS = \
-    -m32 \
-    -std=gnu11 \
-    -ffreestanding \
-    -O2 \
-    -Wall \
-    -Wextra \
-    -Wno-unused-parameter \
-    -fno-stack-protector \
-    -nostdlib \
-    -nostdinc \
-    -fno-builtin \
-    -fno-pic \
-    -DBLUEYOS_BUILD_NUMBER=$(BUILD_NUMBER) \
-    -DBLUEYOS_BUILD_HOST=\"$(BUILD_HOST)\" \
-    -DBLUEYOS_BUILD_USER=\"$(BUILD_USER)\" \
-    -I include \
-    -I .
-
-ASFLAGS = -f elf32
-
-LDFLAGS = -m elf_i386 -T linker.ld --no-warn-rwx-segments
+# ---------------------------------------------------------------------------
+# Architecture-specific compiler / assembler / linker flags
+# ---------------------------------------------------------------------------
+ifeq ($(ARCH),m68k)
+  CFLAGS = \
+      -m68030 \
+      -std=gnu11 \
+      -ffreestanding \
+      -O2 \
+      -Wall \
+      -Wextra \
+      -Wno-unused-parameter \
+      -fno-stack-protector \
+      -nostdlib \
+      -nostdinc \
+      -fno-builtin \
+      -fno-pic \
+      -DBLUEYOS_ARCH_M68K \
+      -DBLUEYOS_PLATFORM_MAC_LC3 \
+      -DBLUEYOS_BUILD_NUMBER=$(BUILD_NUMBER) \
+      -DBLUEYOS_BUILD_HOST=\"$(BUILD_HOST)\" \
+      -DBLUEYOS_BUILD_USER=\"$(BUILD_USER)\" \
+      -I include \
+      -I .
+  ASFLAGS = --m68030
+  LDFLAGS = -T arch/m68k/linker.ld --no-warn-rwx-segments
+else
+  CFLAGS = \
+      -m32 \
+      -std=gnu11 \
+      -ffreestanding \
+      -O2 \
+      -Wall \
+      -Wextra \
+      -Wno-unused-parameter \
+      -fno-stack-protector \
+      -nostdlib \
+      -nostdinc \
+      -fno-builtin \
+      -fno-pic \
+      -DBLUEYOS_ARCH_I386 \
+      -DBLUEYOS_BUILD_NUMBER=$(BUILD_NUMBER) \
+      -DBLUEYOS_BUILD_HOST=\"$(BUILD_HOST)\" \
+      -DBLUEYOS_BUILD_USER=\"$(BUILD_USER)\" \
+      -I include \
+      -I .
+  ASFLAGS = -f elf32
+  LDFLAGS = -m elf_i386 -T linker.ld --no-warn-rwx-segments
+endif
 
 # ---------------------------------------------------------------------------
 # Source files
