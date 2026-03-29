@@ -71,6 +71,7 @@ C_SOURCES = \
     kernel/sha256.c \
     kernel/multiuser.c \
     kernel/sysinfo.c \
+    kernel/swap.c \
     drivers/vga.c \
     drivers/keyboard.c \
     drivers/ata.c \
@@ -79,6 +80,14 @@ C_SOURCES = \
     drivers/net/network.c \
     fs/vfs.c \
     fs/fat.c \
+    fs/blueyfs.c \
+    net/tcpip.c \
+    net/arp.c \
+    net/ip.c \
+    net/icmp.c \
+    net/udp.c \
+    net/tcp.c \
+    shell/shell.c \
     lib/string.c \
     lib/stdio.c \
     lib/stdlib.c
@@ -102,7 +111,7 @@ ISO    = blueyos.iso
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso run version clean help
+.PHONY: all iso run version clean help tools-host
 
 all: $(TARGET)
 	@echo ""
@@ -136,9 +145,16 @@ version:
 
 clean:
 	@find . \( -name '*.o' -o -name '*.d' \) -not -path './.git/*' -delete
-	@rm -f $(TARGET) $(ISO)
+	@rm -f $(TARGET) $(ISO) tools/mkfs_blueyfs
 	@rm -rf isodir/
 	@echo "  Clean! Bluey would be proud."
+
+tools-host: tools/mkfs_blueyfs
+	@echo "  Host tools built!"
+
+tools/mkfs_blueyfs: tools/mkfs_blueyfs.c
+	gcc -O2 -Wall -Wextra -o $@ $<
+	@echo "  [CC]  $< (host)"
 
 help:
 	@echo "BlueyOS Build System - 'Let's Play!' - Bluey"
@@ -146,6 +162,7 @@ help:
 	@echo "  make                  - build the kernel ELF"
 	@echo "  make iso              - create bootable ISO (needs grub-mkrescue)"
 	@echo "  make run              - build ISO and launch in QEMU"
+	@echo "  make tools-host       - build host-side tools (mkfs.biscuitfs)"
 	@echo "  make version          - print version information"
 	@echo "  make clean            - remove all build artifacts"
 	@echo "  make BUILD_NUMBER=N   - set build number (default: 1)"
