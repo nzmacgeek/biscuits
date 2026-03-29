@@ -117,8 +117,17 @@ void kernel_main_m68k(void) {
     // Step 5: TODO — mount BiscuitFS / FAT16 from SCSI disk.
 
     // Step 6: TODO — launch built-in shell over SCC (no VGA text mode on M68K).
+    scc_puts("[OK]   BlueyOS M68K stub complete. Initialising framebuffer...\n");
 
-    scc_puts("[OK]   BlueyOS M68K stub complete. Halting (work in progress).\n");
+    // Initialise minimal DAFB driver and draw a test pattern so the
+    // QEMU VNC/framebuffer shows pixels. Implemented as a best-effort
+    // helper (may be emulator-dependent).
+    extern void dafb_init(void);
+    extern void dafb_draw_test(void);
+    dafb_init();
+    dafb_draw_test();
+
+    scc_puts("[OK]   Framebuffer test drawn. Halting (work in progress).\n");
     scc_puts("       \"This is the best day EVER!\" - Bluey Heeler\n\n");
 
     // Halt — future work will loop here running the scheduler.

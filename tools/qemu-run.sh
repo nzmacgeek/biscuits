@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # tools/qemu-run.sh - Launch BlueyOS in QEMU
 # "Mum! Dad! Come play!" - Bluey and Bingo
 #

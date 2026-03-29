@@ -20,9 +20,9 @@ stack_bottom:
     resb 16384          ; 16 KiB kernel stack
 stack_top:
 
+section .note.GNU-stack noalloc noexec nowrite progbits
 section .text
 bits 32
-section .note.GNU-stack noalloc noexec nowrite progbits
 global _start
 extern kernel_main
 

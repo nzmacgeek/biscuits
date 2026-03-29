@@ -83,7 +83,7 @@ ifeq ($(ARCH),m68k)
       -DBLUEYOS_BUILD_USER=\"$(BUILD_USER)\" \
       -I include \
       -I .
-  ASFLAGS = --m68030
+  ASFLAGS = -m68030
   LDFLAGS = -T arch/m68k/linker.ld --no-warn-rwx-segments
 else ifeq ($(ARCH),ppc)
   CFLAGS = \
@@ -190,6 +190,8 @@ I386_ASM_SOURCES = \
 # M68K kernel sources (stub — Macintosh LC III port in progress)
 M68K_C_SOURCES = \
     arch/m68k/kernel_m68k.c \
+  arch/m68k/platform.c \
+  arch/m68k/dafb.c \
     lib/string.c \
     lib/stdio.c \
     lib/stdlib.c
@@ -236,6 +238,22 @@ endif
 OBJECTS     = $(ASM_OBJECTS) $(C_OBJECTS)
 
 # ---------------------------------------------------------------------------
+
+# Ensure object files are rebuilt when ARCH changes: maintain a small stamp
+# file `.arch_record` containing the last-built ARCH. When ARCH differs the
+# stamp is updated which forces object files to be rebuilt.
+ARCH_STAMP := .arch_record
+
+$(ARCH_STAMP):
+	@printf "%s\n" "$(ARCH)" > $(ARCH_STAMP).tmp
+	@if [ -f $(ARCH_STAMP) ] && cmp -s $(ARCH_STAMP) $(ARCH_STAMP).tmp; then \
+		rm -f $(ARCH_STAMP).tmp; \
+	else \
+		mv $(ARCH_STAMP).tmp $(ARCH_STAMP); \
+	fi
+
+$(OBJECTS): $(ARCH_STAMP)
+
 # Targets
 # ---------------------------------------------------------------------------
 .PHONY: all iso run version clean help tools-host toolinfo

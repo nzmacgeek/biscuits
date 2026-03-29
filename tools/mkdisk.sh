@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # tools/mkdisk.sh - Create a bootable BlueyOS ISO image
 # "Time to pack up and go home!" - Bluey
 #

@@ -15,6 +15,7 @@
 #include "../drivers/vga.h"
 #include "../fs/vfs.h"
 #include "syslog.h"
+#include <stdarg.h>
 
 // ---------------------------------------------------------------------------
 // Ring buffer state
@@ -118,6 +119,13 @@ void syslog_init(void) {
     syslog_seq       = 0;
     syslog_ready     = 1;
 }
+    static int syslog_snprintf(char *out, size_t sz, const char *fmt, ...) {
+        va_list ap;
+        va_start(ap, fmt);
+        int r = syslog_vsnprintf(out, sz, fmt, ap);
+        va_end(ap);
+        return r;
+    }
 
 void syslog_write(int level, const char *tag, const char *fmt, ...) {
     if (!syslog_ready) return;
@@ -206,19 +214,17 @@ void syslog_flush_to_fs(void) {
     uint32_t n     = syslog_count_val;
     uint32_t start = (syslog_head - n) % SYSLOG_RING_ENTRIES;
     char     line[SYSLOG_MSG_MAX + 64];
+        int len; // Declare len before use
 
     for (uint32_t i = 0; i < n; i++) {
         syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
-        int len = syslog_vsnprintf(line, sizeof(line), "[%4u] %s [%s] %s\n",
-                                   (uint32_t)0 /* ap unused for fixed args */);
-        // vsnprintf above can't handle %u with a va_list easily — build manually
         // Re-format using itoa helpers:
         char seqbuf[8], lvlbuf[10];
         syslog_itoa(e->seq, seqbuf, 10, 0);
         strncpy(lvlbuf, level_str((int)e->level), sizeof(lvlbuf) - 1);
         lvlbuf[sizeof(lvlbuf) - 1] = '\0';
 
-        len = syslog_vsnprintf(line, sizeof(line), "[    ] %s [%s] %s\n",
+            len = syslog_snprintf(line, sizeof(line), "[    ] %s [%s] %s\n",
                                lvlbuf, e->tag, e->msg);
         // Patch the sequence number in manually (positions 1-4)
         char seqtmp[8];

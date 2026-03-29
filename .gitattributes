@@ -1,0 +1,17 @@
+# Enforce LF in repository for text files to keep Windows and WSL consistent
+* text=auto
+
+# Force LF for common source and script filetypes
+*.sh     text eol=lf
+*.S      text eol=lf
+*.asm    text eol=lf
+*.c      text eol=lf
+*.h      text eol=lf
+*.ld     text eol=lf
+Makefile text eol=lf
+*.cfg    text eol=lf
+*.md     text eol=lf
+*.txt    text eol=lf
+
+# Binary files (images, disks) should not be line-normalized
+*.iso    binary
