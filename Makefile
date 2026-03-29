@@ -30,6 +30,7 @@
 # Set ARCH=ppc  to target the iMac G4 "Sunflower" (PowerPC G4 / MPC7450).
 # ---------------------------------------------------------------------------
 ARCH ?= i386
+.DEFAULT_GOAL := all
 
 # ---------------------------------------------------------------------------
 # Per-architecture toolchain selection

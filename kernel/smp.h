@@ -2,16 +2,11 @@
 #include "../include/types.h"
 
 typedef struct {
-    uint8_t  cpuid_supported;
+    uint8_t  mp_table_present;
     uint8_t  apic_supported;
-    uint8_t  x2apic_supported;
-    uint8_t  htt_supported;
     uint32_t detected_cpus;
     uint32_t booted_cpus;
-    uint32_t family;
-    uint32_t model;
-    uint32_t stepping;
-    char     vendor[13];
+    char     topology_source[16];
 } smp_info_t;
 
 void              smp_init(void);

@@ -14,6 +14,7 @@ sudo apt-get install -y \
     nasm \
     gcc-multilib \
     binutils \
+    mtools \
     qemu-system-x86 \
     grub-pc-bin \
     grub-common \
@@ -100,6 +101,7 @@ make run
 ```bash
 qemu-system-i386 \
     -cdrom blueyos.iso \
+    -cpu pentium \
     -m 256M \
     -smp 4 \
     -serial stdio \

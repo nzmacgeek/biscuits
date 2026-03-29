@@ -95,6 +95,7 @@ sudo apt-get install -y \
     nasm \
     gcc-multilib \
     binutils \
+    mtools \
     qemu-system-x86 \
     grub-pc-bin \
     grub-common \
@@ -109,7 +110,7 @@ sudo apt-get install -y \
 make                   # Build kernel ELF (build #1)
 make BUILD_NUMBER=42   # Build with a specific build number
 make iso               # Create bootable ISO
-make run               # Launch in QEMU (defaults to 4 virtual CPUs)
+make run               # Launch in QEMU (Pentium CPU model, 4 virtual CPUs by default)
 make version           # Print version info
 make clean             # Clean build artifacts
 ```
