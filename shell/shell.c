@@ -19,8 +19,11 @@
 #include "../fs/vfs.h"
 #include "../kernel/process.h"
 #include "../kernel/sysinfo.h"
+#include "../kernel/smp.h"
 #include "../kernel/swap.h"
 #include "../kernel/syslog.h"
+#include "../kernel/kheap.h"
+#include "../kernel/paging.h"
 #include "../drivers/net/network.h"
 #include "../net/tcpip.h"
 #include "../net/icmp.h"
@@ -133,6 +136,8 @@ static void cmd_help(int argc, char **argv) {
     kprintf("  uname           print system information\n");
     kprintf("  whoami          print current user name\n");
     kprintf("  ps              list running processes\n");
+    kprintf("  cpuinfo         show CPU and SMP status\n");
+    kprintf("  meminfo         show memory and allocator usage\n");
     kprintf("  mount           show mounted filesystems\n");
     kprintf("  ifconfig        show network interfaces\n");
     kprintf("  ping <ip>       send ICMP echo request\n");
@@ -282,6 +287,35 @@ static void cmd_ps(int argc, char **argv) {
     }
 }
 
+static void cmd_cpuinfo(int argc, char **argv) {
+    (void)argc; (void)argv;
+    smp_print_info();
+}
+
+static void cmd_meminfo(int argc, char **argv) {
+    uint32_t heap_total, heap_used, heap_free;
+    uint32_t total_frames, used_frames, free_frames;
+
+    (void)argc; (void)argv;
+
+    kheap_get_stats(&heap_total, &heap_used, &heap_free);
+    pmm_get_stats(&total_frames, &used_frames, &free_frames);
+
+    if (sysinfo_get_total_ram_mb() != 0) {
+        kprintf("Detected RAM      : %u MB (bootloader report)\n", sysinfo_get_total_ram_mb());
+    } else {
+        kprintf("Detected RAM      : unavailable\n");
+    }
+    kprintf("Kernel heap total : %u bytes\n", heap_total);
+    kprintf("Kernel heap used  : %u bytes\n", heap_used);
+    kprintf("Kernel heap free  : %u bytes\n", heap_free);
+    kprintf("PMM window total  : %u frames (%u MB)\n",
+            total_frames, (total_frames * PAGE_SIZE) / (1024u * 1024u));
+    kprintf("PMM frames used   : %u\n", used_frames);
+    kprintf("PMM frames free   : %u\n", free_frames);
+    kprintf("Tip               : use swapinfo for swap pages and version for build info\n");
+}
+
 static void cmd_mount(int argc, char **argv) {
     (void)argc; (void)argv;
     vfs_print_mounts();
@@ -411,6 +445,9 @@ static const shell_cmd_t commands[] = {
     { "uname",    cmd_uname    },
     { "whoami",   cmd_whoami   },
     { "ps",       cmd_ps       },
+    { "cpuinfo",  cmd_cpuinfo  },
+    { "smpinfo",  cmd_cpuinfo  },
+    { "meminfo",  cmd_meminfo  },
     { "mount",    cmd_mount    },
     { "ifconfig", cmd_ifconfig },
     { "ping",     cmd_ping     },

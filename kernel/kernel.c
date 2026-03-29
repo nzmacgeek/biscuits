@@ -29,6 +29,7 @@
 #include "syscall.h"
 #include "multiuser.h"
 #include "sysinfo.h"
+#include "smp.h"
 #include "elf.h"
 #include "swap.h"
 #include "../drivers/keyboard.h"
@@ -90,6 +91,7 @@ static void idle_task(void) {
 // Arguments pushed by boot.asm: eax=multiboot magic, ebx=multiboot info ptr
 // ---------------------------------------------------------------------------
 void kernel_main(uint32_t magic, uint32_t *mboot_info) {
+    uint32_t ram_mb = i386_multiboot_ram_mb(mboot_info);
 
     // Step 1: Screen up first so we can print messages
     vga_init();
@@ -99,7 +101,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
         bluey_panic("Not booted by a Multiboot-compliant bootloader! (Bandit: 'What?!')");
     }
 
-    bluey_boot_show_splash("I386", i386_multiboot_ram_mb(mboot_info));
+    bluey_boot_show_splash("I386", ram_mb);
 
     // Step 1b: Syslog — initialise ring buffer before any other subsystem
     syslog_init();
@@ -123,6 +125,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     kprintf("%s\n", MSG_IDT_INIT);
     kprintf("%s\n", MSG_ISR_INIT);
     kprintf("%s\n", MSG_IRQ_INIT);
+    smp_init();
 
     // Step 3: Timer - enables IRQ0, enables interrupts
     timer_init(1000);   // 1000 Hz = 1ms resolution
@@ -138,6 +141,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     paging_init();
 
     // Step 7: System information (hostname, timezone, epoch)
+    sysinfo_set_total_ram_mb(ram_mb);
     sysinfo_init();
 
     // Step 8: Multi-user system (passwd + shadow)
@@ -199,6 +203,9 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     kprintf("\n%s\n", MSG_DONE);
     vga_set_color(VGA_WHITE, VGA_BLACK);
     kprintf("Hostname : %s.%s\n", sysinfo_get_hostname(), sysinfo_get_domainname());
+    kprintf("Memory   : %u MB detected\n", sysinfo_get_total_ram_mb());
+    kprintf("CPUs     : %u detected, %u online\n",
+            smp_get_info()->detected_cpus, smp_get_info()->booted_cpus);
     kprintf("Timezone : %s (UTC+10, Brisbane - no DST because Queensland!)\n",
             sysinfo_get_timezone()->name);
     kprintf("Epoch    : %s\n", BANDIT_EPOCH_NAME);
@@ -215,4 +222,3 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Should never reach here
     for (;;) __asm__ volatile("hlt");
 }
-

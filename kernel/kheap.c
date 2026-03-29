@@ -79,3 +79,19 @@ void kheap_free(void *ptr) {
         } else cur = cur->next;
     }
 }
+
+void kheap_get_stats(uint32_t *total_bytes, uint32_t *used_bytes, uint32_t *free_bytes) {
+    uint32_t total = 0;
+    uint32_t used = 0;
+    uint32_t free = 0;
+
+    for (block_hdr_t *cur = heap_start; cur; cur = cur->next) {
+        total += cur->size;
+        if (cur->free) free += cur->size;
+        else           used += cur->size;
+    }
+
+    if (total_bytes) *total_bytes = total;
+    if (used_bytes)  *used_bytes = used;
+    if (free_bytes)  *free_bytes = free;
+}

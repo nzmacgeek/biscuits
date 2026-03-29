@@ -157,6 +157,7 @@ I386_C_SOURCES = \
     kernel/sha256.c \
     kernel/multiuser.c \
     kernel/sysinfo.c \
+    kernel/smp.c \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \

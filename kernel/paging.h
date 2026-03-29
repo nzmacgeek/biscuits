@@ -19,6 +19,7 @@ uint32_t paging_virt_to_phys(uint32_t virt);
 // Physical frame allocator
 uint32_t pmm_alloc_frame(void);
 void     pmm_free_frame(uint32_t phys);
+void     pmm_get_stats(uint32_t *total_frames, uint32_t *used_frames, uint32_t *free_frames);
 
 // Called from isr.c as page fault handler (ISR 14)
 void page_fault_handler(registers_t regs);

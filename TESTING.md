@@ -101,6 +101,7 @@ make run
 qemu-system-i386 \
     -cdrom blueyos.iso \
     -m 256M \
+    -smp 4 \
     -serial stdio \
     -no-reboot \
     -no-shutdown
@@ -161,6 +162,7 @@ Each subsystem prints a message as it initialises:
 [IDT]  Chilli configured the Interrupts - she's got it sorted!
 [ISR]  Exception handlers online - no crashing allowed at this playdate!
 [IRQ]  Hardware interrupts remapped - Nana would be proud!
+[SMP]  Detected 4 logical CPUs (with APIC) - bootstrap CPU online
 [TMR]  Bingo's Tick Tock Timer is ticking!
 [KBD]  Bingo's Keyboard ready - Tap tap tap!
 [HEP]  Kernel heap ready - plenty of room to play!
@@ -193,7 +195,15 @@ BlueyOS is ready. Type your commands below.
 "This is the best day EVER!" - Bluey Heeler
 ```
 
-After this the kernel enters its idle loop (halting the CPU between timer interrupts).
+After this the shell prompt appears. Useful diagnostic commands include:
+
+```text
+version
+cpuinfo
+meminfo
+swapinfo
+dmesg
+```
 
 ---
 

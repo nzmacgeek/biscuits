@@ -10,6 +10,7 @@
 
 static char hostname[64]   = "blueyos";
 static char domainname[64] = "local";
+static uint32_t total_ram_mb = 0;
 
 static timezone_t brissy_tz = {
     .offset_seconds = BLUEYOS_TZ_OFFSET_SEC,
@@ -25,6 +26,7 @@ void sysinfo_init(void) {
 
 const char *sysinfo_get_hostname(void)   { return hostname; }
 const char *sysinfo_get_domainname(void) { return domainname; }
+uint32_t sysinfo_get_total_ram_mb(void)  { return total_ram_mb; }
 
 void sysinfo_set_hostname(const char *name) {
     strncpy(hostname, name, sizeof(hostname) - 1);
@@ -37,6 +39,10 @@ void sysinfo_set_domainname(const char *name) {
 }
 
 const timezone_t *sysinfo_get_timezone(void) { return &brissy_tz; }
+
+void sysinfo_set_total_ram_mb(uint32_t ram_mb) {
+    total_ram_mb = ram_mb;
+}
 
 // ---------------------------------------------------------------------------
 // Epoch conversion
