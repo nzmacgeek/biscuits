@@ -1,0 +1,19 @@
+# BlueyOS - Build Artifacts
+# "Time to tidy up!" - Chilli Heeler
+
+# Object files
+*.o
+*.d
+
+# Kernel ELF and disk images
+blueyos.elf
+blueyos.iso
+
+# ISO build directory
+isodir/
+
+# Editor junk
+*.swp
+*.swo
+*~
+.DS_Store

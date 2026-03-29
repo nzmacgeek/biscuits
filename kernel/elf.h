@@ -1,0 +1,50 @@
+#pragma once
+// BlueyOS ELF32 Loader - "Judo's ELF Loader: Flipping programs into memory!"
+// Episode ref: "Judo" - she flips everyone, just like ELF flips segments into RAM
+// Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
+// licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
+#include "../include/types.h"
+
+// ELF32 magic and constants
+#define ELF_MAGIC    0x464C457F   // 0x7F 'E' 'L' 'F' (little-endian uint32)
+#define ET_EXEC      2            // executable file
+#define ET_DYN       3            // shared object
+#define EM_386       3            // Intel 80386
+#define PT_LOAD      1            // loadable segment
+#define PF_X         0x1          // segment executable
+#define PF_W         0x2          // segment writable
+#define PF_R         0x4          // segment readable
+
+// ELF32 file header
+typedef struct __attribute__((packed)) {
+    uint8_t  e_ident[16];   // magic, class, data, version, OS/ABI
+    uint16_t e_type;        // ET_EXEC etc.
+    uint16_t e_machine;     // EM_386
+    uint32_t e_version;
+    uint32_t e_entry;       // entry point virtual address
+    uint32_t e_phoff;       // program header table offset
+    uint32_t e_shoff;       // section header table offset
+    uint32_t e_flags;
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;       // number of program headers
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
+} elf32_ehdr_t;
+
+// ELF32 program header
+typedef struct __attribute__((packed)) {
+    uint32_t p_type;    // PT_LOAD etc.
+    uint32_t p_offset;  // offset in file
+    uint32_t p_vaddr;   // virtual address to load at
+    uint32_t p_paddr;   // physical address (usually == vaddr for exec)
+    uint32_t p_filesz;  // size in file
+    uint32_t p_memsz;   // size in memory (>= filesz, zero-pad the rest)
+    uint32_t p_flags;   // PF_X | PF_W | PF_R
+    uint32_t p_align;
+} elf32_phdr_t;
+
+// Returns 0 on success, -1 on error. Sets *entry_out to entry point.
+int elf_load(const uint8_t *data, size_t len, uint32_t *entry_out);
+int elf_validate(const uint8_t *data, size_t len);
