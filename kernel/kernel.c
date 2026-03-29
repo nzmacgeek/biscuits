@@ -35,11 +35,14 @@
 #include "../drivers/driver.h"
 #include "../drivers/net/network.h"
 #include "../drivers/net/ne2000.h"
+#include "../drivers/vt100.h"
 #include "../fs/vfs.h"
 #include "../fs/fat.h"
 #include "../fs/blueyfs.h"
 #include "../net/tcpip.h"
 #include "../shell/shell.h"
+#include "syslog.h"
+#include "netcfg.h"
 
 // Kernel end symbol from linker script
 extern uint32_t kernel_end;
@@ -81,6 +84,14 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     vga_set_color(BLUEY_BLUE, VGA_BLACK);
     kprintf(BLUEY_BANNER);
     vga_set_color(VGA_WHITE, VGA_BLACK);
+
+    // Step 1b: Syslog — initialise ring buffer before any other subsystem
+    syslog_init();
+    syslog_info("KERN", "BlueyOS kernel starting up");
+
+    // Step 1c: VT100 terminal emulator — between VGA and the shell
+    vt100_init();
+    syslog_info("VT100", "VT100 terminal emulator ready (TERM=vt100)");
 
     // Version and build information
     kprintf("  %s\n", BLUEYOS_VERSION_STRING);
@@ -144,6 +155,10 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
                 kprintf("[VFS]  No recognised filesystem - running diskless\n");
             }
         }
+        // Apply network interface configuration from /etc/interfaces
+        netcfg_apply();
+        // Flush early boot log to /var/log/kernel.log
+        syslog_flush_to_fs();
     }
 
     // Step 12: Syscall interface (int 0x80)
