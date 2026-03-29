@@ -14,6 +14,7 @@ typedef struct block_hdr {
 
 static block_hdr_t *heap_start = NULL;
 static uint32_t    heap_end   = 0;
+static uint32_t    heap_size  = 0;
 
 void kheap_init(uint32_t start, uint32_t size) {
     heap_start = (block_hdr_t*)start;
@@ -22,6 +23,7 @@ void kheap_init(uint32_t start, uint32_t size) {
     heap_start->free  = 1;
     heap_start->next  = NULL;
     heap_end = start + size;
+    heap_size = size - sizeof(block_hdr_t);
     kprintf("%s\n", "[HEP]  Kernel heap ready - plenty of room to play!");
 }
 
@@ -78,4 +80,24 @@ void kheap_free(void *ptr) {
             cur->next  = cur->next->next;
         } else cur = cur->next;
     }
+}
+
+uint32_t kheap_total_bytes(void) {
+    return heap_size;
+}
+
+uint32_t kheap_free_bytes(void) {
+    uint32_t free_bytes = 0;
+    block_hdr_t *cur = heap_start;
+    while (cur) {
+        if (cur->free) free_bytes += cur->size;
+        cur = cur->next;
+    }
+    return free_bytes;
+}
+
+uint32_t kheap_used_bytes(void) {
+    uint32_t total = kheap_total_bytes();
+    uint32_t free  = kheap_free_bytes();
+    return (free <= total) ? (total - free) : 0;
 }

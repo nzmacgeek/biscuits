@@ -10,6 +10,7 @@
 
 static char hostname[64]   = "blueyos";
 static char domainname[64] = "local";
+static uint32_t total_ram_mb = 0;
 
 static timezone_t brissy_tz = {
     .offset_seconds = BLUEYOS_TZ_OFFSET_SEC,
@@ -21,6 +22,9 @@ void sysinfo_init(void) {
     kprintf("[SYS]  Hostname: %s.%s  Timezone: %s (UTC+10, no DST - Queensland style!)\n",
             hostname, domainname, brissy_tz.name);
     kprintf("[SYS]  Bandit's Birthday Epoch: %s\n", BANDIT_EPOCH_NAME);
+    if (total_ram_mb) {
+        kprintf("[SYS]  Detected RAM: %u MB\n", total_ram_mb);
+    }
 }
 
 const char *sysinfo_get_hostname(void)   { return hostname; }
@@ -37,6 +41,8 @@ void sysinfo_set_domainname(const char *name) {
 }
 
 const timezone_t *sysinfo_get_timezone(void) { return &brissy_tz; }
+void sysinfo_set_total_ram_mb(uint32_t ram_mb) { total_ram_mb = ram_mb; }
+uint32_t sysinfo_get_total_ram_mb(void) { return total_ram_mb; }
 
 // ---------------------------------------------------------------------------
 // Epoch conversion

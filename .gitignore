@@ -8,6 +8,7 @@
 # Kernel ELF and disk images
 blueyos.elf
 blueyos.iso
+blueyos-root.img
 
 # ISO build directory
 isodir/

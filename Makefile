@@ -299,7 +299,7 @@ $(TARGET): $(OBJECTS)
 	$(AS) $(ASFLAGS) -o $@ $<
 	@echo "  [AS]  $<"
 
-iso: $(TARGET)
+iso: $(TARGET) tools/mkfs_blueyfs
 	@if [ "$(ARCH)" != "i386" ]; then \
 	    echo "  [ISO]  ISO build is only supported for ARCH=i386"; exit 1; fi
 	@bash tools/mkdisk.sh
@@ -321,6 +321,7 @@ version:
 clean:
 	@find . \( -name '*.o' -o -name '*.d' \) -not -path './.git/*' -delete
 	@rm -f blueyos.elf blueyos-m68k.elf blueyos-ppc.elf $(ISO) tools/mkfs_blueyfs
+	@rm -f blueyos-root.img
 	@rm -f $(M68K_GENERATED_HEADERS)
 	@rm -rf isodir/
 	@echo "  Clean! Bluey would be proud."
