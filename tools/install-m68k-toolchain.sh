@@ -143,8 +143,8 @@ cat <<'EOF'
  Inspect the kernel binary:
    m68k-linux-gnu-objdump -d blueyos-m68k.elf | less
 
- Run under QEMU (NeXT cube machine — closest 68030 target in QEMU):
-   qemu-system-m68k -M q800 -bios blueyos-m68k.elf -nographic -serial stdio
+ Run under QEMU (q800 — the closest 68030 Mac machine in QEMU):
+   qemu-system-m68k -M q800 -kernel blueyos-m68k.elf -nographic -serial stdio
 
  Remote GDB debugging:
    # Terminal 1:

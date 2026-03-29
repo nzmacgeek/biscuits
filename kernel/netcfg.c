@@ -55,6 +55,7 @@ static uint32_t parse_ip4(const char *s) {
     while (*s && parts < 4) {
         if (*s >= '0' && *s <= '9') {
             octet = octet * 10 + (uint32_t)(*s - '0');
+            if (octet > 255) return 0;   /* invalid octet value */
         } else if (*s == '.') {
             result = (result << 8) | (octet & 0xFF);
             octet  = 0;
@@ -65,6 +66,7 @@ static uint32_t parse_ip4(const char *s) {
         s++;
     }
     // Final octet
+    if (octet > 255) return 0;
     result = (result << 8) | (octet & 0xFF);
     parts++;
     return (parts == 4) ? result : 0;
@@ -110,23 +112,30 @@ int netcfg_parse(netcfg_iface_t *out, int max) {
         if (*p == '\0') {
             // blank / comment-only line
         } else if (starts_with_word(p, "auto")) {
-            // auto <ifname>  — mark interface as auto-up
+            // auto <ifname> [<ifname> ...] — mark interface(s) as auto-up
+            // Debian allows multiple names on one auto line.
             char ifname[16] = {0};
-            copy_token(p + 4, ifname, sizeof(ifname));
-            // Find or create stanza for ifname
-            for (int i = 0; i < nfaces; i++) {
-                if (strcmp(out[i].ifname, ifname) == 0) {
-                    out[i].is_auto = 1;
-                    goto next_line;
+            const char *q = p + 4;   /* skip "auto" */
+            for (;;) {
+                q = copy_token(q, ifname, sizeof(ifname));
+                if (ifname[0] == '\0') break;   /* no more names on this line */
+                int found = 0;
+                for (int i = 0; i < nfaces; i++) {
+                    if (strcmp(out[i].ifname, ifname) == 0) {
+                        out[i].is_auto = 1;
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found && nfaces < max) {
+                    memset(&out[nfaces], 0, sizeof(netcfg_iface_t));
+                    strncpy(out[nfaces].ifname, ifname, sizeof(out[nfaces].ifname) - 1);
+                    out[nfaces].is_auto = 1;
+                    out[nfaces].method  = NETCFG_INET_MANUAL;
+                    nfaces++;
                 }
             }
-            if (nfaces < max) {
-                memset(&out[nfaces], 0, sizeof(netcfg_iface_t));
-                strncpy(out[nfaces].ifname, ifname, sizeof(out[nfaces].ifname) - 1);
-                out[nfaces].is_auto = 1;
-                out[nfaces].method  = NETCFG_INET_MANUAL;
-                nfaces++;
-            }
+            goto next_line;
         } else if (starts_with_word(p, "iface")) {
             // iface <ifname> <family> <method>
             char ifname[16] = {0}, family[8] = {0}, method[16] = {0};

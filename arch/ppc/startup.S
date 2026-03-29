@@ -51,10 +51,11 @@ _start:
         mtmsr   %r9
         isync
 
-        /* --- Set up stack below our load address (0x00600000) --------------- */
-        /* Stack grows downward; leave 256 bytes of red zone below the base.   */
-        lis     %r1, 0x0060
-        addi    %r1, %r1, -256         /* sp = 0x005FFF00 */
+        /* --- Set up initial stack in kernel-owned memory -------------------- */
+        /* Use memory just above .bss; stack grows downward.                    */
+        lis     %r1, __bss_end@ha
+        addi    %r1, %r1, __bss_end@l
+        addi    %r1, %r1, -256         /* initial stack frame: 256-byte guard */
         li      %r0, 0
         stw     %r0, 0(%r1)            /* back-chain terminator */
 

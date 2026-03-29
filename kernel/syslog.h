@@ -27,9 +27,10 @@
 #define LOG_DEBUG    7   /* Debug-level message                          */
 
 // ---------------------------------------------------------------------------
-// Ring-buffer sizing
+// Entry sizing
 // ---------------------------------------------------------------------------
-#define SYSLOG_RING_SIZE   8192   /* bytes — enough for ~100 typical messages */
+// Maximum length of the message payload stored in each ring entry.
+// The total number of entries in the ring is managed internally by syslog.c.
 #define SYSLOG_MSG_MAX      256   /* maximum length of a single log line       */
 
 // ---------------------------------------------------------------------------

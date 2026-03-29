@@ -205,11 +205,12 @@ M68K_ASM_SOURCES = \
     arch/m68k/startup.S
 
 # PowerPC kernel sources (stub — iMac G4 "Sunflower" port in progress)
+# Note: lib/stdlib.c is excluded because it calls kheap_alloc/kheap_free from
+# kernel/kheap.h, which has no PPC implementation yet.
 PPC_C_SOURCES = \
     arch/ppc/kernel_ppc.c \
     lib/string.c \
-    lib/stdio.c \
-    lib/stdlib.c
+    lib/stdio.c
 
 PPC_ASM_SOURCES = \
     arch/ppc/startup.S

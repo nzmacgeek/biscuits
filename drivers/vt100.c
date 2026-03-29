@@ -75,21 +75,38 @@ static void apply_sgr(void) {
     vga_set_color(fg, sgr_bg);
 }
 
+// Write a single space at an absolute (row, col) position in the VGA buffer
+// using the current SGR-derived colours. Does not move the cursor or trigger
+// scrolling.
+static inline void vga_write_space_at(int row, int col) {
+    if (row < 0 || row >= VT_HEIGHT || col < 0 || col >= VT_WIDTH) {
+        return;
+    }
+    uint16_t *vga_buffer = (uint16_t *)0xB8000;
+    uint8_t fg = sgr_bold ? (sgr_fg | 0x08) : sgr_fg;
+    uint8_t color = (uint8_t)((sgr_bg << 4) | (fg & 0x0F));
+    int index = row * VT_WIDTH + col;
+    vga_buffer[index] = ((uint16_t)color << 8) | (uint8_t)' ';
+}
+
 // Erase from (r0,c0) inclusive to (r1,c1) exclusive with current background.
-// Implemented by writing spaces to the VGA buffer directly via vga_putchar
-// after repositioning the cursor.
+// Writes spaces directly to the VGA buffer so erase operations do not disturb
+// cursor state or trigger scrolling.
 static void vga_erase_region(int r0, int c0, int r1, int c1) {
-    // Save cursor
-    int save_r = vt_cur_row, save_c = vt_cur_col;
+    r0 = clamp(r0, 0, VT_HEIGHT);
+    r1 = clamp(r1, 0, VT_HEIGHT);
+    c0 = clamp(c0, 0, VT_WIDTH);
+    c1 = clamp(c1, 0, VT_WIDTH);
+
+    if (r1 <= r0) return;
+
     for (int r = r0; r < r1; r++) {
         int cs = (r == r0) ? c0 : 0;
         int ce = (r == r1 - 1) ? c1 : VT_WIDTH;
-        vga_set_cursor(cs, r);
-        for (int c = cs; c < ce; c++) vga_putchar(' ');
+        for (int c = cs; c < ce; c++) {
+            vga_write_space_at(r, c);
+        }
     }
-    vga_set_cursor(save_c, save_r);
-    vt_cur_col = save_c;
-    vt_cur_row = save_r;
 }
 
 // ---------------------------------------------------------------------------

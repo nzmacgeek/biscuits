@@ -32,7 +32,8 @@ SECTIONS
 
     /* -----------------------------------------------------------------------
      * Interrupt vector table (68030: 256 × 4-byte vectors = 1 KB).
-     * We position it at 0x8000 and set VBR accordingly in startup.S.
+     * Placed at 0x8000.  VBR must be set to 0x8000 via the movec instruction
+     * in startup.S before interrupts are enabled — this is a TODO item.
      * --------------------------------------------------------------------- */
     .vectors :
     {

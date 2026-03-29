@@ -150,11 +150,13 @@ void vga_init(void) {
 
 static uintptr_t heap_ptr = 0;
 
-void *kheap_alloc(size_t size) {
+void *kheap_alloc(size_t sz, int align) {
+    (void)align; /* alignment parameter currently ignored; allocations are 8-byte aligned */
     if (!heap_ptr) heap_ptr = (uintptr_t)&kernel_end;
     uintptr_t p = (heap_ptr + 7) & ~((uintptr_t)7);
-    heap_ptr = p + size;
+    heap_ptr = p + sz;
     return (void *)p;
 }
 
 void kheap_free(void *p) { (void)p; }
+void kheap_init(uint32_t start, uint32_t size) { (void)start; (void)size; }

@@ -81,8 +81,15 @@ static int syslog_vsnprintf(char *out, size_t sz, const char *fmt, va_list ap) {
             }
             case 'd': {
                 int v = va_arg(ap, int);
-                if (v < 0) { PUT('-'); v = -v; }
-                syslog_itoa((uint32_t)v, tmp, 10, 0);
+                uint32_t uv;
+                if (v < 0) {
+                    PUT('-');
+                    /* compute magnitude in unsigned to avoid UB for INT_MIN */
+                    uv = (uint32_t)(0u - (uint32_t)v);
+                } else {
+                    uv = (uint32_t)v;
+                }
+                syslog_itoa(uv, tmp, 10, 0);
                 for (int i = 0; tmp[i] && pos + 1 < sz; i++) out[pos++] = tmp[i];
                 break;
             }
@@ -189,7 +196,7 @@ void syslog_dmesg(void) {
         else if (e->level == LOG_DEBUG)   vga_set_color(VGA_DARK_GREY,   VGA_BLACK);
         else                              vga_set_color(VGA_WHITE,       VGA_BLACK);
 
-        kprintf("[%4u] %s [%s] %s\n",
+        kprintf("[%u] %s [%s] %s\n",
                 e->seq, level_str((int)e->level), e->tag, e->msg);
     }
     vga_set_color(VGA_WHITE, VGA_BLACK);
@@ -215,28 +222,16 @@ void syslog_flush_to_fs(void) {
     uint32_t n     = syslog_count_val;
     uint32_t start = (syslog_head - n) % SYSLOG_RING_ENTRIES;
     char     line[SYSLOG_MSG_MAX + 64];
-        int len; // Declare len before use
+    int len;
 
     for (uint32_t i = 0; i < n; i++) {
         syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
-        // Re-format using itoa helpers:
-        char seqbuf[8], lvlbuf[10];
-        syslog_itoa(e->seq, seqbuf, 10, 0);
+        char lvlbuf[10];
         strncpy(lvlbuf, level_str((int)e->level), sizeof(lvlbuf) - 1);
         lvlbuf[sizeof(lvlbuf) - 1] = '\0';
 
-            len = syslog_snprintf(line, sizeof(line), "[    ] %s [%s] %s\n",
-                               lvlbuf, e->tag, e->msg);
-        // Patch the sequence number in manually (positions 1-4)
-        char seqtmp[8];
-        int si = 0;
-        uint32_t sv = e->seq;
-        if (sv == 0) { seqtmp[si++] = '0'; }
-        else { char t[8]; int ti = 0; while (sv) { t[ti++] = (char)('0' + sv%10); sv/=10; } while(ti--) seqtmp[si++] = t[ti]; }
-        seqtmp[si] = '\0';
-        // Overwrite the spaces in "[    ]" with the sequence number
-        int sp = 0;
-        for (int j = 1; j <= 4 && seqtmp[sp]; j++, sp++) line[j] = seqtmp[sp];
+        len = syslog_snprintf(line, sizeof(line), "[%u] %s [%s] %s\n",
+                              e->seq, lvlbuf, e->tag, e->msg);
 
         vfs_write(fd, (const uint8_t *)line, (size_t)len);
     }

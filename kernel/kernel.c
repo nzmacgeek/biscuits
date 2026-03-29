@@ -90,7 +90,6 @@ static void idle_task(void) {
 // Arguments pushed by boot.asm: eax=multiboot magic, ebx=multiboot info ptr
 // ---------------------------------------------------------------------------
 void kernel_main(uint32_t magic, uint32_t *mboot_info) {
-    (void)mboot_info;
 
     // Step 1: Screen up first so we can print messages
     vga_init();
@@ -106,9 +105,9 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     syslog_init();
     syslog_info("KERN", "BlueyOS kernel starting up");
 
-    // Step 1c: VT100 terminal emulator — between VGA and the shell
-    vt100_init();
-    syslog_info("VT100", "VT100 terminal emulator ready (TERM=vt100)");
+    // Step 1c: VT100 terminal emulator — initialised here but output routing
+    // (kprintf → vt100_putchar) is deferred until the console path is wired.
+    // vt100_init();  /* TODO: wire kprintf/vga output through vt100_putchar */
 
     kprintf("  %s\n", BLUEYOS_VERSION_STRING);
     kprintf("  Codename : %s\n", BLUEYOS_CODENAME);
@@ -160,8 +159,6 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
                 kprintf("[VFS]  No recognised filesystem - running diskless\n");
             }
         }
-        // Apply network interface configuration from /etc/interfaces
-        netcfg_apply();
         // Flush early boot log to /var/log/kernel.log
         syslog_flush_to_fs();
     }
@@ -183,6 +180,11 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 15: TCP/IP IPv4 stack
     tcpip_init();
+
+    // Apply network interface configuration from /etc/interfaces.
+    // Must be after tcpip_init() — tcpip_init() resets the config to compiled-in
+    // defaults, so any config loaded here correctly overrides those defaults.
+    netcfg_apply();
 
     // Step 16: Swap space (hdb at LBA 0, up to 4096 pages = 16 MB)
     // In QEMU, the second disk (-hdb swap.img) is the swap device.

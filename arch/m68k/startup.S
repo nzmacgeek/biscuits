@@ -13,7 +13,7 @@
 |
 | Our job:
 |   1.  Set SR to supervisor mode, IPL=7 (no interrupts yet)
-|   2.  Establish a known stack pointer (top of first 512 KB)
+|   2.  Establish a known stack pointer (top of dedicated 128 KB stack region)
 |   3.  Zero the BSS segment
 |   4.  Call kernel_main_m68k()  (C entry point, never returns)
 |
@@ -36,9 +36,10 @@ _start:
         | Mask all interrupts (IPL = 7), stay in supervisor mode.
         move.w  #0x2700, %sr
 
-        | Set up our own stack: top of the first 512 KB, word-aligned.
-        | (ROM already probed RAM; we trust it found at least 512 KB.)
-        move.l  #0x00080000, %sp   | 512 KB
+        | Set up our own stack: top of dedicated 128 KB stack region
+        | (0x00080000 – 0x0009FFFF per linker.ld; stack grows downward,
+        |  so we start at the top 0x000A0000).
+        move.l  #0x000A0000, %sp
 
         | Zero BSS.
         lea     __bss_start, %a0
