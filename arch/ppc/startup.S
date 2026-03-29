@@ -76,11 +76,11 @@ _bss_zero_done:
         /* MPC7450: dcbf for every cache line in the first 32 KB             */
         li      %r3, 0
         li      %r4, 512               /* 512 × 64-byte lines = 32 KB */
+        mtctr   %r4                    /* load CTR so bdnz works correctly */
 _dcache_flush:
         dcbf    %r0, %r3
         addi    %r3, %r3, 64
-        bdnz    _dcache_flush          /* uses CTR, so load it first... */
-        /* (CTR is not set above; use a simple loop instead) */
+        bdnz    _dcache_flush
 
         sync
 

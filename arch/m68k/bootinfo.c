@@ -32,7 +32,7 @@ static m68k_bootinfo_t bootinfo;
 static int bootinfo_parsed;
 
 static const bi_record_t *m68k_bootinfo_start(void) {
-    uintptr_t ptr = ((uintptr_t)&kernel_end + 1u) & ~((uintptr_t)1u);
+    uintptr_t ptr = ((uintptr_t)&kernel_end + 3u) & ~((uintptr_t)3u);
     return (const bi_record_t *)ptr;
 }
 

@@ -94,9 +94,6 @@ static void m68k_console_putchar_raw(char c) {
         *scc_data(1) = (uint8_t)c;
         mmio_barrier();
     }
-
-    VIA1_ORB = (uint8_t)c;
-    mmio_barrier();
 }
 
 void vga_putchar(char c) {

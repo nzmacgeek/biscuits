@@ -119,13 +119,14 @@ void syslog_init(void) {
     syslog_seq       = 0;
     syslog_ready     = 1;
 }
-    static int syslog_snprintf(char *out, size_t sz, const char *fmt, ...) {
-        va_list ap;
-        va_start(ap, fmt);
-        int r = syslog_vsnprintf(out, sz, fmt, ap);
-        va_end(ap);
-        return r;
-    }
+
+static int syslog_snprintf(char *out, size_t sz, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = syslog_vsnprintf(out, sz, fmt, ap);
+    va_end(ap);
+    return r;
+}
 
 void syslog_write(int level, const char *tag, const char *fmt, ...) {
     if (!syslog_ready) return;
@@ -231,7 +232,7 @@ void syslog_flush_to_fs(void) {
         int si = 0;
         uint32_t sv = e->seq;
         if (sv == 0) { seqtmp[si++] = '0'; }
-        else { char t[8]; int ti = 0; while (sv) { t[ti++] = (char)('0' + sv%10); sv/=10; } while(ti--) seqtmp[si++] = t[ti+1]; }
+        else { char t[8]; int ti = 0; while (sv) { t[ti++] = (char)('0' + sv%10); sv/=10; } while(ti--) seqtmp[si++] = t[ti]; }
         seqtmp[si] = '\0';
         // Overwrite the spaces in "[    ]" with the sequence number
         int sp = 0;
