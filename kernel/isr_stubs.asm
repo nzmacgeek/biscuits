@@ -2,6 +2,7 @@
 ; "Sometimes things go wrong, and that's okay." - Calypso
 bits 32
 section .note.GNU-stack noalloc noexec nowrite progbits
+section .text
 
 %macro ISR_NOERRCODE 1
 global isr%1

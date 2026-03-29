@@ -1,7 +1,16 @@
 // BlueyOS stdio - kprintf backed by VGA
 // "Dad, can you read me a story?" - Bluey  "Sure, but first let me format it." - Bandit
 #include "../include/types.h"
+#if defined(BLUEYOS_ARCH_I386)
+#include "../kernel/tty.h"
+#elif defined(BLUEYOS_ARCH_PPC)
+#include "../arch/ppc/console.h"
+#elif defined(BLUEYOS_ARCH_M68K)
+/* arch/m68k/platform.c provides the vga_* console shim on this port. */
 #include "../drivers/vga.h"
+#else
+#error "kprintf backend is not defined for this architecture"
+#endif
 #include "string.h"
 
 // variadic args without stdarg.h
@@ -10,8 +19,28 @@ typedef __builtin_va_list va_list;
 #define va_end(v)     __builtin_va_end(v)
 #define va_arg(v,t)   __builtin_va_arg(v,t)
 
-static void kprintf_puts(const char *s) { if (s) { while (*s) vga_putchar(*s++); } }
-static void kprintf_putc(char c) { vga_putchar(c); }
+static void kprintf_backend_putc(char c) {
+#if defined(BLUEYOS_ARCH_I386)
+    tty_putchar(c);
+#elif defined(BLUEYOS_ARCH_PPC)
+    ppc_console_putchar(c);
+#else
+    vga_putchar(c);
+#endif
+}
+
+static void kprintf_backend_flush(void) {
+#if defined(BLUEYOS_ARCH_I386)
+    tty_flush();
+#elif defined(BLUEYOS_ARCH_PPC)
+    ppc_console_flush();
+#else
+    vga_flush();
+#endif
+}
+
+static void kprintf_puts(const char *s) { if (s) { while (*s) kprintf_backend_putc(*s++); } }
+static void kprintf_putc(char c) { kprintf_backend_putc(c); }
 
 static void kprintf_uint(unsigned int v, int base, int upper) {
     char buf[32]; int i = 31; buf[31] = 0;
@@ -51,5 +80,5 @@ void kprintf(const char *fmt, ...) {
         }
     }
     va_end(ap);
-    vga_flush();
+    kprintf_backend_flush();
 }

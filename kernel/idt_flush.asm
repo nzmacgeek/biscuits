@@ -3,6 +3,7 @@
 ; licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
 bits 32
 section .note.GNU-stack noalloc noexec nowrite progbits
+section .text
 
 global idt_flush
 idt_flush:

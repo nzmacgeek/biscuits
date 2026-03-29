@@ -19,8 +19,11 @@
 #include "../fs/vfs.h"
 #include "../kernel/process.h"
 #include "../kernel/sysinfo.h"
+#include "../kernel/kheap.h"
+#include "../kernel/paging.h"
 #include "../kernel/swap.h"
 #include "../kernel/syslog.h"
+#include "../kernel/tty.h"
 #include "../drivers/net/network.h"
 #include "../net/tcpip.h"
 #include "../net/icmp.h"
@@ -36,13 +39,39 @@ static char cwd[SHELL_CWD_MAX];
 // ---------------------------------------------------------------------------
 static char linebuf[SHELL_LINE_MAX];
 static int  linelen;
+#define SHELL_PAGE_SIZE_KB (PAGE_SIZE / 1024u)
+/* VT100/ANSI formatting used by the booted shell prompt/banner. */
+#define ANSI_RESET         "\x1b[0m"
+#define ANSI_BOLD_GREEN    "\x1b[1;32m"
+#define ANSI_BOLD_BLUE     "\x1b[1;34m"
+
+static uint32_t shell_ram_total_kb(uint32_t ram_boot_mb) {
+    uint32_t managed_kb = pmm_total_frames() * SHELL_PAGE_SIZE_KB;
+
+    if (ram_boot_mb == 0) return managed_kb;
+    if (ram_boot_mb > (0xFFFFFFFFu / 1024u)) return managed_kb;
+
+    uint32_t detected_kb = ram_boot_mb * 1024u;
+    if (detected_kb > managed_kb) return managed_kb;
+
+    return detected_kb;
+}
+
+static uint32_t shell_ram_free_kb(uint32_t total_kb, uint32_t used_kb, int *clamped) {
+    if (used_kb >= total_kb) {
+        if (clamped) *clamped = 1;
+        return 0;
+    }
+    if (clamped) *clamped = 0;
+    return total_kb - used_kb;
+}
 
 static void shell_readline(void) {
     linelen = 0;
     linebuf[0] = '\0';
 
     while (1) {
-        char c = keyboard_getchar();
+        char c = tty_getchar();
 
         if (c == '\n' || c == '\r') {
             kprintf("\n");
@@ -137,6 +166,8 @@ static void cmd_help(int argc, char **argv) {
     kprintf("  ifconfig        show network interfaces\n");
     kprintf("  ping <ip>       send ICMP echo request\n");
     kprintf("  swapinfo        show swap statistics\n");
+    kprintf("  meminfo         show kernel memory statistics\n");
+    kprintf("  free            show a summary of memory usage\n");
     kprintf("  dmesg           show kernel log (ring buffer)\n");
     kprintf("  date            show current time\n");
     kprintf("  version         show BlueyOS version\n");
@@ -250,8 +281,8 @@ static void cmd_cd(int argc, char **argv) {
 
 static void cmd_uname(int argc, char **argv) {
     (void)argc; (void)argv;
-    kprintf("BlueyOS %s %s blueyos i386 GNU/BlueyOS\n",
-            BLUEYOS_VERSION_STRING, BLUEYOS_CODENAME);
+    kprintf("BlueyOS %s %s %s i386 GNU/BlueyOS\n",
+            BLUEYOS_VERSION_STRING, BLUEYOS_CODENAME, sysinfo_get_hostname());
 }
 
 static void cmd_whoami(int argc, char **argv) {
@@ -343,6 +374,63 @@ static void cmd_swapinfo(int argc, char **argv) {
     swap_print_info();
 }
 
+static void cmd_meminfo(int argc, char **argv) {
+    (void)argc; (void)argv;
+
+    uint32_t heap_total = 0, heap_used = 0, heap_free = 0;
+    uint32_t ram_boot_mb  = sysinfo_get_ram_mb();
+    uint32_t ram_total_kb = shell_ram_total_kb(ram_boot_mb);
+    uint32_t mem_used_kb  = pmm_used_frames() * SHELL_PAGE_SIZE_KB;
+    int mem_clamped = 0;
+    uint32_t mem_free_kb  = shell_ram_free_kb(ram_total_kb, mem_used_kb, &mem_clamped);
+    uint32_t swap_total = swap_total_pages();
+    uint32_t swap_used  = swap_used_pages();
+
+    kheap_get_stats(&heap_total, &heap_used, &heap_free);
+
+    kprintf("MemTotal: %u kB\n", ram_total_kb);
+    kprintf("MemUsed:  %u kB\n", mem_used_kb);
+    kprintf("MemFree:  %u kB\n", mem_free_kb);
+    if (ram_boot_mb) {
+        kprintf("RAMBoot:  %u MB detected by bootloader\n", ram_boot_mb);
+    }
+    if (mem_clamped) {
+        kprintf("MemWarn: tracked frame usage exceeds detected RAM size\n");
+    }
+    kprintf("HeapTotal:%u kB\n", heap_total / 1024);
+    kprintf("HeapUsed: %u kB\n", heap_used / 1024);
+    kprintf("HeapFree: %u kB\n", heap_free / 1024);
+    kprintf("SwapTotal:%u kB\n", swap_total * SHELL_PAGE_SIZE_KB);
+    kprintf("SwapUsed: %u kB\n", swap_used * SHELL_PAGE_SIZE_KB);
+    kprintf("SwapFree: %u kB\n", (swap_total - swap_used) * SHELL_PAGE_SIZE_KB);
+}
+
+static void cmd_free(int argc, char **argv) {
+    (void)argc; (void)argv;
+
+    uint32_t heap_total = 0, heap_used = 0, heap_free = 0;
+    uint32_t ram_boot_mb  = sysinfo_get_ram_mb();
+    uint32_t ram_total_kb = shell_ram_total_kb(ram_boot_mb);
+    uint32_t mem_used_kb  = pmm_used_frames() * SHELL_PAGE_SIZE_KB;
+    int mem_clamped = 0;
+    uint32_t mem_free_kb  = shell_ram_free_kb(ram_total_kb, mem_used_kb, &mem_clamped);
+    uint32_t swap_total = swap_total_pages();
+    uint32_t swap_used  = swap_used_pages();
+
+    kheap_get_stats(&heap_total, &heap_used, &heap_free);
+
+    kprintf("type  total_kB used_kB free_kB\n");
+    kprintf("mem   %u %u %u\n", ram_total_kb, mem_used_kb, mem_free_kb);
+    kprintf("heap  %u %u %u\n", heap_total / 1024, heap_used / 1024, heap_free / 1024);
+    kprintf("swap  %u %u %u\n",
+            swap_total * SHELL_PAGE_SIZE_KB,
+            swap_used * SHELL_PAGE_SIZE_KB,
+            (swap_total - swap_used) * SHELL_PAGE_SIZE_KB);
+    if (mem_clamped) {
+        kprintf("note  tracked frame usage exceeds detected RAM size\n");
+    }
+}
+
 static void cmd_dmesg(int argc, char **argv) {
     (void)argc; (void)argv;
     syslog_dmesg();
@@ -415,6 +503,8 @@ static const shell_cmd_t commands[] = {
     { "ifconfig", cmd_ifconfig },
     { "ping",     cmd_ping     },
     { "swapinfo", cmd_swapinfo },
+    { "meminfo",  cmd_meminfo  },
+    { "free",     cmd_free     },
     { "dmesg",    cmd_dmesg    },
     { "date",     cmd_date     },
     { "version",  cmd_version  },
@@ -435,20 +525,13 @@ void shell_init(void) {
 void shell_run(void) {
     char *argv[SHELL_ARGS_MAX];
 
-    vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
-    kprintf("\nWelcome to BlueyOS Shell!\n");
+    kprintf("\n" ANSI_BOLD_GREEN "Welcome to BlueyOS Shell!\n");
     kprintf("\"I'm in charge!\" - Bluey Heeler\n");
-    kprintf("Type 'help' for a list of commands.\n\n");
-    vga_set_color(VGA_WHITE, VGA_BLACK);
+    kprintf("Type 'help' for a list of commands.\n" ANSI_RESET "\n");
 
     for (;;) {
         // Print prompt: "bluey@biscuit:/path$ "
-        vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
-        kprintf("bluey@biscuit:");
-        vga_set_color(VGA_LIGHT_BLUE, VGA_BLACK);
-        kprintf("%s", cwd);
-        vga_set_color(VGA_WHITE, VGA_BLACK);
-        kprintf("$ ");
+        kprintf(ANSI_BOLD_GREEN "bluey@biscuit:" ANSI_BOLD_BLUE "%s" ANSI_RESET "$ ", cwd);
 
         shell_readline();
         if (linelen == 0) continue;

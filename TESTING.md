@@ -193,7 +193,21 @@ BlueyOS is ready. Type your commands below.
 "This is the best day EVER!" - Bluey Heeler
 ```
 
-After this the kernel enters its idle loop (halting the CPU between timer interrupts).
+After this the kernel starts the interactive shell.
+
+### 4.6 TTY / Shell Smoke Test
+
+At the `bluey@biscuit:/$` prompt, verify that keyboard input is echoed back through
+the terminal and that the built-in diagnostic commands work:
+
+```text
+help
+uname
+version
+meminfo
+free
+swapinfo
+```
 
 ---
 

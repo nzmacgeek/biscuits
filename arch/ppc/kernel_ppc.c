@@ -65,6 +65,13 @@ static void scc_puts(const char *s) {
     while (*s) scc_putchar(*s++);
 }
 
+void ppc_console_putchar(char c) {
+    scc_putchar(c);
+}
+
+void ppc_console_flush(void) {
+}
+
 static void scc_put_uint32(uint32_t v) {
     char buf[12];
     int i = 10;
