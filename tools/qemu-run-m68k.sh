@@ -14,6 +14,7 @@ PID_FILE="qemu.pid"
 SERIAL_A_LOG="qemu-serial-a.log"
 SERIAL_B_LOG="qemu-serial-b.log"
 DISPLAY_MODE="${BLUEYOS_M68K_DISPLAY:-headless}"
+RAM_MB="${BLUEYOS_M68K_RAM_MB:-32}"
 QEMU_EXTRA_ARGS=()
 
 while [ "$#" -gt 0 ]; do
@@ -53,6 +54,7 @@ rm -f "$PID_FILE" "$SERIAL_A_LOG" "$SERIAL_B_LOG"
 
 echo "Starting BlueyOS M68K in QEMU..."
 echo "  Machine : q800"
+echo "  RAM     : ${RAM_MB} MB"
 echo "  Display : $DISPLAY_MODE"
 echo "  Audio   : disabled"
 echo "  SerialA : $SERIAL_A_LOG"
@@ -71,6 +73,7 @@ fi
 
 qemu-system-m68k \
     -M "$MACHINE_ARG" \
+    -m "$RAM_MB" \
     -audiodev none,id=noaudio \
     "${DISPLAY_ARGS[@]}" \
     -monitor none \

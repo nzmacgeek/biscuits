@@ -48,6 +48,8 @@ else
   LD  = ld
 endif
 
+PYTHON ?= python3
+
 # ---------------------------------------------------------------------------
 # Build version injection
 # Increment BUILD_NUMBER with each release: make BUILD_NUMBER=2
@@ -237,6 +239,7 @@ else
   ASM_OBJECTS = $(I386_ASM_SOURCES:.asm=.o)
 endif
 OBJECTS     = $(ASM_OBJECTS) $(C_OBJECTS)
+M68K_GENERATED_HEADERS = arch/m68k/boot_font.h
 
 # ---------------------------------------------------------------------------
 
@@ -254,6 +257,14 @@ $(ARCH_STAMP):
 	fi
 
 $(OBJECTS): $(ARCH_STAMP)
+
+arch/m68k/boot_font.h: arch/m68k/boot_font.sbf tools/fonty_rg_to_c.py
+	$(PYTHON) tools/fonty_rg_to_c.py $< $@
+	@echo "  [GEN] $@"
+
+ifeq ($(ARCH),m68k)
+arch/m68k/dafb.o: arch/m68k/boot_font.h
+endif
 
 # Targets
 # ---------------------------------------------------------------------------
@@ -305,6 +316,7 @@ version:
 clean:
 	@find . \( -name '*.o' -o -name '*.d' \) -not -path './.git/*' -delete
 	@rm -f blueyos.elf blueyos-m68k.elf blueyos-ppc.elf $(ISO) tools/mkfs_blueyfs
+	@rm -f $(M68K_GENERATED_HEADERS)
 	@rm -rf isodir/
 	@echo "  Clean! Bluey would be proud."
 

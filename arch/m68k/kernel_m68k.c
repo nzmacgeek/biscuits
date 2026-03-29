@@ -21,6 +21,8 @@
 #include "../../drivers/vga.h"
 #include "../../lib/stdio.h"
 
+#define MAC_LC3_RAM_DEFAULT (32u * 1024u * 1024u)
+
 static uint32_t m68k_read_u32(uintptr_t addr) {
     return *(volatile uint32_t *)addr;
 }
@@ -50,6 +52,8 @@ void kernel_main_m68k(void) {
         memsize = boot->mac_memsize_mb * 1024u * 1024u;
     } else if (boot->mem_chunk_size != 0) {
         memsize = boot->mem_chunk_size;
+    } else if (memsize == 0) {
+        memsize = MAC_LC3_RAM_DEFAULT;
     }
 
     if (boot->valid) {
