@@ -241,6 +241,7 @@ else
 endif
 
 ISO    = blueyos.iso
+DISK_IMAGE = blueyos-disk.img
 
 C_OBJECTS   = $(C_SOURCES:.c=.o)
 ASM_OBJECTS_C = $(M68K_ASM_SOURCES:.S=.o) $(PPC_ASM_SOURCES:.S=.o)
@@ -283,7 +284,7 @@ endif
 
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso run run-m68k version clean help tools-host toolinfo FORCE
+.PHONY: all iso disk run run-m68k version clean help tools-host toolinfo FORCE
 
 all: $(TARGET) $(USER_TARGETS)
 	@echo ""
@@ -315,7 +316,12 @@ iso: $(TARGET)
 	    echo "  [ISO]  ISO build is only supported for ARCH=i386"; exit 1; fi
 	@bash tools/mkdisk.sh
 
-run: iso
+disk: iso $(USER_TARGETS) tools-host
+	@if [ "$(ARCH)" != "i386" ]; then \
+	    echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi
+	@$(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE)
+
+run: iso disk
 	@if [ "$(ARCH)" != "i386" ]; then \
 	    echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi
 	@bash tools/qemu-run.sh
@@ -331,15 +337,24 @@ version:
 
 clean:
 	@find . \( -name '*.o' -o -name '*.d' \) -not -path './.git/*' -delete
-	@rm -f blueyos.elf blueyos-m68k.elf blueyos-ppc.elf $(ISO) tools/mkfs_blueyfs
+	@rm -f blueyos.elf blueyos-m68k.elf blueyos-ppc.elf $(ISO) $(DISK_IMAGE)
+	@rm -f tools/mkfs_blueyfs tools/mkswap_blueyfs tools/fsck_blueyfs
 	@rm -f $(M68K_GENERATED_HEADERS)
 	@rm -rf isodir/
 	@echo "  Clean! Bluey would be proud."
 
-tools-host: tools/mkfs_blueyfs
+tools-host: tools/mkfs_blueyfs tools/mkswap_blueyfs tools/fsck_blueyfs
 	@echo "  Host tools built!"
 
 tools/mkfs_blueyfs: tools/mkfs_blueyfs.c
+	gcc -O2 -Wall -Wextra -o $@ $<
+	@echo "  [CC]  $< (host)"
+
+tools/mkswap_blueyfs: tools/mkswap_blueyfs.c
+	gcc -O2 -Wall -Wextra -o $@ $<
+	@echo "  [CC]  $< (host)"
+
+tools/fsck_blueyfs: tools/fsck_blueyfs.c
 	gcc -O2 -Wall -Wextra -o $@ $<
 	@echo "  [CC]  $< (host)"
 
@@ -367,10 +382,10 @@ help:
 	@echo "  make ARCH=m68k        - build M68K kernel (Macintosh LC III)"
 	@echo "  make ARCH=ppc         - build PowerPC kernel (iMac G4 Sunflower)"
 	@echo "  make iso              - create bootable ISO (i386 only)"
+	@echo "  make disk             - create a partitioned BlueyOS disk image"
 	@echo "  make run              - build ISO and launch in QEMU (i386 only)"
 	@echo "  make run-m68k         - launch M68K QEMU with detached serial capture"
-	@echo "  make tools-host       - build host-side tools (mkfs.biscuitfs)"
-	@echo "  make toolinfo         - print versions of all build tools"
+	@echo "  make tools-host       - build host-side mkfs/mkswap/fsck tools"
 	@echo "  make version          - print version information"
 	@echo "  make clean            - remove all build artifacts"
 	@echo "  make BUILD_NUMBER=N   - set build number (default: 1)"

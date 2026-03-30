@@ -190,6 +190,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
             kprintf("[VFS]  No recognised filesystem - running diskless\n");
         } else {
             rootfs_ensure_layout();
+            rootfs_apply_fstab();
             // Flush early boot log once /var/log is reachable.
             syslog_flush_to_fs();
         }
@@ -218,12 +219,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // defaults, so any config loaded here correctly overrides those defaults.
     netcfg_apply();
 
-    // Step 16: Swap space (hdb at LBA 0, up to 4096 pages = 16 MB)
-    // In QEMU, the second disk (-hdb swap.img) is the swap device.
-    // We probe it with a fixed LBA; swap_init() validates the header.
-    swap_init(0x10000, 2048);   /* LBA 65536 = 32 MB into primary disk */
-
-    // Step 17: ELF loader ready
+    // Step 16: ELF loader ready
     kprintf("%s\n", MSG_ELF_INIT);
 
     // All done!
@@ -244,7 +240,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
         for (;;) __asm__ volatile("hlt");
     }
 
-    // Step 18: Shell - run interactively (never returns)
+    // Step 17: Shell - run interactively (never returns)
     shell_init();
     shell_run();
 

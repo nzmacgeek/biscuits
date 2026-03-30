@@ -86,6 +86,29 @@ file blueyos.iso
 # Expected: ISO 9660 CD-ROM filesystem data
 ```
 
+## Step 2b: Build the BlueyOS Disk Image
+
+```bash
+make disk
+```
+
+Expected outcomes:
+
+- `blueyos-disk.img` is created in the repo root
+- the root BlueyFS partition contains `/bin/init`
+- `/etc/fstab` contains at least:
+
+```text
+/dev/hda1 / blueyfs defaults 0 1
+/dev/hda2 none swap defaults 0 0
+```
+
+Sanity-check the root partition with the host fsck tool:
+
+```bash
+./tools/fsck_blueyfs -o 2048 blueyos-disk.img
+```
+
 ---
 
 ## Step 3: Run in QEMU
@@ -100,6 +123,7 @@ make run
 ```bash
 qemu-system-i386 \
     -cdrom blueyos.iso \
+  -drive file=blueyos-disk.img,format=raw,if=ide,index=0 \
     -m 256M \
     -serial stdio \
     -no-reboot \
@@ -172,7 +196,12 @@ Each subsystem prints a message as it initialises:
 [DRV]  Driver framework ready - Bandit's toolbox is open!
 [VFS]  Bingo's Backpack Filesystem mounted!
 [VFS]  Registered filesystem: fat16
+[VFS]  Registered filesystem: biscuitfs
 [ATA]  ATA disk driver online - let's find some data!       (or: No ATA device found)
+[BISCUITFS] Mounted 'BlueyRoot' (...)
+[ROOT] Mounted /dev/hda1 on biscuitfs
+[SWAP] Swap space ready: ... label='ChatterSwap'
+[FSTAB] Applied 1 mount directives
 [SYS]  Bluey's Daddy Daughter Syscalls are ready!
 [PRC]  Process table initialised - everyone gets a turn!
 [SCH]  Bandit's Homework Scheduler is running!
@@ -191,6 +220,15 @@ Epoch    : Bandit's Birthday (15 Oct 1980 AEST)
 
 BlueyOS is ready. Type your commands below.
 "This is the best day EVER!" - Bluey Heeler
+```
+
+You should then see `/bin/init` launch from BlueyFS and pass its smoke tests:
+
+```text
+[KERN] Bootstrap launching /bin/init as pid=2
+[init] userspace bootstrap ok
+[init-parent] waitpid ok
+[init] all tests passed
 ```
 
 After this the kernel starts the interactive shell.

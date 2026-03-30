@@ -16,6 +16,11 @@ if [ ! -f blueyos.iso ]; then
     exit 1
 fi
 
+if [ ! -f blueyos-disk.img ]; then
+    echo "ERROR: blueyos-disk.img not found. Run 'make disk' first!"
+    exit 1
+fi
+
 echo "Starting BlueyOS in QEMU..."
 echo "  Memory: 256MB | Serial: stdio | No reboot on crash"
 echo "  Press Ctrl+A then X to exit QEMU"
@@ -23,6 +28,7 @@ echo ""
 
 exec qemu-system-i386 \
     -cdrom blueyos.iso \
+    -drive file=blueyos-disk.img,format=raw,if=ide,index=0 \
     -m 256M \
     -serial stdio \
     -no-reboot \
