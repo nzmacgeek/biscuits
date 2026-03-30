@@ -108,7 +108,7 @@ This is a research OS. There are **many** known limitations:
 7. **No SMEP/SMAP** — no protection against kernel executing/accessing user memory
 8. **No audit logging** — no record of login attempts or privilege escalation
 9. **No network security** — the NE2000 driver accepts all packets with no filtering
-10. **No cryptographic random number generator** — salt generation uses timer ticks
+10. **No cryptographic random number generator** — salt generation mixes timer/RTC/pid without a CSPRNG
 11. **No secure boot** — no verification of kernel image integrity
 12. **No memory encryption** — all memory is plaintext
 

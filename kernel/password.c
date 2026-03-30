@@ -8,6 +8,7 @@
 #include "password.h"
 #include "timer.h"
 #include "process.h"
+#include "rtc.h"
 
 #define HMAC_BLOCK_SIZE 64
 
@@ -124,18 +125,22 @@ void password_gen_salt(char salt_hex_out[PASSWORD_SALT_HEX_LEN + 1]) {
     uint32_t t = timer_get_ticks();
     uint32_t pid = process_getpid();
     uint32_t addr = (uint32_t)(uintptr_t)salt_hex_out;
-    uint32_t a = t ^ (pid << 16) ^ addr ^ 0x9E3779B9u;
-    uint32_t b = (t * 0x6C62272Eu) ^ (addr << 7) ^ (pid << 3);
-    uint32_t c = (t << 16) ^ (t >> 16) ^ (addr >> 5) ^ 0xA5A5A5A5u;
-    uint32_t d = (t ^ (pid << 1)) + 0xDEADBEEFu;
+    uint32_t unix_time = 0;
+    rtc_get_unix_time(&unix_time);
+    uint32_t uptime = rtc_get_uptime_seconds();
 
-    uint8_t raw[16];
-    memcpy(raw + 0, &a, sizeof(a));
-    memcpy(raw + 4, &b, sizeof(b));
-    memcpy(raw + 8, &c, sizeof(c));
-    memcpy(raw + 12, &d, sizeof(d));
+    uint32_t entropy[6] = {
+        t,
+        pid,
+        addr,
+        unix_time,
+        uptime,
+        t ^ pid ^ addr ^ unix_time ^ uptime
+    };
 
-    bytes_to_hex(raw, sizeof(raw), salt_hex_out);
+    uint8_t digest[SHA256_DIGEST_SIZE];
+    sha256((const uint8_t *)entropy, sizeof(entropy), digest);
+    bytes_to_hex(digest, 16, salt_hex_out);
 }
 
 void password_hash_pbkdf2(const char *password,

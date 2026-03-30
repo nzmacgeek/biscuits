@@ -320,6 +320,7 @@ static int32_t sys_execve(registers_t *regs,
         result = -BLUEY_ENOENT;
         goto cleanup;
     }
+    // Execute permission is still required even for setuid/setgid binaries.
     if (vfs_access(path_copy, VFS_ACCESS_EXEC) != 0 || stat.is_dir) {
         result = -BLUEY_EPERM;
         goto cleanup;

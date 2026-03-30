@@ -86,10 +86,13 @@ void tcpip_poll(void) {
     uint16_t len;
 
     const char *ifaces[] = { cfg.ifname, "lo", NULL };
+    int seen_loopback = 0;
     for (int iface_idx = 0; ifaces[iface_idx]; iface_idx++) {
         const char *ifname = ifaces[iface_idx];
-        if (iface_idx == 1 && !cfg.loopback_enabled) continue;
-        if (iface_idx == 1 && strcmp(cfg.ifname, "lo") == 0) continue;
+        if (strcmp(ifname, "lo") == 0) {
+            if (!cfg.loopback_enabled || seen_loopback) continue;
+            seen_loopback = 1;
+        }
 
         // Drain up to 16 packets per call so we don't monopolise the CPU
         for (int i = 0; i < 16; i++) {
