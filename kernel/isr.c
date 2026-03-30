@@ -1,9 +1,13 @@
 // BlueyOS ISR - CPU exception handlers with Bluey flair
 // Episode ref: "The Creek" - sometimes you fall in, that's a fault!
 #include "../include/types.h"
+#include "../drivers/vga.h"
 #include "../lib/stdio.h"
+#include "../lib/string.h"
 #include "idt.h"
 #include "isr.h"
+#include "process.h"
+#include "syslog.h"
 
 static const char *exception_msgs[] = {
     "Division by Zero (Bingo tripped!)",
@@ -31,6 +35,53 @@ static const char *exception_msgs[] = {
     "Reserved","Reserved","Reserved","Reserved","Reserved","Reserved",
     "Hypervisor Injection","VMM Communication","Security Exception","Reserved"
 };
+
+static const char *isr_fault_class(uint32_t int_no) {
+    switch (int_no) {
+        case 2:
+        case 8:
+        case 18:
+            return "PANIC";
+        default:
+            return "OOPS";
+    }
+}
+
+static const char *isr_fault_phrase(const char *fault_class) {
+    return (strcmp(fault_class, "PANIC") == 0)
+        ? "Oh biscuits!"
+        : "Righto, that's not ideal.";
+}
+
+static uint32_t isr_read_cr2(void) {
+    uint32_t value = 0;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(value));
+    return value;
+}
+
+static void isr_dump_page_fault(uint32_t err_code) {
+    uint32_t cr2 = isr_read_cr2();
+
+    kprintf("Fault addr : 0x%x\n", cr2);
+    kprintf("PF decode  : %s %s %s %s %s\n",
+            (err_code & 0x1u) ? "protection" : "not-present",
+            (err_code & 0x2u) ? "write" : "read",
+            (err_code & 0x4u) ? "user" : "kernel",
+            (err_code & 0x8u) ? "reserved-bit" : "normal-bits",
+            (err_code & 0x10u) ? "instruction-fetch" : "data-access");
+}
+
+static void isr_dump_process_context(void) {
+    process_t *process = process_current();
+
+    if (!process) {
+        kprintf("Process    : none\n");
+        return;
+    }
+
+    kprintf("Process    : pid=%u uid=%u name=%s\n",
+            process->pid, process->uid, process->name);
+}
 
 void isr_init(void) {
     idt_set_gate(0,  (uint32_t)isr0,  0x08, 0x8E);
@@ -68,13 +119,31 @@ void isr_init(void) {
 }
 
 void isr_handler(registers_t regs) {
-    kprintf("\n\n*** Oh no! [Bandit voice]: KERNEL PANIC! ***\n");
-    kprintf("Exception %d: %s\n", regs.int_no,
-        (regs.int_no < 32) ? exception_msgs[regs.int_no] : "Unknown");
-    kprintf("EIP=0x%x  CS=0x%x  EFLAGS=0x%x\n", regs.eip, regs.cs, regs.eflags);
-    kprintf("EAX=0x%x  EBX=0x%x  ECX=0x%x  EDX=0x%x\n", regs.eax, regs.ebx, regs.ecx, regs.edx);
-    kprintf("Error code: 0x%x\n", regs.err_code);
-    kprintf("System halted. Time to pack up and go home.\n");
+    const char *fault_class = isr_fault_class(regs.int_no);
+    const char *fault_msg = (regs.int_no < 32) ? exception_msgs[regs.int_no] : "Unknown";
+    uint32_t cpl = regs.cs & 0x3u;
+
+    __asm__ volatile ("cli");
+    vga_set_color(VGA_WHITE, strcmp(fault_class, "PANIC") == 0 ? VGA_RED : VGA_BLUE);
+    kprintf("\n\n*** %s: %s ***\n", fault_class, isr_fault_phrase(fault_class));
+    vga_set_color(VGA_WHITE, VGA_BLACK);
+    kprintf("Trap       : #%u %s\n", regs.int_no, fault_msg);
+    kprintf("Privilege  : %s mode (CPL=%u)\n", cpl ? "user" : "kernel", cpl);
+    isr_dump_process_context();
+    kprintf("EIP/CS     : 0x%x / 0x%x\n", regs.eip, regs.cs);
+    kprintf("EFLAGS     : 0x%x\n", regs.eflags);
+    kprintf("ESP/EBP    : 0x%x / 0x%x\n", regs.esp, regs.ebp);
+    kprintf("EAX/EBX    : 0x%x / 0x%x\n", regs.eax, regs.ebx);
+    kprintf("ECX/EDX    : 0x%x / 0x%x\n", regs.ecx, regs.edx);
+    kprintf("ESI/EDI    : 0x%x / 0x%x\n", regs.esi, regs.edi);
+    kprintf("Error code : 0x%x\n", regs.err_code);
+    if (regs.int_no == 14) {
+        isr_dump_page_fault(regs.err_code);
+    }
+    syslog_crit("TRAP", "%s #%u eip=0x%x err=0x%x proc=%u", fault_class,
+                regs.int_no, regs.eip, regs.err_code,
+                process_current() ? process_current()->pid : 0);
+    kprintf("System halting. Capture this screen and check dmesg after reboot.\n");
     __asm__ volatile ("cli; hlt");
     for(;;);
 }

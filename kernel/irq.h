@@ -1,7 +1,7 @@
 #pragma once
 #include "idt.h"
 void irq_init(void);
-void irq_handler(registers_t regs);
+void irq_handler(registers_t *regs);
 void irq_install_handler(int irq, void (*h)(registers_t*));
 void irq_uninstall_handler(int irq);
 extern void irq0(void);  extern void irq1(void);  extern void irq2(void);

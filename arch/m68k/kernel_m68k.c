@@ -22,6 +22,7 @@
 #include "../../drivers/vga.h"
 #include "../../lib/stdio.h"
 #include "../../kernel/bootui.h"
+#include "../../kernel/rtc.h"
 
 #define MAC_LC3_RAM_DEFAULT (32u * 1024u * 1024u)
 
@@ -67,6 +68,7 @@ void kernel_main_m68k(void) {
     }
 
     kprintf("[MEM]  Physical RAM: %u MB\n", memsize / (1024 * 1024));
+    rtc_init();
 
     // Step 3: TODO — initialise VIA1 timer for kernel ticks (60 Hz VBL or
     //         T1 in free-running mode at 1 ms for a scheduler tick).

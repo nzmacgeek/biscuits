@@ -15,11 +15,11 @@ extern syscall_dispatch
 ; Returns result in EAX.
 syscall_stub:
     cli
-    push ds
-    push es
-    push fs
-    push gs
-    pushad              ; push EAX,ECX,EDX,EBX,ESP,EBP,ESI,EDI
+    push dword 0
+    push dword 0x80
+    pushad
+    mov  ax, ds
+    push eax
     mov  ax, 0x10       ; kernel data segment
     mov  ds, ax
     mov  es, ax
@@ -28,10 +28,13 @@ syscall_stub:
     push esp            ; pass pointer to registers_t as argument
     call syscall_dispatch
     add  esp, 4
+    mov  [esp + 32], eax ; saved eax in registers_t
+    pop  eax
+    mov  ds, ax
+    mov  es, ax
+    mov  fs, ax
+    mov  gs, ax
     popad
-    pop  gs
-    pop  fs
-    pop  es
-    pop  ds
+    add  esp, 8
     sti
     iret
