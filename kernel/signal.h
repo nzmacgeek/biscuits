@@ -34,6 +34,7 @@ const char *signal_name(int sig);
 void        signal_init(void);
 bool        signal_is_valid(int sig);
 int         signal_send_pid(uint32_t pid, int sig);
+int         signal_send_pgrp(uint32_t pgid, int sig);
 int         signal_dispatch_pending(process_t *process, registers_t *regs);
 int         signal_sigaction(process_t *process, int sig,
 							 const bluey_sigaction_t *act,

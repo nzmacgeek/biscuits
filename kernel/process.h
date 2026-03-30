@@ -39,6 +39,7 @@ typedef struct process {
     uint32_t      page_dir;      // physical address of page directory
     uint32_t      uid;           // user id
     uint32_t      gid;           // group id
+    uint32_t      pgid;          // process group id
     int           exit_code;
     uint32_t      sleep_until;   // timer tick to wake at (0 = not sleeping)
     uint32_t      priority;      // 1 (low) .. 10 (high) - Bluey always gets priority :)
@@ -75,11 +76,14 @@ void       process_mark_exited(process_t *process, int code);
 void       process_exit(int code);
 process_t *process_current(void);
 void       process_set_current(process_t *p);
+void       process_set_waiting(process_t *p);   // block a process until an event wakes it
 process_t *process_get_by_pid(uint32_t pid);
 process_t *process_first(void);
 process_t *process_next(process_t *p);
 int32_t    process_waitpid(int32_t pid, int *status, int options);
 uint32_t   process_getpid(void);
+uint32_t   process_getpgid(uint32_t pid);
+int        process_setpgid(uint32_t pid, uint32_t pgid);
 void       process_sleep(uint32_t ms);
 void       process_wake(uint32_t pid);
 void       process_enter_first_user(process_t *process);

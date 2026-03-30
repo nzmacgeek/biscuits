@@ -174,6 +174,20 @@ int signal_send_pid(uint32_t pid, int sig) {
     return 0;
 }
 
+int signal_send_pgrp(uint32_t pgid, int sig) {
+    process_t *p;
+    int count = 0;
+
+    if (!signal_is_valid(sig) || pgid == 0) return -1;
+
+    for (p = process_first(); p; p = process_next(p)) {
+        if (p->pgid == pgid) {
+            if (signal_send_pid(p->pid, sig) == 0) count++;
+        }
+    }
+    return count > 0 ? 0 : -1;
+}
+
 int signal_dispatch_pending(process_t *process, registers_t *regs) {
     int sig;
     process_sigaction_t *action;
