@@ -433,6 +433,8 @@ process_t *elf_exec(const char *path, uint32_t uid) {
     vfs_stat_t stat;
     uint32_t groups[PROC_MAX_GROUPS];
     vfs_cred_t cred;
+    passwd_entry_t passwd;
+    uint32_t gid = uid;
     uint32_t euid = uid;
     uint32_t egid = uid;
 
@@ -441,10 +443,12 @@ process_t *elf_exec(const char *path, uint32_t uid) {
     argv_storage[0] = path;
     argv_storage[1] = NULL;
 
+    if (multiuser_get_passwd(uid, &passwd) == 0) gid = passwd.gid;
+    egid = gid;
     memset(&cred, 0, sizeof(cred));
     cred.uid = uid;
-    cred.gid = uid;
-    cred.group_count = multiuser_get_groups(uid, uid, groups, PROC_MAX_GROUPS);
+    cred.gid = gid;
+    cred.group_count = multiuser_get_groups(uid, gid, groups, PROC_MAX_GROUPS);
     cred.groups = groups;
 
     if (vfs_stat(path, &stat) == 0) {

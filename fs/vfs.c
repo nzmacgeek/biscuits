@@ -167,7 +167,8 @@ int vfs_open(const char *path, int flags) {
         else if (flags & VFS_O_WRONLY) need = VFS_ACCESS_WRITE;
         else need = VFS_ACCESS_READ;
 
-        if (!vfs_check_mode(&stat, need, &cred) || stat.is_dir) return -1;
+        if (!vfs_check_mode(&stat, need, &cred)) return -1;
+        if (stat.is_dir) return -1;
     } else if (flags & VFS_O_CREAT) {
         char parent[VFS_PATH_LEN];
         if (vfs_parent_path(path, parent, sizeof(parent)) != 0 ||

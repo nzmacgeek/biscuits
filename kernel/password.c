@@ -152,8 +152,8 @@ void password_hash_pbkdf2(const char *password,
 int password_verify(const char *password, const char *stored_hash) {
     if (!password || !stored_hash) return 0;
 
-    if (strncmp(stored_hash, "$pbkdf2-sha256$", 16) == 0) {
-        const char *iter_start = stored_hash + 16;
+    if (strncmp(stored_hash, "$pbkdf2-sha256$", 15) == 0) {
+        const char *iter_start = stored_hash + 15;
         const char *iter_end = strchr(iter_start, '$');
         if (!iter_end) return 0;
 
