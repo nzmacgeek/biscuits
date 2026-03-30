@@ -4,6 +4,17 @@
 // Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
 // licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
 #include "../include/types.h"
+#include "process.h"
+
+typedef struct {
+    char     name[32];
+    uint32_t entry;
+    uint32_t image_end;
+    uint32_t stack_base;
+    uint32_t stack_top;
+    uint32_t stack_pointer;
+    uint32_t page_dir;
+} elf_image_t;
 
 // ELF32 magic and constants
 #define ELF_MAGIC    0x464C457F   // 0x7F 'E' 'L' 'F' (little-endian uint32)
@@ -48,3 +59,10 @@ typedef struct __attribute__((packed)) {
 // Returns 0 on success, -1 on error. Sets *entry_out to entry point.
 int elf_load(const uint8_t *data, size_t len, uint32_t *entry_out);
 int elf_validate(const uint8_t *data, size_t len);
+int elf_build_initial_stack(uint32_t page_dir,
+                            const char *const argv[], const char *const envp[],
+                            uint32_t *stack_base_out, uint32_t *stack_top_out,
+                            uint32_t *stack_pointer_out);
+int elf_load_image(const char *path, const char *const argv[], const char *const envp[],
+                   elf_image_t *image_out);
+process_t *elf_exec(const char *path, uint32_t uid);

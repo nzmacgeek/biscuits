@@ -13,18 +13,33 @@
 #define SYS_OPEN          2
 #define SYS_CLOSE         3
 #define SYS_STAT          4
+#define SYS_FORK          57
+#define SYS_CLONE         120
 #define SYS_GETPID        20
 #define SYS_GETUID        24
 #define SYS_GETGID        47
 #define SYS_EXECVE        11
+#define SYS_MMAP          90
+#define SYS_MMAP2         192
+#define SYS_KILL          62
 #define SYS_EXIT          60
 #define SYS_UNAME         63
+#define SYS_BRK           45
+#define SYS_IOCTL         54
+#define SYS_WAITPID       61
+#define SYS_CHDIR         80
+#define SYS_GETCWD        183
+#define SYS_PIPE          42
+#define SYS_DUP2          33
 #define SYS_GETTIMEOFDAY  78
 #define SYS_SETTIMEOFDAY  79
+#define SYS_RT_SIGACTION  174
+#define SYS_RT_SIGPROCMASK 175
+#define SYS_SIGRETURN     15
 #define SYS_GETHOSTNAME   125
 #define SYS_SETHOSTNAME   74
 #define SYS_GETDENTS      141
 
 void syscall_init(void);
 // Called from syscall.asm - dispatches based on eax syscall number
-int32_t syscall_dispatch(registers_t regs);
+int32_t syscall_dispatch(registers_t *regs);

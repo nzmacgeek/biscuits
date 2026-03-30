@@ -14,7 +14,6 @@ sudo apt-get install -y \
     nasm \
     gcc-multilib \
     binutils \
-    mtools \
     qemu-system-x86 \
     grub-pc-bin \
     grub-common \
@@ -101,9 +100,7 @@ make run
 ```bash
 qemu-system-i386 \
     -cdrom blueyos.iso \
-    -cpu pentium \
     -m 256M \
-    -smp 4 \
     -serial stdio \
     -no-reboot \
     -no-shutdown
@@ -164,7 +161,6 @@ Each subsystem prints a message as it initialises:
 [IDT]  Chilli configured the Interrupts - she's got it sorted!
 [ISR]  Exception handlers online - no crashing allowed at this playdate!
 [IRQ]  Hardware interrupts remapped - Nana would be proud!
-[SMP]  Detected 4 logical CPUs (with APIC) - bootstrap CPU online
 [TMR]  Bingo's Tick Tock Timer is ticking!
 [KBD]  Bingo's Keyboard ready - Tap tap tap!
 [HEP]  Kernel heap ready - plenty of room to play!
@@ -197,14 +193,20 @@ BlueyOS is ready. Type your commands below.
 "This is the best day EVER!" - Bluey Heeler
 ```
 
-After this the shell prompt appears. Useful diagnostic commands include:
+After this the kernel starts the interactive shell.
+
+### 4.6 TTY / Shell Smoke Test
+
+At the `bluey@biscuit:/$` prompt, verify that keyboard input is echoed back through
+the terminal and that the built-in diagnostic commands work:
 
 ```text
+help
+uname
 version
-cpuinfo
 meminfo
+free
 swapinfo
-dmesg
 ```
 
 ---

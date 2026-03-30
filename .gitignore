@@ -20,3 +20,16 @@ tools/mkfs_blueyfs
 *.swo
 *~
 .DS_Store
+
+# Local run artifacts
+*.log
+*.out
+*.pid
+qemu-status.txt
+qemu-root/
+pram-q800.img
+typescript
+
+# Local machine firmware/images
+*.ROM
+user/init.elf

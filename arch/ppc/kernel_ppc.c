@@ -18,6 +18,7 @@
 
 #include "../../include/types.h"
 #include "imac_g4.h"
+#include "../../kernel/rtc.h"
 
 // ---------------------------------------------------------------------------
 // SCC serial output — channel A (internal modem debug UART when enabled)
@@ -63,6 +64,13 @@ static void scc_putchar(char c) {
 
 static void scc_puts(const char *s) {
     while (*s) scc_putchar(*s++);
+}
+
+void ppc_console_putchar(char c) {
+    scc_putchar(c);
+}
+
+void ppc_console_flush(void) {
 }
 
 static void scc_put_uint32(uint32_t v) {
@@ -130,6 +138,7 @@ void kernel_main_ppc(uint32_t of_ptr) {
 
     // Step 2: Read physical RAM size
     uint32_t ramsize = probe_ram_size();
+    rtc_init();
     scc_puts("[MEM]  Physical RAM: ");
     scc_put_uint32(ramsize / (1024 * 1024));
     scc_puts(" MB\n");

@@ -38,8 +38,8 @@ const char *sysinfo_get_domainname(void);
 void        sysinfo_set_hostname(const char *name);
 void        sysinfo_set_domainname(const char *name);
 const timezone_t *sysinfo_get_timezone(void);
-void        sysinfo_set_total_ram_mb(uint32_t ram_mb);
-uint32_t    sysinfo_get_total_ram_mb(void);
+void        sysinfo_set_ram_mb(uint32_t ram_mb);
+uint32_t    sysinfo_get_ram_mb(void);
 
 // Epoch conversion utilities
 // bluey_secs = seconds since Bandit's Birthday (15 Oct 1980 00:00 AEST)
