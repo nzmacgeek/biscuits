@@ -5,7 +5,7 @@ Core Kernel:
 - [ ] Add support for advanced power management (APM/ACPI)
 - [ ] Implement a more robust memory management system (e.g. buddy allocator)
 - [ ] Add support for demand paging and swapping to disk
-- [ ] Implement a more feature-rich scheduler (e.g. priority-based, CFS)
+- [ ] Implement a more feature-rich scheduler (e.g. priority-based, CFS). A pluggable scheduler interface where scheduling policy lives outside the kernel core. A game console deployment loads a latency-optimized policy; a cloud VM loads a throughput-optimized one — same kernel binary.
 - [ ] Add support for inter-process communication (IPC) mechanisms (e.g. pipes, message queues, shared memory)
 - [ ] Implement a more complete set of system calls (e.g. fork, execve, wait, signal handling)
 - [ ] Add support for dynamic kernel modules (loadable kernel modules)
