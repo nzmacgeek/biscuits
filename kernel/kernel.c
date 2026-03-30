@@ -189,7 +189,6 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
         if (rootfs_mount_config(&rootfs) != 0) {
             kprintf("[VFS]  No recognised filesystem - running diskless\n");
         } else {
-            rootfs_ensure_layout();
             rootfs_apply_fstab();
             // Flush early boot log once /var/log is reachable.
             syslog_flush_to_fs();

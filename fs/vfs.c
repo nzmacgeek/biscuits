@@ -96,13 +96,22 @@ static int vfs_alloc_fd(void) {
 
 int vfs_open(const char *path, int flags) {
     vfs_mount_t *m = vfs_find_mount(path);
-    if (!m || !m->fs->open) return -1;
+    if (!m || !m->fs->open) {
+        if (path) kprintf("[VFS] Open miss path=%s mount=%d\n", path, !!m);
+        return -1;
+    }
 
     int fs_fd = m->fs->open(path, flags);
-    if (fs_fd < 0) return -1;
+    if (fs_fd < 0) {
+        kprintf("[VFS] FS open failed path=%s fs=%s\n", path, m->fs->name);
+        return -1;
+    }
 
     int fd = vfs_alloc_fd();
-    if (fd < 0) { kprintf("[VFS]  Out of file descriptors!\n"); return -1; }
+    if (fd < 0) {
+        kprintf("[VFS]  Out of file descriptors for %s!\n", path);
+        return -1;
+    }
 
     fd_table[fd].used   = 1;
     fd_table[fd].fs_fd  = fs_fd;

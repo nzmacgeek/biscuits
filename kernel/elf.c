@@ -32,15 +32,22 @@ static int elf_read_file(const char *path, uint8_t **data_out, size_t *len_out) 
     uint8_t *buffer = NULL;
     size_t length = 0;
     size_t capacity = 0;
+    uint32_t heap_total = 0;
+    uint32_t heap_used = 0;
+    uint32_t heap_free = 0;
 
     if (!path || !data_out || !len_out) return -1;
 
     fd = vfs_open(path, VFS_O_RDONLY);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        kprintf("[ELF] Open failed for %s\n", path);
+        return -1;
+    }
 
     for (;;) {
         int nread = vfs_read(fd, chunk, sizeof(chunk));
         if (nread < 0) {
+            kprintf("[ELF] Read failed for %s at offset=%u\n", path, (uint32_t)length);
             vfs_close(fd);
             if (buffer) kheap_free(buffer);
             return -1;
@@ -60,6 +67,9 @@ static int elf_read_file(const char *path, uint8_t **data_out, size_t *len_out) 
 
             next_buffer = (uint8_t*)kheap_alloc(next_capacity, 0);
             if (!next_buffer) {
+                kheap_get_stats(&heap_total, &heap_used, &heap_free);
+                kprintf("[ELF] Heap alloc failed for %s size=%u total=%u used=%u free=%u\n",
+                        path, (uint32_t)next_capacity, heap_total, heap_used, heap_free);
                 vfs_close(fd);
                 if (buffer) kheap_free(buffer);
                 return -1;

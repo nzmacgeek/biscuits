@@ -87,6 +87,14 @@ static int read_page(int slot, uint8_t *dst) {
 // ---------------------------------------------------------------------------
 
 void swap_init(uint32_t start_lba, uint32_t num_pages) {
+    typedef struct __attribute__((packed)) {
+        uint32_t magic;
+        uint32_t version;
+        uint32_t total_pages;
+        uint32_t used_pages;
+        uint8_t  label[16];
+    } swap_header_prefix_t;
+
     swap_start_lba = start_lba;
     swap_total     = (num_pages > SWAP_MAX_PAGES) ? SWAP_MAX_PAGES : num_pages;
     swap_used      = 0;
@@ -94,14 +102,14 @@ void swap_init(uint32_t start_lba, uint32_t num_pages) {
 
     memset(swap_bitmap, 0, sizeof(swap_bitmap));
 
-    // Read and validate the swap header (at LBA start_lba, 8 sectors)
-    uint8_t hdr_buf[SWAP_PAGE_SIZE];
-    if (ata_read_sector(start_lba, hdr_buf) != 0) {
+    // The fields we need are all in the first 512-byte sector.
+    uint8_t hdr_sector[512];
+    if (ata_read_sector(start_lba, hdr_sector) != 0) {
         kprintf("[SWAP] Failed to read swap header\n");
         return;
     }
 
-    swap_header_t *hdr = (swap_header_t *)hdr_buf;
+    const swap_header_prefix_t *hdr = (const swap_header_prefix_t *)hdr_sector;
     if (hdr->magic != SWAP_MAGIC) {
         kprintf("[SWAP] No valid swap signature at LBA %d\n", start_lba);
         kprintf("[SWAP] Run mkswap to initialise a swap partition\n");

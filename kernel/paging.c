@@ -141,8 +141,9 @@ void paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phy
 
     page_table[pt_idx] = new_entry;
 
-    /* Only flush when modifying an already-present mapping. */
-    if (old_entry & PAGE_PRESENT) {
+    if (page_dir == current_page_dir) {
+        paging_refresh_active_directory(page_dir);
+    } else if (old_entry & PAGE_PRESENT) {
         paging_refresh_active_directory(page_dir);
     }
 }

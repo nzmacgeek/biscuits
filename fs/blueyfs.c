@@ -614,6 +614,15 @@ static int biscuitfs_mount_cb(const char *mountpoint, uint32_t start_lba) {
 static int biscuitfs_open_cb(const char *path, int flags) {
     uint32_t ino = path_to_inode(path);
     if (!ino) {
+        if (strcmp(path, "/bin/init") == 0 || strcmp(path, "/bin/bash") == 0 ||
+            strcmp(path, "/etc/fstab") == 0) {
+            kprintf("[BISCUITFS] open miss path=%s bin=%u etc=%u init=%u fstab=%u\n",
+                    path,
+                    path_to_inode("/bin"),
+                    path_to_inode("/etc"),
+                    path_to_inode("/bin/init"),
+                    path_to_inode("/etc/fstab"));
+        }
         if (!(flags & VFS_O_CREAT)) return -1;
 
         // Create the file
@@ -663,6 +672,7 @@ static int biscuitfs_open_cb(const char *path, int flags) {
             return i;
         }
     }
+    kprintf("[BISCUITFS] open fd-table full for %s\n", path);
     return -1;
 }
 
@@ -800,6 +810,8 @@ static int biscuitfs_readdir_cb(const char *path, vfs_dirent_t *out, int max) {
 }
 
 static int biscuitfs_mkdir_cb(const char *path) {
+    if (path_to_inode(path)) return -1;
+
     // Check if parent exists
     char parent_path[256];
     strncpy(parent_path, path, sizeof(parent_path) - 1);

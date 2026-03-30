@@ -32,13 +32,20 @@ static bool rootfs_map_device_lba(const char *device, uint32_t *start_lba) {
     if (strcmp(device, "/dev/hda1") == 0 ||
         strcmp(device, "/dev/sda1") == 0 ||
         strcmp(device, "/dev/ata0p1") == 0) {
-        *start_lba = BLUEYOS_ROOT_PARTITION_LBA;
+        *start_lba = BLUEYOS_BOOT_PARTITION_LBA;
         return true;
     }
 
     if (strcmp(device, "/dev/hda2") == 0 ||
         strcmp(device, "/dev/sda2") == 0 ||
         strcmp(device, "/dev/ata0p2") == 0) {
+        *start_lba = BLUEYOS_ROOT_PARTITION_LBA;
+        return true;
+    }
+
+    if (strcmp(device, "/dev/hda3") == 0 ||
+        strcmp(device, "/dev/sda3") == 0 ||
+        strcmp(device, "/dev/ata0p3") == 0) {
         *start_lba = BLUEYOS_SWAP_PARTITION_LBA;
         return true;
     }
@@ -50,7 +57,7 @@ void rootfs_config_init(rootfs_config_t *cfg) {
     if (!cfg) return;
 
     memset(cfg, 0, sizeof(*cfg));
-    strncpy(cfg->device, "/dev/hda1", sizeof(cfg->device) - 1);
+    strncpy(cfg->device, "/dev/hda2", sizeof(cfg->device) - 1);
     strncpy(cfg->fs_name, "biscuitfs", sizeof(cfg->fs_name) - 1);
     cfg->start_lba = BLUEYOS_ROOT_PARTITION_LBA;
     cfg->auto_probe = true;
@@ -108,7 +115,7 @@ int rootfs_mount_config(const rootfs_config_t *cfg) {
     }
 
     fallback_lba = 0;
-    if (cfg->start_lba == 0 && rootfs_map_device_lba("/dev/hda1", &fallback_lba)) {
+    if (cfg->start_lba == 0 && rootfs_map_device_lba("/dev/hda2", &fallback_lba)) {
         if (vfs_mount("/", "biscuitfs", fallback_lba) == 0) {
             kprintf("[ROOT] Mounted %s via partition fallback on biscuitfs\n", cfg->device);
             return 0;

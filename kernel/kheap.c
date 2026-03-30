@@ -49,8 +49,9 @@ void *kheap_alloc(size_t sz, int align) {
             prefix_bytes = alloc_hdr_addr - raw_start;
 
             if (prefix_bytes != 0 && prefix_bytes < sizeof(block_hdr_t) + 16u) {
-                cur = cur->next;
-                continue;
+                alloc_start = (alloc_start + 0x1000u) & ~0xFFFu;
+                alloc_hdr_addr = alloc_start - sizeof(block_hdr_t);
+                prefix_bytes = alloc_hdr_addr - raw_start;
             }
         }
 

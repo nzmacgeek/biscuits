@@ -316,12 +316,12 @@ iso: $(TARGET)
 	    echo "  [ISO]  ISO build is only supported for ARCH=i386"; exit 1; fi
 	@bash tools/mkdisk.sh
 
-disk: iso $(USER_TARGETS) tools-host
+disk: $(TARGET) $(USER_TARGETS) tools-host
 	@if [ "$(ARCH)" != "i386" ]; then \
 	    echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi
 	@$(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE)
 
-run: iso disk
+run: disk
 	@if [ "$(ARCH)" != "i386" ]; then \
 	    echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi
 	@bash tools/qemu-run.sh
