@@ -24,6 +24,15 @@ The approach has two stages:
 2. **Port Bash** — configure it to use the ported libc and the BlueyOS
    syscall numbers.
 
+BlueyOS is now moving toward a Linux-like root filesystem model as well:
+
+1. The kernel chooses a root device from boot parameters such as
+    `root=/dev/hda1 rootfstype=biscuitfs`.
+2. The mounted root should provide a conventional Unix tree:
+    `/bin`, `/boot`, `/etc`, `/lib`, `/root`, `/tmp`, `/usr`, `/var`.
+3. User-space programs should be executable from any absolute VFS path,
+    rather than being special-cased to fixed kernel locations.
+
 ---
 
 ## 1. Prerequisites
@@ -59,6 +68,75 @@ cd ..
 export PATH="/opt/blueyos-cross/bin:$PATH"
 ```
 
+### 1.2 Root filesystem boot parameters
+
+The i386 kernel now parses a Multiboot command line and understands:
+
+- `root=/dev/hda1`
+- `rootfstype=biscuitfs`
+- `safe`
+
+Examples for GRUB:
+
+```grub
+menuentry "BlueyOS root on BiscuitFS" {
+    multiboot /boot/blueyos.elf root=/dev/hda1 rootfstype=biscuitfs
+    boot
+}
+
+menuentry "BlueyOS auto-probe root" {
+    multiboot /boot/blueyos.elf root=/dev/hda1
+    boot
+}
+
+menuentry "BlueyOS diskless" {
+    multiboot /boot/blueyos.elf root=none
+    boot
+}
+```
+
+At boot, the kernel currently:
+
+- maps a small set of root device aliases such as `/dev/hda1`, `/dev/sda1`,
+  and `/dev/ata0p1` to an LBA offset,
+- mounts `/` from either a requested `rootfstype` or an auto-probe path,
+- best-effort creates the base directories below when the filesystem is
+  writable.
+
+### 1.3 Target root layout
+
+The intended on-disk layout is deliberately Linux-like:
+
+```text
+/
+|-- bin/
+|-- boot/
+|-- etc/
+|-- lib/
+|-- root/
+|-- tmp/
+|-- usr/
+|   |-- bin/
+|   `-- lib/
+`-- var/
+    |-- log/
+    `-- pid/
+```
+
+Expected usage:
+
+- `/bin`: essential single-user binaries and rescue tools
+- `/boot`: kernel and bootloader-visible payloads
+- `/etc`: system-wide configuration
+- `/lib`: system libraries and dynamic loader support later on
+- `/root`: home for uid 0
+- `/tmp`: disposable scratch space
+- `/usr`: user-space programs and non-essential shared data
+- `/var`: writable runtime state such as logs and pid files
+
+BlueyOS does not yet implement a separate loopback mount for `/boot`; today it
+is just a normal directory in the root filesystem roadmap.
+
 ---
 
 ## 2. Porting musl libc (recommended)
@@ -82,21 +160,27 @@ Linux-compatible syscall numbers on `int 0x80` (i386), so the existing
 **`arch/i386/syscall_arch.h`** — verify these numbers match `kernel/syscall.h`:
 
 ```c
-/* BlueyOS syscall numbers (int 0x80, i386 ABI - Linux-compatible subset) */
+/* BlueyOS syscall numbers (int 0x80, i386 ABI - current kernel subset) */
 #define SYS_read       0
 #define SYS_write      1
 #define SYS_open       2
 #define SYS_close      3
 #define SYS_getpid    20
 #define SYS_getuid    24
+#define SYS_getgid    47
 #define SYS_brk       45   /* heap growth */
+#define SYS_execve    11   /* in-place image replacement for ring-3 callers */
+#define SYS_kill      62   /* minimal signal send path */
 #define SYS_exit      60
 #define SYS_uname     63
 #define SYS_gethostname 125
 ```
 
-Syscalls not yet implemented by BlueyOS (e.g. `fork`, `execve`, `waitpid`)
-need stub implementations that return `ENOSYS` until the kernel adds them.
+Today, `open`, `close`, `read`, `write`, `getpid`, `getuid`, `getgid`,
+`uname`, `gethostname`, `waitpid`, and a ring-3 `execve` image-replacement
+path are implemented to varying degrees. Many other syscalls still return
+`ENOSYS` placeholders and must be filled in before musl can act as a complete
+userspace libc.
 
 ### 2.3 Configure and build musl
 
@@ -113,25 +197,53 @@ sudo make install
 
 ### 2.4 Extend the BlueyOS kernel with required syscalls
 
-For a shell to be useful, the kernel needs at least:
+For a shell and libc port to be useful, the kernel needs at least:
 
 | Syscall | Number | Description |
 |---------|--------|-------------|
 | `read`  | 0      | Read from fd (fd=0 = keyboard) ✓ |
 | `write` | 1      | Write to fd (fd=1 = VGA) ✓ |
-| `open`  | 2      | Open a VFS path |
-| `close` | 3      | Close fd |
-| `fork`  | 57     | Clone process (requires full process support) |
-| `execve`| 59     | Replace process image (ELF loader) |
-| `waitpid`| 61   | Wait for child |
+| `open`  | 2      | Open a VFS path ✓ |
+| `close` | 3      | Close fd ✓ |
+| `fork`  | 57     | Clone process and address space |
+| `execve`| 11     | Replace process image from a VFS path |
+| `waitpid`| 61    | Wait for child |
 | `brk`   | 45     | Expand heap |
 | `mmap`  | 90     | Memory-mapped I/O / anonymous pages |
 | `ioctl` | 54     | Device control |
-| `stat`  | 106    | File metadata |
+| `stat`  | 4      | File metadata |
 | `chdir` | 80     | Change directory |
 | `getcwd`| 183    | Get current directory |
 | `pipe`  | 42     | Create pipe for IPC |
-| `dup2`  | 63     | Duplicate file descriptor |
+| `dup2`  | 33     | Duplicate file descriptor |
+| `kill`  | 62     | Send a signal (minimal kernel path exists) |
+| `rt_sigaction` | 174 | Install a signal handler |
+| `rt_sigprocmask` | 175 | Block/unblock signals |
+| `sigreturn` | 15 | Return from signal trampoline |
+
+Current status by bucket:
+
+- Implemented now: `read`, `write`, `open`, `close`, `getpid`, `getuid`,
+    `getgid`, `uname`, `gethostname`, `gettimeofday`, `waitpid`, `fork`,
+    `rt_sigaction`, `rt_sigprocmask`, `sigreturn`.
+- Partially scaffolded: `kill` plus kernel signal numbers and pending-signal
+    bits on each process; `execve` now copies `argv`/`envp`, loads into a fresh
+    per-process address space, and returns to ring 3 through the syscall `iret`
+    path; the kernel can also bootstrap `/bin/init` or `/bin/bash` directly at
+    boot.
+- Still missing for musl completeness: `brk`, `stat`, `fstat`, `lseek`,
+  `mmap`, `munmap`, `ioctl`, `chdir`, `getcwd`, `dup`, `dup2`, `pipe`,
+    and a fully blocking `waitpid` path.
+
+The short-term musl goal should be:
+
+1. Complete file-descriptor syscalls around the existing VFS.
+2. Add process-image replacement from a path-based ELF loader.
+3. Add `brk` and a minimal `mmap` for libc allocation and loader support.
+4. Tighten signal semantics around restart rules, ignored handlers across
+    `execve`, and uncatchable defaults.
+5. Replace the current polling-style `waitpid` fallback with a true blocking
+    wait that can resume an in-kernel continuation after child exit.
 
 Add each in `kernel/syscall.c` following the existing pattern:
 
@@ -148,6 +260,43 @@ case SYS_BRK:
     regs->eax = (uint32_t)kheap_brk(regs->ebx);
     break;
 ```
+
+### 2.5 Signals roadmap
+
+Signals are now part of the kernel roadmap and can no longer be deferred if a
+real shell is the target.
+
+Minimum useful signal set:
+
+- `SIGHUP`
+- `SIGINT`
+- `SIGQUIT`
+- `SIGKILL`
+- `SIGTERM`
+- `SIGCHLD`
+- `SIGSTOP`
+- `SIGCONT`
+- `SIGALRM`
+
+Kernel stages:
+
+1. Signal numbers and per-process pending masks.
+2. `kill(pid, sig)` and default actions.
+3. Delivery on return to user mode.
+4. `sigaction` / `rt_sigaction`.
+5. `sigprocmask` and inherited masks across `fork`.
+6. User-space trampoline and `sigreturn`.
+
+Current kernel state:
+
+- signal numbers are defined,
+- processes track pending and blocked masks,
+- `kill` has a minimal kernel implementation,
+- fatal default actions drive zombie exit state and queue `SIGCHLD` for the parent,
+- user-installed handlers are now installable through `rt_sigaction`,
+- pending signals can be delivered on user-mode return,
+- a shared user-space trampoline invokes `sigreturn`,
+- full restart semantics and alternate stacks are not implemented yet.
 
 ---
 
@@ -216,6 +365,9 @@ features. For an initial port:
 #undef HAVE_GETRUSAGE
 ```
 
+Also expect to keep job control and asynchronous signal handling disabled until
+the kernel grows real process groups, sessions, and `sigaction` delivery.
+
 ### 3.5 Package and install to BiscuitFS image
 
 ```bash
@@ -227,7 +379,7 @@ tools/mkfs.biscuitfs -L "BlueyRoot" -s 128 blueyos-root.img
 sudo mount -o loop,offset=0 blueyos-root.img /mnt/blueyos
 
 # Create directory structure
-sudo mkdir -p /mnt/blueyos/{bin,etc,lib,dev,proc,tmp,home/bandit}
+sudo mkdir -p /mnt/blueyos/{bin,boot,etc,lib,root,tmp,usr/bin,usr/lib,var/log,var/pid,dev,proc,home/bandit}
 
 # Copy bash
 sudo cp bash /mnt/blueyos/bin/sh
@@ -253,26 +405,43 @@ sudo umount /mnt/blueyos
 
 ## 4. Launching Bash from the BlueyOS kernel
 
-The BlueyOS ELF loader (`kernel/elf.c`) already supports loading ELF32
-executables. To exec `/bin/bash` at startup, modify `kernel_main()`:
+The current ELF loader can now read an ELF image from a VFS path, copy in
+`argv` and `envp`, build a minimal initial user stack image, load segments into
+a fresh per-process address space, and return to ring 3 through the syscall
+`iret` path. The kernel also has a first-user bootstrap path that tries
+`/bin/init` and then `/bin/bash` before falling back to the built-in shell.
+
+What still needs to exist before `/bin/bash` can be started like a normal Unix
+program:
+
+1. A fully blocking `waitpid()` path that can sleep in-kernel without losing
+    its continuation.
+2. `brk`/`mmap` and the rest of the libc memory-management surface.
+3. Better signal semantics: restartable syscalls, `SA_RESTART`, and alternate stacks.
+4. A cleaner fallback path once the last user process exits.
+5. File-descriptor inheritance and the rest of the shell-facing POSIX surface.
+
+Current kernel behavior:
+
+- ring-3 callers may invoke `SYS_EXECVE`
+- the kernel copies `path`, `argv`, and `envp` into kernel memory first
+- the kernel loads the ELF into a fresh page directory and replaces the current
+    process image in place
+- the syscall return frame is rewritten so `iret` enters the new image in ring 3
+- the kernel can bootstrap the first user process directly from `kernel_main`
+- `fork()` now clones the current user address space and trap frame
+- `SYS_WAITPID` now reaps real child zombies and enforces parent/child matching,
+    but non-`WNOHANG` waits still degrade to an `EAGAIN`-style polling path
+
+The eventual shape is still roughly:
 
 ```c
-// After shell_init() in kernel/kernel.c:
-// Attempt to exec /bin/bash from the mounted filesystem
-int bash_elf = vfs_open("/bin/bash", VFS_O_RDONLY);
-if (bash_elf >= 0) {
-    vfs_close(bash_elf);
-    process_t *bash_proc = elf_exec("/bin/bash", 1 /* uid = bandit */);
-    if (bash_proc) {
-        scheduler_add(bash_proc);
-        kprintf("[SHL]  Launched /bin/bash (PID %d)\n", bash_proc->pid);
-        // Fall through - the built-in shell is still the fallback
-    }
-} else {
-    kprintf("[SHL]  /bin/bash not found - using built-in shell\n");
-    shell_run();  /* built-in shell, never returns */
-}
+// Future direction once the first user bootstrap exists:
+execve("/bin/bash", argv, envp);
 ```
+
+Treat that snippet as a roadmap target, not as something the current kernel
+can already do.
 
 ---
 
@@ -341,19 +510,58 @@ qemu-system-i386 \
 ```c
 #define SYS_READ       0
 #define SYS_WRITE      1
+#define SYS_OPEN       2
+#define SYS_CLOSE      3
+#define SYS_STAT       4
+#define SYS_EXECVE     11
 #define SYS_GETPID    20
 #define SYS_GETUID    24
+#define SYS_GETGID    47
+#define SYS_BRK       45
+#define SYS_KILL      62
 #define SYS_EXIT      60
 #define SYS_UNAME     63
+#define SYS_IOCTL     54
+#define SYS_WAITPID   61
+#define SYS_CHDIR     80
+#define SYS_GETCWD    183
+#define SYS_PIPE      42
+#define SYS_DUP2      33
+#define SYS_RT_SIGACTION 174
+#define SYS_RT_SIGPROCMASK 175
+#define SYS_SIGRETURN 15
 #define SYS_GETHOSTNAME 125
 ```
 
-These are Linux-compatible i386 numbers. Syscalls not listed return `ENOSYS`.
-Add new syscalls in `kernel/syscall.c` as needed.
+Some of these are currently implemented, while several intentionally return
+`ENOSYS` placeholders in `kernel/syscall.c` until the process and MMU layers
+catch up.
 
----
+## 8. glibc roadmap
 
-## 8. Terminal emulation
+glibc is a much larger target than musl and should be treated as a second-pass
+ project only after musl, BusyBox, or a small shell is working.
+
+Why glibc is harder:
+
+- stronger assumptions around `fork`, `execve`, `clone`, TLS, and signals,
+- dynamic linker and ELF relocation expectations,
+- NSS, locale, and thread runtime complexity,
+- more aggressive use of `mmap`, `mprotect`, and process metadata syscalls.
+
+Suggested glibc order of work:
+
+1. Finish a stable musl port first.
+2. Add a real dynamic linker plan for `/lib/ld-*`.
+3. Implement TLS setup on i386.
+4. Provide robust signal frames and restart semantics.
+5. Add `mmap`, `munmap`, `mprotect`, `set_tid_address`, and thread support.
+6. Only then begin glibc sysdeps work for `i386-blueyos`.
+
+Pragmatically, musl or BusyBox `ash` should be the first success criterion;
+glibc should not be on the critical path for the first usable userland.
+
+## 9. Terminal emulation
 
 BlueyOS currently outputs directly to the VGA text-mode buffer (80×25).
 Bash requires a terminal line discipline (`termios`). For a proper experience:
@@ -377,17 +585,74 @@ void vt100_putchar(char c) {
 
 ---
 
-## 9. Summary
+## 10. Exception handling and crash visibility
+
+BlueyOS now benefits from explicit exception reporting in the ISR path. Fatal
+CPU traps produce a visible `PANIC` or `OOPS` banner, register dump, page-fault
+decode, and a syslog entry tagged `TRAP`.
+
+This matters for libc and shell bring-up because early userland failures often
+look like silent hangs if the kernel fault path is opaque.
+
+Still recommended:
+
+1. Persist the last trap summary to a fixed memory buffer or crash log file.
+2. Add a watchdog/heartbeat indicator for long hangs without traps.
+3. Distinguish user-mode faults from kernel-mode faults and kill only the
+    offending process when user mode exists.
+
+## 11. M68K porting todo
+
+The m68k port needs a separate staged todo because it does not yet share the
+full i386 kernel feature set.
+
+Phase 1: storage and rootfs
+
+- bring up an m68k block-device layer, likely SCSI or Macintosh-specific disk I/O
+- port the VFS mount path so `root=` works on m68k too
+- ensure BiscuitFS or FAT access is stable on real m68k media geometry
+
+Phase 2: process and syscall substrate
+
+- define the m68k syscall ABI and trap entry path
+- implement user/kernel mode transitions
+- add per-process stacks and address-space rules suitable for 68030 MMU use
+- make `read`, `write`, `open`, `close`, `getpid`, and `exit` work first
+
+Phase 3: executable loading
+
+- decide whether the first target is ELF for m68k or a temporary flat binary ABI
+- add an m68k loader that does not assume i386 ELF machine ids or paging rules
+- construct user stacks for argv/envp on m68k
+
+Phase 4: signals and libc
+
+- define m68k signal frame layout
+- implement `kill`, `sigaction`, `sigprocmask`, `sigreturn`
+- port musl sysdeps for the chosen m68k ABI
+
+Phase 5: shell bring-up
+
+- validate `sh` or BusyBox `ash` before attempting Bash
+- confirm terminal control, `ioctl`, and canonical input on the Mac console path
+
+## 12. Summary
 
 | Step | Status | Notes |
 |------|--------|-------|
+| Root device via `root=` | △ | i386 boot parsing and mount selection now scaffolded |
+| Linux-like root layout | △ | kernel creates base dirs best-effort on writable root |
 | Build cross-compiler | ☐ | gcc + binutils targeting i386-blueyos-elf |
-| Port musl libc | ☐ | `arch/i386` works; stub missing syscalls |
-| Extend kernel syscalls | ☐ | At minimum: open/close/brk/fork/exec |
-| Configure & build Bash | ☐ | Disable readline/termcap initially |
-| Create BiscuitFS image | ✓ | Use `tools/mkfs.biscuitfs` |
-| QEMU boot test | ☐ | Verify built-in shell works first |
-| VT100 terminal driver | ☐ | Needed for full Bash readline support |
+| Port musl libc | △ | syscall numbering and target gaps are now clearer |
+| Extend kernel syscalls | △ | `open`/`close` implemented; many others still `ENOSYS` |
+| Signals | △ | handlers, pending delivery, shared trampoline, and `sigreturn` exist; restart semantics and alt stacks absent |
+| Real `execve` path loader | ✓ | VFS-backed load, per-process address space, ring-3 return, and first-user bootstrap are present |
+| glibc | ☐ | defer until musl and dynamic-loader groundwork exist |
+| m68k userland port | ☐ | needs storage, syscall ABI, loader, signals |
+| Configure & build Bash | ☐ | disable readline/job control initially |
+| Create BiscuitFS image | ✓ | use `tools/mkfs.biscuitfs` |
+| QEMU boot test | ☐ | verify rootfs mount and shell before Bash |
+| VT100 terminal driver | ☐ | needed for full readline-style interaction |
 
 ---
 

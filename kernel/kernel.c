@@ -24,8 +24,12 @@
 #include "kheap.h"
 #include "paging.h"
 #include "bootui.h"
+#include "bootargs.h"
 #include "process.h"
+#include "rtc.h"
+#include "rootfs.h"
 #include "scheduler.h"
+#include "signal.h"
 #include "syscall.h"
 #include "multiuser.h"
 #include "sysinfo.h"
@@ -83,7 +87,26 @@ void bluey_panic(const char *msg) {
 // "Bandit stares at the ceiling." - Camping episode
 // ---------------------------------------------------------------------------
 static void idle_task(void) {
-    while (1) __asm__ volatile("hlt");
+    while (1) {
+        rtc_poll_if_pending();
+        __asm__ volatile("hlt");
+    }
+}
+
+static int kernel_bootstrap_first_user(void) {
+    static const char *bootstrap_paths[] = { "/bin/init", "/bin/bash", NULL };
+
+    for (size_t index = 0; bootstrap_paths[index]; index++) {
+        process_t *process = elf_exec(bootstrap_paths[index], 0);
+        if (!process) continue;
+
+        scheduler_add(process);
+        kprintf("[KERN] Bootstrap launching %s as pid=%u\n",
+                bootstrap_paths[index], process->pid);
+        process_enter_first_user(process);
+    }
+
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +114,8 @@ static void idle_task(void) {
 // Arguments pushed by boot.asm: eax=multiboot magic, ebx=multiboot info ptr
 // ---------------------------------------------------------------------------
 void kernel_main(uint32_t magic, uint32_t *mboot_info) {
+    boot_args_t boot_args;
+    rootfs_config_t rootfs;
     uint32_t ram_mb = i386_multiboot_ram_mb(mboot_info);
 
     // Step 1: Screen up first so we can print messages
@@ -103,6 +128,9 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     }
 
     bluey_boot_show_splash("I386", ram_mb);
+    boot_args_init(&boot_args, mboot_info);
+    rootfs_config_init(&rootfs);
+    rootfs_apply_boot_args(&rootfs, &boot_args);
 
     // Step 1b: Syslog — initialise ring buffer before any other subsystem
     syslog_init();
@@ -113,6 +141,9 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     kprintf("  Built by : %s@%s\n", BLUEYOS_BUILD_USER, BLUEYOS_BUILD_HOST);
     kprintf("  Date     : %s %s\n", BLUEYOS_BUILD_DATE, BLUEYOS_BUILD_TIME);
     kprintf("  %s\n\n", BLUEY_CHEEKY_MODE);
+    if (boot_args.cmdline && boot_args.cmdline[0]) {
+        kprintf("  Cmdline  : %s\n\n", boot_args.cmdline);
+    }
 
     // Step 2: CPU tables (must be done before enabling interrupts)
     gdt_init();
@@ -135,10 +166,12 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 6: Paging / virtual memory
     paging_init();
+    signal_init();
 
     // Step 7: System information (hostname, timezone, epoch)
     sysinfo_set_ram_mb(ram_mb);
     sysinfo_init();
+    rtc_init();
 
     // Step 8: Multi-user system (passwd + shadow)
     multiuser_init();
@@ -153,14 +186,13 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 11: ATA disk driver
     if (ata_init() == 0) {
-        // Try BiscuitFS first (more capable), then fall back to FAT16
-        if (vfs_mount("/", "biscuitfs", 0) != 0) {
-            if (vfs_mount("/", "fat16", 63) != 0) {
-                kprintf("[VFS]  No recognised filesystem - running diskless\n");
-            }
+        if (rootfs_mount_config(&rootfs) != 0) {
+            kprintf("[VFS]  No recognised filesystem - running diskless\n");
+        } else {
+            rootfs_ensure_layout();
+            // Flush early boot log once /var/log is reachable.
+            syslog_flush_to_fs();
         }
-        // Flush early boot log to /var/log/kernel.log
-        syslog_flush_to_fs();
     }
 
     // Step 12: Syscall interface (int 0x80)
@@ -207,6 +239,10 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Enable interrupts
     __asm__ volatile("sti");
+
+    if (kernel_bootstrap_first_user() == 0) {
+        for (;;) __asm__ volatile("hlt");
+    }
 
     // Step 18: Shell - run interactively (never returns)
     shell_init();

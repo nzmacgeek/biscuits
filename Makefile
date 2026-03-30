@@ -31,6 +31,8 @@
 # ---------------------------------------------------------------------------
 ARCH ?= i386
 
+.DEFAULT_GOAL := all
+
 # ---------------------------------------------------------------------------
 # Per-architecture toolchain selection
 # ---------------------------------------------------------------------------
@@ -142,6 +144,7 @@ endif
 # i386 kernel sources (full featured)
 I386_C_SOURCES = \
   kernel/bootui.c \
+    kernel/bootargs.c \
     kernel/kernel.c \
     kernel/gdt.c \
     kernel/idt.c \
@@ -151,10 +154,13 @@ I386_C_SOURCES = \
     kernel/kheap.c \
     kernel/paging.c \
     kernel/process.c \
+    kernel/rootfs.c \
     kernel/scheduler.c \
+    kernel/signal.c \
     kernel/syscall.c \
     kernel/elf.c \
     kernel/sha256.c \
+    kernel/rtc.c \
     kernel/multiuser.c \
     kernel/sysinfo.c \
     kernel/tty.c \
@@ -194,6 +200,7 @@ I386_ASM_SOURCES = \
 # M68K kernel sources (stub — Macintosh LC III port in progress)
 M68K_C_SOURCES = \
   kernel/bootui.c \
+    kernel/rtc.c \
     arch/m68k/bootinfo.c \
     arch/m68k/kernel_m68k.c \
   arch/m68k/platform.c \
@@ -209,6 +216,7 @@ M68K_ASM_SOURCES = \
 # Note: lib/stdlib.c is excluded because it calls kheap_alloc/kheap_free from
 # kernel/kheap.h, which has no PPC implementation yet.
 PPC_C_SOURCES = \
+  kernel/rtc.c \
     arch/ppc/kernel_ppc.c \
     lib/string.c \
     lib/stdio.c
@@ -229,6 +237,7 @@ else
   C_SOURCES   = $(I386_C_SOURCES)
   ASM_SOURCES = $(I386_ASM_SOURCES)
   TARGET      = blueyos.elf
+  USER_TARGETS = user/init.elf
 endif
 
 ISO    = blueyos.iso
@@ -276,11 +285,12 @@ endif
 # ---------------------------------------------------------------------------
 .PHONY: all iso run run-m68k version clean help tools-host toolinfo FORCE
 
-all: $(TARGET)
+all: $(TARGET) $(USER_TARGETS)
 	@echo ""
 	@echo "  G'day! BlueyOS Build \#$(BUILD_NUMBER) complete!"
 	@echo "  Built by $(BUILD_USER)@$(BUILD_HOST) on $(BUILD_DATE) $(BUILD_TIME)"
 	@echo "  Kernel: $(TARGET)"
+	@if [ -n "$(USER_TARGETS)" ]; then echo "  Userland: $(USER_TARGETS)"; fi
 	@echo ""
 
 $(TARGET): $(OBJECTS)
@@ -332,6 +342,10 @@ tools-host: tools/mkfs_blueyfs
 tools/mkfs_blueyfs: tools/mkfs_blueyfs.c
 	gcc -O2 -Wall -Wextra -o $@ $<
 	@echo "  [CC]  $< (host)"
+
+user/init.elf: user/init.c
+	gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<
+	@echo "  [LD]  $@"
 
 toolinfo:
 	@echo "BlueyOS Build Tool Versions (ARCH=$(ARCH))"

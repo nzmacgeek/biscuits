@@ -5,6 +5,7 @@
 #include "../lib/stdio.h"
 #include "idt.h"
 #include "irq.h"
+#include "scheduler.h"
 
 #define PIC1_CMD  0x20
 #define PIC1_DATA 0x21
@@ -53,10 +54,15 @@ void irq_uninstall_handler(int irq) {
     if (irq >= 0 && irq < 16) irq_handlers[irq] = NULL;
 }
 
-void irq_handler(registers_t regs) {
-    int irq = regs.int_no - 32;
+void irq_handler(registers_t *regs) {
+    int irq;
+
+    if (!regs) return;
+    irq = regs->int_no - 32;
     if (irq >= 8) outb(PIC2_CMD, 0x20);
     outb(PIC1_CMD, 0x20);
     if (irq >= 0 && irq < 16 && irq_handlers[irq])
-        irq_handlers[irq](&regs);
+        irq_handlers[irq](regs);
+
+    scheduler_handle_trap(regs, irq == 0);
 }

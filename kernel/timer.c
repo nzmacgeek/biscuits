@@ -5,6 +5,7 @@
 #include "../lib/stdio.h"
 #include "idt.h"
 #include "irq.h"
+#include "rtc.h"
 #include "timer.h"
 #include "scheduler.h"
 
@@ -14,6 +15,7 @@ static uint32_t timer_freq = 0;
 static void timer_callback(registers_t *regs) {
     (void)regs;
     ticks++;
+    rtc_notify_tick();
     scheduler_tick();
 }
 

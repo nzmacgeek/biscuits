@@ -14,7 +14,13 @@
 
 void     paging_init(void);
 void     paging_map(uint32_t virt, uint32_t phys, uint32_t flags);
+void     paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phys, uint32_t flags);
 uint32_t paging_virt_to_phys(uint32_t virt);
+uint32_t paging_create_address_space(void);
+uint32_t paging_clone_address_space(uint32_t src_page_dir_phys);
+void     paging_destroy_address_space(uint32_t page_dir_phys);
+uint32_t paging_current_directory(void);
+void     paging_switch_directory(uint32_t page_dir_phys);
 
 // Physical frame allocator
 uint32_t pmm_alloc_frame(void);

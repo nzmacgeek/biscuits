@@ -1,15 +1,34 @@
 // BlueyOS TTY - "Bingo's Chatterbox"
 // Simple text console path for kernel/user communication.
 #include "../include/types.h"
+#include "../include/ports.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/vga.h"
 #include "../drivers/vt100.h"
 #include "tty.h"
 
 static int tty_ready = 0;
+#define TTY_SERIAL_PORT 0x3F8
 #define TTY_MAX_CHAR 0xFF
 
+static void tty_serial_init(void) {
+    outb(TTY_SERIAL_PORT + 1, 0x00);
+    outb(TTY_SERIAL_PORT + 3, 0x80);
+    outb(TTY_SERIAL_PORT + 0, 0x01);
+    outb(TTY_SERIAL_PORT + 1, 0x00);
+    outb(TTY_SERIAL_PORT + 3, 0x03);
+    outb(TTY_SERIAL_PORT + 2, 0xC7);
+    outb(TTY_SERIAL_PORT + 4, 0x0B);
+}
+
+static void tty_serial_putchar(char c) {
+    while ((inb(TTY_SERIAL_PORT + 5) & 0x20u) == 0) {
+    }
+    outb(TTY_SERIAL_PORT, (uint8_t)c);
+}
+
 void tty_init(void) {
+    tty_serial_init();
     vt100_init();
     vt100_set_enabled(1);
     tty_ready = 1;
@@ -20,6 +39,8 @@ int tty_is_ready(void) {
 }
 
 void tty_putchar(char c) {
+    outb(0xE9, (uint8_t)c);
+    tty_serial_putchar(c);
     if (tty_ready) vt100_putchar(c);
     else           vga_putchar(c);
 }

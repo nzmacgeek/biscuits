@@ -11,75 +11,386 @@
 #include "scheduler.h"
 #include "kheap.h"
 #include "paging.h"
+#include "signal.h"
 #include "timer.h"
+#include "gdt.h"
+
+#define BLUEY_ECHILD 10
+#define BLUEY_EAGAIN 11
+
+#define PROCESS_USER_MMAP_BASE 0x50000000u
 
 static process_t *proc_list  = NULL;   // head of process linked list
 static process_t *proc_current = NULL; // currently running process
 static uint32_t   next_pid   = 1;
+static process_t *proc_deferred_reap = NULL;
+
+static void process_reap(process_t *process);
 
 uint32_t process_next_pid(void) { return next_pid++; }
+
+static void process_init_kernel_frame(process_t *process, uint32_t entry) {
+    memset(&process->saved_regs, 0, sizeof(process->saved_regs));
+    process->saved_regs.ds = GDT_KERNEL_DATA;
+    process->saved_regs.eip = entry;
+    process->saved_regs.cs = GDT_KERNEL_CODE;
+    process->saved_regs.eflags = 0x202u;
+    process->saved_regs.ss = GDT_KERNEL_DATA;
+    process->eip = entry;
+    process->esp = process->stack_base + PROC_STACK_SIZE;
+}
+
+static void process_init_user_frame(process_t *process, uint32_t entry, uint32_t user_esp) {
+    memset(&process->saved_regs, 0, sizeof(process->saved_regs));
+    process->saved_regs.ds = GDT_USER_DATA;
+    process->saved_regs.eip = entry;
+    process->saved_regs.cs = GDT_USER_CODE;
+    process->saved_regs.eflags = 0x202u;
+    process->saved_regs.useresp = user_esp;
+    process->saved_regs.ss = GDT_USER_DATA;
+    process->eip = entry;
+    process->esp = user_esp;
+}
+
+static void process_remove_from_list(process_t *process) {
+    process_t *prev = NULL;
+
+    for (process_t *node = proc_list; node; node = node->next) {
+        if (node != process) {
+            prev = node;
+            continue;
+        }
+
+        if (prev) prev->next = node->next;
+        else proc_list = node->next;
+        node->next = NULL;
+        return;
+    }
+}
+
+static void process_reap_deferred(void) {
+    process_t *prev = NULL;
+    process_t *node = proc_deferred_reap;
+
+    while (node) {
+        process_t *next = node->sched_next;
+        if (node == proc_current) {
+            prev = node;
+            node = next;
+            continue;
+        }
+
+        if (prev) prev->sched_next = next;
+        else proc_deferred_reap = next;
+
+        node->sched_next = NULL;
+        process_reap(node);
+        node = next;
+    }
+}
+
+static void process_enqueue_deferred_reap(process_t *process) {
+    if (!process) return;
+    process->sched_next = proc_deferred_reap;
+    proc_deferred_reap = process;
+}
+
+static int process_wait_matches(process_t *parent, process_t *child) {
+    if (!parent || !child) return 0;
+    if (parent->state != PROC_WAITING) return 0;
+    if (parent->wait_pid > 0 && parent->wait_pid != (int32_t)child->pid) return 0;
+    return child->parent_pid == parent->pid;
+}
+
+static void process_write_wait_status(process_t *parent, int status) {
+    uint32_t old_page_dir;
+
+    if (!parent || !parent->wait_status_ptr) return;
+
+    old_page_dir = paging_current_directory();
+    paging_switch_directory(parent->page_dir);
+    *(int*)(uintptr_t)parent->wait_status_ptr = status;
+    paging_switch_directory(old_page_dir);
+}
+
+static void process_complete_wait(process_t *parent, process_t *child, int reap_now) {
+    if (!parent || !child) return;
+
+    process_write_wait_status(parent, child->exit_code);
+    parent->saved_regs.eax = (int32_t)child->pid;
+    parent->state = PROC_READY;
+    parent->wait_pid = 0;
+    parent->wait_status_ptr = 0;
+    parent->wait_options = 0;
+
+    if (reap_now) {
+        process_reap(child);
+    } else {
+        child->state = PROC_DEAD;
+        scheduler_remove(child->pid);
+        process_remove_from_list(child);
+        process_enqueue_deferred_reap(child);
+    }
+}
+
+static void process_reap(process_t *process) {
+    if (!process) return;
+
+    scheduler_remove(process->pid);
+    process_remove_from_list(process);
+
+    if ((process->flags & PROC_FLAG_USER_MODE) && process->page_dir) {
+        paging_destroy_address_space(process->page_dir);
+    }
+    if (process->stack_base) {
+        kheap_free((void*)process->stack_base);
+    }
+    kheap_free(process);
+}
+
+static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t gid) {
+    process_t *process = (process_t*)kheap_alloc(sizeof(process_t), 0);
+    if (!process) {
+        kprintf("[PRC] ERROR: out of memory for process!\n");
+        return NULL;
+    }
+
+    memset(process, 0, sizeof(process_t));
+    strncpy(process->name, name, sizeof(process->name) - 1);
+    process->pid = process_next_pid();
+    process->parent_pid = proc_current ? proc_current->pid : 0;
+    process->uid = uid;
+    process->gid = gid;
+    process->state = PROC_READY;
+    process->priority = 5;
+    process->exit_code = 0;
+    process->sleep_until = 0;
+    process->page_dir = paging_current_directory();
+
+    process->next = proc_list;
+    proc_list = process;
+    return process;
+}
+
+static uint8_t *process_alloc_kernel_stack(process_t *process) {
+    uint8_t *stack;
+
+    if (!process) return NULL;
+
+    stack = (uint8_t*)kheap_alloc(PROC_STACK_SIZE, 1);
+    if (!stack) {
+        kprintf("[PRC] ERROR: out of memory for stack!\n");
+        return NULL;
+    }
+
+    process->stack_base = (uint32_t)stack;
+    return stack;
+}
 
 void process_init(void) {
     proc_list    = NULL;
     proc_current = NULL;
+    proc_deferred_reap = NULL;
     kprintf("%s\n", MSG_PROC_INIT);
 }
 
 process_t *process_create(const char *name, void (*entry)(void),
                           uint32_t uid, uint32_t gid) {
-    process_t *p = (process_t*)kheap_alloc(sizeof(process_t), 0);
-    if (!p) { kprintf("[PRC] ERROR: out of memory for process!\n"); return NULL; }
-    memset(p, 0, sizeof(process_t));
+    process_t *process = process_alloc_common(name, uid, gid);
+    uint8_t *stack;
 
-    strncpy(p->name, name, sizeof(p->name) - 1);
-    p->pid        = process_next_pid();
-    p->uid        = uid;
-    p->gid        = gid;
-    p->state      = PROC_READY;
-    p->priority   = 5;
-    p->exit_code  = 0;
-    p->sleep_until = 0;
+    if (!process) return NULL;
 
-    // Allocate a kernel stack for this process
-    uint8_t *stack = (uint8_t*)kheap_alloc(PROC_STACK_SIZE, 1);
+    stack = process_alloc_kernel_stack(process);
     if (!stack) {
-        kheap_free(p);
-        kprintf("[PRC] ERROR: out of memory for stack!\n");
+        process->state = PROC_DEAD;
         return NULL;
     }
-    p->stack_base = (uint32_t)stack;
 
-    // Set up a minimal stack frame for the first context switch
-    uint32_t *sp = (uint32_t*)(stack + PROC_STACK_SIZE);
-    *--sp = (uint32_t)entry;   // return address = entry point
-    p->esp = (uint32_t)sp;
-    p->eip = (uint32_t)entry;
+    process_init_kernel_frame(process, (uint32_t)entry);
 
-    // Link into process list
-    p->next = proc_list;
-    proc_list = p;
+    kprintf("[PRC]  Created process '%s' (pid=%d uid=%d)\n",
+            process->name, process->pid, process->uid);
+    return process;
+}
 
-    kprintf("[PRC]  Created process '%s' (pid=%d uid=%d)\n", p->name, p->pid, p->uid);
-    return p;
+process_t *process_create_image(const char *name, uint32_t entry, uint32_t user_esp,
+                                uint32_t user_stack_base, uint32_t user_stack_top,
+                                uint32_t page_dir,
+                                uint32_t uid, uint32_t gid) {
+    process_t *process = process_alloc_common(name, uid, gid);
+    uint8_t *stack;
+
+    if (!process) return NULL;
+
+    stack = process_alloc_kernel_stack(process);
+    if (!stack) {
+        process->state = PROC_DEAD;
+        return NULL;
+    }
+
+    process->flags |= PROC_FLAG_USER_MODE;
+    process->user_stack_base = user_stack_base;
+    process->user_stack_top = user_stack_top;
+    process->page_dir = page_dir;
+    process_init_user_frame(process, entry, user_esp);
+
+    kprintf("[PRC]  Created image '%s' (pid=%d uid=%d eip=0x%x esp=0x%x)\n",
+            process->name, process->pid, process->uid, process->eip, process->esp);
+    return process;
+}
+
+process_t *process_fork_current(const registers_t *regs) {
+    process_t *parent = proc_current;
+    process_t *child;
+    uint8_t *stack;
+    uint32_t page_dir;
+
+    if (!parent || !regs || !(parent->flags & PROC_FLAG_USER_MODE)) return NULL;
+
+    page_dir = paging_clone_address_space(parent->page_dir);
+    if (!page_dir) return NULL;
+
+    child = process_alloc_common(parent->name, parent->uid, parent->gid);
+    if (!child) {
+        paging_destroy_address_space(page_dir);
+        return NULL;
+    }
+
+    stack = process_alloc_kernel_stack(child);
+    if (!stack) {
+        process_remove_from_list(child);
+        kheap_free(child);
+        paging_destroy_address_space(page_dir);
+        return NULL;
+    }
+
+    child->flags = parent->flags & ~PROC_FLAG_SIGNAL_ACTIVE;
+    child->user_stack_base = parent->user_stack_base;
+    child->user_stack_top = parent->user_stack_top;
+    child->page_dir = page_dir;
+    child->brk_base = parent->brk_base;
+    child->brk_current = parent->brk_current;
+    child->mmap_base = parent->mmap_base;
+    child->blocked_signals = parent->blocked_signals;
+    memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
+    child->saved_regs = *regs;
+    child->saved_regs.eax = 0;
+    child->eip = child->saved_regs.eip;
+    child->esp = child->saved_regs.useresp;
+    return child;
+}
+
+void process_exec_replace(process_t *process, const char *name,
+                          uint32_t entry, uint32_t user_esp,
+                          uint32_t user_stack_base, uint32_t user_stack_top,
+                          uint32_t page_dir) {
+    if (!process) return;
+
+    if (name && name[0]) {
+        strncpy(process->name, name, sizeof(process->name) - 1);
+        process->name[sizeof(process->name) - 1] = '\0';
+    }
+
+    process->flags |= PROC_FLAG_USER_MODE;
+    process->state = PROC_READY;
+    process->user_stack_base = user_stack_base;
+    process->user_stack_top = user_stack_top;
+    process->page_dir = page_dir;
+    process->exit_code = 0;
+    process_init_user_frame(process, entry, user_esp);
+
+    signal_reset_on_exec(process);
+}
+
+void process_set_memory_layout(process_t *process, uint32_t image_end) {
+    uint32_t aligned_end;
+
+    if (!process) return;
+
+    aligned_end = (image_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+    if (aligned_end < 0x100000u) aligned_end = 0x100000u;
+
+    process->brk_base = aligned_end;
+    process->brk_current = aligned_end;
+    process->mmap_base = PROCESS_USER_MMAP_BASE;
+}
+
+void process_mark_exited(process_t *process, int code) {
+    process_t *parent;
+
+    if (!process || process->state == PROC_ZOMBIE || process->state == PROC_DEAD) return;
+
+    process->state = PROC_ZOMBIE;
+    process->exit_code = code;
+    process->pending_signals = 0;
+
+    parent = process->parent_pid ? process_get_by_pid(process->parent_pid) : NULL;
+    if (parent) {
+        signal_send_pid(parent->pid, SIGCHLD);
+        if (process_wait_matches(parent, process)) {
+            process_complete_wait(parent, process, 0);
+        } else if (parent->state == PROC_WAITING) {
+            parent->state = PROC_READY;
+        }
+    }
 }
 
 void process_exit(int code) {
     if (!proc_current) return;
-    proc_current->state     = PROC_ZOMBIE;
-    proc_current->exit_code = code;
+    process_mark_exited(proc_current, code);
     kprintf("[PRC]  Process '%s' (pid=%d) exited with code %d\n",
             proc_current->name, proc_current->pid, code);
-    // Yield; scheduler will pick next ready process
-    __asm__ volatile("int $0x80" :: "a"(60), "b"(code));
 }
 
 process_t *process_current(void) { return proc_current; }
-void process_set_current(process_t *p) { proc_current = p; }
+void process_set_current(process_t *p) {
+    proc_current = p;
+    if (p && p->stack_base) {
+        tss_set_kernel_stack(p->stack_base + PROC_STACK_SIZE);
+    }
+    process_reap_deferred();
+}
+process_t *process_first(void) { return proc_list; }
+process_t *process_next(process_t *p) { return p ? p->next : NULL; }
 
 process_t *process_get_by_pid(uint32_t pid) {
     for (process_t *p = proc_list; p; p = p->next)
         if (p->pid == pid) return p;
     return NULL;
+}
+
+int32_t process_waitpid(int32_t pid, int *status, int options) {
+    process_t *current = proc_current;
+    int found_child = 0;
+
+    process_reap_deferred();
+
+    for (process_t *process = proc_list; process; ) {
+        process_t *next = process->next;
+
+        if (current && process->parent_pid == current->pid &&
+            (pid <= 0 || (int32_t)process->pid == pid)) {
+            found_child = 1;
+            if (process->state == PROC_ZOMBIE) {
+                int32_t reaped_pid = (int32_t)process->pid;
+                if (status) *status = process->exit_code;
+                process_complete_wait(current, process, 1);
+                return reaped_pid;
+            }
+        }
+
+        process = next;
+    }
+
+    if (!found_child) return -BLUEY_ECHILD;
+    if (options) return 0;
+
+    current->state = PROC_WAITING;
+    current->wait_pid = pid;
+    current->wait_status_ptr = (uint32_t)(uintptr_t)status;
+    current->wait_options = (uint32_t)options;
+    return -BLUEY_EAGAIN;
 }
 
 uint32_t process_getpid(void) {
@@ -97,4 +408,41 @@ void process_sleep(uint32_t ms) {
 void process_wake(uint32_t pid) {
     process_t *p = process_get_by_pid(pid);
     if (p && p->state == PROC_SLEEPING) p->state = PROC_READY;
+}
+
+void process_enter_first_user(process_t *process) {
+    registers_t *regs;
+
+    if (!process || !(process->flags & PROC_FLAG_USER_MODE)) {
+        PANIC("process_enter_first_user requires a user image");
+    }
+
+    process->state = PROC_RUNNING;
+    process_set_current(process);
+    paging_switch_directory(process->page_dir);
+    regs = &process->saved_regs;
+
+    __asm__ volatile (
+        "mov %[ds], %%ax\n\t"
+        "mov %%ax, %%ds\n\t"
+        "mov %%ax, %%es\n\t"
+        "mov %%ax, %%fs\n\t"
+        "mov %%ax, %%gs\n\t"
+        "push %[ss]\n\t"
+        "push %[esp]\n\t"
+        "push %[eflags]\n\t"
+        "push %[cs]\n\t"
+        "push %[eip]\n\t"
+        "iret\n\t"
+        :
+        : [ds] "r" ((uint16_t)regs->ds),
+          [ss] "r" (regs->ss),
+          [esp] "r" (regs->useresp),
+          [eflags] "r" (regs->eflags),
+          [cs] "r" (regs->cs),
+          [eip] "r" (regs->eip)
+        : "eax", "memory"
+    );
+
+    for (;;) __asm__ volatile ("hlt");
 }
