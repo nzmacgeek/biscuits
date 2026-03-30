@@ -20,6 +20,7 @@
 #include "../kernel/process.h"
 #include "../kernel/rtc.h"
 #include "../kernel/sysinfo.h"
+#include "../kernel/smp.h"
 #include "../kernel/kheap.h"
 #include "../kernel/paging.h"
 #include "../kernel/swap.h"
@@ -486,6 +487,7 @@ static void cmd_help(int argc, char **argv) {
     kprintf("  pwd             print working directory\n");
     kprintf("  cd [path]       change directory\n");
     kprintf("  uname           print system information\n");
+    kprintf("  cpuinfo         show CPU and SMP topology information\n");
     kprintf("  whoami          print current user name\n");
     kprintf("  ps              list running processes\n");
     kprintf("  mount           show mounted filesystems\n");
@@ -705,6 +707,11 @@ static void cmd_uname(int argc, char **argv) {
     (void)argc; (void)argv;
     kprintf("BlueyOS %s %s %s i386 GNU/BlueyOS\n",
             BLUEYOS_VERSION_STRING, BLUEYOS_CODENAME, sysinfo_get_hostname());
+}
+
+static void cmd_cpuinfo(int argc, char **argv) {
+    (void)argc; (void)argv;
+    smp_print_info();
 }
 
 static void cmd_whoami(int argc, char **argv) {
@@ -938,6 +945,8 @@ static const shell_cmd_t commands[] = {
     { "pwd",      cmd_pwd      },
     { "cd",       cmd_cd       },
     { "uname",    cmd_uname    },
+    { "cpuinfo",  cmd_cpuinfo  },
+    { "smpinfo",  cmd_cpuinfo  },
     { "whoami",   cmd_whoami   },
     { "ps",       cmd_ps       },
     { "mount",    cmd_mount    },

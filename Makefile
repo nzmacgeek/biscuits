@@ -163,6 +163,7 @@ I386_C_SOURCES = \
     kernel/rtc.c \
     kernel/multiuser.c \
     kernel/sysinfo.c \
+    kernel/smp.c \
     kernel/tty.c \
     kernel/swap.c \
     kernel/syslog.c \
