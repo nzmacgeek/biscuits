@@ -115,6 +115,8 @@ typedef struct __attribute__((packed)) {
 #define BISCUITFS_IFIFO  0x1000   /* FIFO/pipe    */
 
 // Permission bits
+#define BISCUITFS_ISUID  04000
+#define BISCUITFS_ISGID  02000
 #define BISCUITFS_IRUSR  0400
 #define BISCUITFS_IWUSR  0200
 #define BISCUITFS_IXUSR  0100

@@ -25,6 +25,7 @@
 #include "../lib/string.h"
 #include "../drivers/ata.h"
 #include "../kernel/kheap.h"
+#include "../kernel/process.h"
 #include "blueyfs.h"
 #include "vfs.h"
 
@@ -65,6 +66,17 @@ typedef struct {
 } biscuitfs_fd_t;
 
 static biscuitfs_fd_t fd_table[BISCUITFS_MAX_OPEN];
+
+static void biscuitfs_get_current_creds(uint32_t *uid, uint32_t *gid) {
+    process_t *process = process_current();
+    if (process) {
+        if (uid) *uid = process->euid;
+        if (gid) *gid = process->egid;
+        return;
+    }
+    if (uid) *uid = 0;
+    if (gid) *gid = 0;
+}
 
 // ---------------------------------------------------------------------------
 // Block I/O helpers
@@ -634,8 +646,9 @@ static int biscuitfs_open_cb(const char *path, int flags) {
         memset(&inode, 0, sizeof(inode));
         inode.mode       = BISCUITFS_IFREG | 0644;
         inode.links_count = 1;
-
-        write_inode(ino, &inode);
+        uint32_t uid;
+        uint32_t gid;
+        biscuitfs_get_current_creds(&uid, &gid);
 
         // Add to parent directory
         char parent[256], *slash;
@@ -651,6 +664,17 @@ static int biscuitfs_open_cb(const char *path, int flags) {
                                  : BISCUITFS_ROOT_INO;
         if (!dir_ino) { biscuitfs_journal_abort(); return -1; }
 
+        biscuitfs_inode_t parent_inode;
+        uint32_t file_gid = gid;
+        if (read_inode(dir_ino, &parent_inode) == 0 &&
+            (parent_inode.mode & BISCUITFS_ISGID)) {
+            file_gid = parent_inode.gid;
+        }
+
+        inode.uid = (uint16_t)uid;
+        inode.gid = (uint16_t)file_gid;
+
+        write_inode(ino, &inode);
         dir_add_entry(dir_ino, basename, ino, BISCUITFS_FT_REG_FILE);
         biscuitfs_journal_commit();
     }
@@ -836,6 +860,20 @@ static int biscuitfs_mkdir_cb(const char *path) {
     memset(&inode, 0, sizeof(inode));
     inode.mode        = BISCUITFS_IFDIR | 0755;
     inode.links_count = 2;   /* itself + "." */
+    uint32_t uid;
+    uint32_t gid;
+    biscuitfs_get_current_creds(&uid, &gid);
+
+    biscuitfs_inode_t parent_inode;
+    uint32_t dir_gid = gid;
+    if (read_inode(parent_ino, &parent_inode) == 0 &&
+        (parent_inode.mode & BISCUITFS_ISGID)) {
+        dir_gid = parent_inode.gid;
+        inode.mode |= BISCUITFS_ISGID;
+    }
+
+    inode.uid = (uint16_t)uid;
+    inode.gid = (uint16_t)dir_gid;
 
     // Allocate one data block for the new directory's initial entries
     uint32_t data_blk = alloc_block();
@@ -946,6 +984,23 @@ static int biscuitfs_unlink_cb(const char *path) {
     return 0;
 }
 
+static int biscuitfs_stat_cb(const char *path, vfs_stat_t *out) {
+    if (!path || !out) return -1;
+    uint32_t ino = path_to_inode(path);
+    if (!ino) return -1;
+
+    biscuitfs_inode_t inode;
+    if (read_inode(ino, &inode) != 0) return -1;
+
+    memset(out, 0, sizeof(*out));
+    out->mode = inode.mode;
+    out->uid = inode.uid;
+    out->gid = inode.gid;
+    out->size = inode.size_lo;
+    out->is_dir = ((inode.mode & BISCUITFS_IFMT) == BISCUITFS_IFDIR) ? 1 : 0;
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // VFS registration
 // ---------------------------------------------------------------------------
@@ -960,6 +1015,7 @@ static filesystem_t biscuitfs_driver = {
     .readdir = biscuitfs_readdir_cb,
     .mkdir   = biscuitfs_mkdir_cb,
     .unlink  = biscuitfs_unlink_cb,
+    .stat    = biscuitfs_stat_cb,
 };
 
 filesystem_t *biscuitfs_get_filesystem(void) {

@@ -8,6 +8,7 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "vfs.h"
+#include "../kernel/process.h"
 
 static filesystem_t *fs_registry[VFS_MAX_MOUNTS];
 static int           fs_count = 0;
@@ -24,6 +25,60 @@ typedef struct {
 } vfs_fd_t;
 
 static vfs_fd_t fd_table[VFS_MAX_OPEN];
+
+static int vfs_cred_in_group(const vfs_cred_t *cred, uint32_t gid) {
+    if (!cred) return 0;
+    if (cred->gid == gid) return 1;
+    for (uint32_t i = 0; i < cred->group_count; i++) {
+        if (cred->groups && cred->groups[i] == gid) return 1;
+    }
+    return 0;
+}
+
+static int vfs_check_mode(const vfs_stat_t *st, uint8_t access, const vfs_cred_t *cred) {
+    if (!st) return 0;
+    if (!cred || cred->uid == 0) return 1; // root bypass
+
+    uint16_t perms = 0;
+    if (cred->uid == st->uid) perms = (uint16_t)((st->mode >> 6) & 0x7);
+    else if (vfs_cred_in_group(cred, st->gid)) perms = (uint16_t)((st->mode >> 3) & 0x7);
+    else perms = (uint16_t)(st->mode & 0x7);
+
+    return ((perms & access) == access);
+}
+
+static void vfs_fill_cred_from_process(vfs_cred_t *cred) {
+    process_t *process = process_current();
+    if (!cred) return;
+    if (!process) {
+        cred->uid = 0;
+        cred->gid = 0;
+        cred->groups = NULL;
+        cred->group_count = 0;
+        return;
+    }
+    cred->uid = process->euid;
+    cred->gid = process->egid;
+    cred->groups = process->groups;
+    cred->group_count = process->group_count;
+}
+
+static int vfs_parent_path(const char *path, char *out, size_t out_len) {
+    if (!path || !out || out_len == 0) return -1;
+    size_t len = strlen(path);
+    if (len == 0 || len >= out_len - 1) return -1;
+
+    strncpy(out, path, out_len - 1);
+    out[out_len - 1] = '\0';
+    char *slash = strrchr(out, '/');
+    if (!slash) return -1;
+    if (slash == out) {
+        slash[1] = '\0';
+        return 0;
+    }
+    *slash = '\0';
+    return 0;
+}
 
 void vfs_init(void) {
     fs_count    = 0;
@@ -101,6 +156,31 @@ int vfs_open(const char *path, int flags) {
         return -1;
     }
 
+    vfs_stat_t stat;
+    vfs_cred_t cred;
+    memset(&stat, 0, sizeof(stat));
+    vfs_fill_cred_from_process(&cred);
+
+    if (m->fs->stat && m->fs->stat(path, &stat) == 0) {
+        uint8_t need = 0;
+        if ((flags & VFS_O_RDWR) == VFS_O_RDWR) need = VFS_ACCESS_READ | VFS_ACCESS_WRITE;
+        else if (flags & VFS_O_WRONLY) need = VFS_ACCESS_WRITE;
+        else need = VFS_ACCESS_READ;
+
+        if (!vfs_check_mode(&stat, need, &cred)) return -1;
+        if (stat.is_dir) return -1;
+    } else if (flags & VFS_O_CREAT) {
+        char parent[VFS_PATH_LEN];
+        vfs_stat_t parent_stat;
+        if (vfs_parent_path(path, parent, sizeof(parent)) != 0) return -1;
+        if (vfs_stat(parent, &parent_stat) != 0 || !parent_stat.is_dir) return -1;
+        // Creating a child entry requires write + execute (search) on the parent directory.
+        if (!vfs_check_mode(&parent_stat, VFS_ACCESS_WRITE | VFS_ACCESS_EXEC, &cred)) {
+            return -1;
+        }
+        // Filesystem create callbacks are responsible for setting ownership/mode.
+    }
+
     int fs_fd = m->fs->open(path, flags);
     if (fs_fd < 0) {
         kprintf("[VFS] FS open failed path=%s fs=%s\n", path, m->fs->name);
@@ -148,19 +228,48 @@ int vfs_close(int fd) {
 int vfs_readdir(const char *path, vfs_dirent_t *out, int max) {
     vfs_mount_t *m = vfs_find_mount(path);
     if (!m || !m->fs->readdir) return -1;
+    if (vfs_access(path, VFS_ACCESS_READ | VFS_ACCESS_EXEC) != 0) return -1;
     return m->fs->readdir(path, out, max);
 }
 
 int vfs_mkdir(const char *path) {
     vfs_mount_t *m = vfs_find_mount(path);
     if (!m || !m->fs->mkdir) return -1;
+    char parent[VFS_PATH_LEN];
+    if (vfs_parent_path(path, parent, sizeof(parent)) != 0 ||
+        vfs_access(parent, VFS_ACCESS_WRITE | VFS_ACCESS_EXEC) != 0) {
+        return -1;
+    }
     return m->fs->mkdir(path);
 }
 
 int vfs_unlink(const char *path) {
     vfs_mount_t *m = vfs_find_mount(path);
     if (!m || !m->fs->unlink) return -1;
+    char parent[VFS_PATH_LEN];
+    if (vfs_parent_path(path, parent, sizeof(parent)) != 0 ||
+        vfs_access(parent, VFS_ACCESS_WRITE | VFS_ACCESS_EXEC) != 0) {
+        return -1;
+    }
     return m->fs->unlink(path);
+}
+
+int vfs_stat(const char *path, vfs_stat_t *out) {
+    vfs_mount_t *m = vfs_find_mount(path);
+    if (!m || !m->fs->stat) return -1;
+    return m->fs->stat(path, out);
+}
+
+int vfs_access(const char *path, uint8_t access) {
+    vfs_cred_t cred;
+    vfs_fill_cred_from_process(&cred);
+    return vfs_access_cred(path, access, &cred);
+}
+
+int vfs_access_cred(const char *path, uint8_t access, const vfs_cred_t *cred) {
+    vfs_stat_t stat;
+    if (vfs_stat(path, &stat) != 0) return -1;
+    return vfs_check_mode(&stat, access, cred) ? 0 : -1;
 }
 
 void vfs_print_mounts(void) {

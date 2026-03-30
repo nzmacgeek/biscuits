@@ -9,6 +9,7 @@
 #include "elf.h"
 #include "kheap.h"
 #include "paging.h"
+#include "multiuser.h"
 
 #define ELF_READ_CHUNK_SIZE   512u
 #define ELF_MAX_IMAGE_SIZE    (1024u * 1024u)
@@ -429,11 +430,40 @@ process_t *elf_exec(const char *path, uint32_t uid) {
     const char *argv_storage[2];
     elf_image_t image;
     process_t *process;
+    vfs_stat_t stat;
+    uint32_t groups[PROC_MAX_GROUPS];
+    vfs_cred_t cred;
+    passwd_entry_t passwd;
+    uint32_t gid = 0;
+    uint32_t euid = uid;
+    uint32_t egid = 0;
 
     if (!path) return NULL;
 
     argv_storage[0] = path;
     argv_storage[1] = NULL;
+
+    if (multiuser_get_passwd(uid, &passwd) != 0) {
+        kprintf("[ELF] Unknown uid %u for %s\n", uid, path);
+        return NULL;
+    }
+    gid = passwd.gid;
+    egid = gid;
+    memset(&cred, 0, sizeof(cred));
+    cred.uid = uid;
+    cred.gid = gid;
+    cred.group_count = multiuser_get_groups(uid, gid, groups, PROC_MAX_GROUPS);
+    cred.groups = groups;
+
+    if (vfs_stat(path, &stat) == 0) {
+        if (vfs_access_cred(path, VFS_ACCESS_EXEC, &cred) != 0 || stat.is_dir) {
+            kprintf("[ELF] Exec denied for %s (uid=%u)\n", path, uid);
+            return NULL;
+        }
+        if (stat.mode & VFS_S_ISUID) euid = stat.uid;
+        if (stat.mode & VFS_S_ISGID) egid = stat.gid;
+    }
+
     if (elf_load_image(path, argv_storage, empty_envp, &image) != 0) {
         return NULL;
     }
@@ -445,6 +475,7 @@ process_t *elf_exec(const char *path, uint32_t uid) {
     if (!process) return NULL;
 
     process_set_memory_layout(process, image.image_end);
+    process_set_effective_ids(process, euid, egid);
 
     kprintf("[ELF] Prepared %s entry=0x%x stack=0x%x\n", path, image.entry, image.stack_pointer);
     return process;
