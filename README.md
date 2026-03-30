@@ -95,7 +95,6 @@ sudo apt-get install -y \
     nasm \
     gcc-multilib \
     binutils \
-    mtools \
     qemu-system-x86 \
     grub-pc-bin \
     grub-common \
@@ -110,22 +109,12 @@ sudo apt-get install -y \
 make                   # Build kernel ELF (build #1)
 make BUILD_NUMBER=42   # Build with a specific build number
 make iso               # Create bootable ISO
-make run               # Launch in QEMU (Pentium CPU model, 4 virtual CPUs by default)
+make run               # Launch in QEMU
 make version           # Print version info
 make clean             # Clean build artifacts
 ```
 
 See [TESTING.md](TESTING.md) for detailed testing instructions and expected output.
-
-After boot, the built-in shell includes basic diagnostics:
-
-```text
-version   # kernel build and version details
-cpuinfo   # detected CPU vendor, family/model, SMP status
-meminfo   # detected RAM, heap usage, and PMM frame usage
-swapinfo  # swap usage
-dmesg     # kernel log ring buffer
-```
 
 ---
 

@@ -5,7 +5,7 @@
 # Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
 # licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
 #
-# Prerequisites: grub-mkrescue, grub-pc-bin, xorriso, mtools
+# Prerequisites: grub-mkrescue, grub-pc-bin, xorriso
 # Usage: Run from repository root after 'make'
 
 set -e

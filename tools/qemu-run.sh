@@ -17,15 +17,13 @@ if [ ! -f blueyos.iso ]; then
 fi
 
 echo "Starting BlueyOS in QEMU..."
-echo "  CPU: ${QEMU_CPU:-pentium} | Memory: 256MB | SMP: ${QEMU_SMP:-4} CPUs | Serial: stdio | No reboot on crash"
+echo "  Memory: 256MB | Serial: stdio | No reboot on crash"
 echo "  Press Ctrl+A then X to exit QEMU"
 echo ""
 
 exec qemu-system-i386 \
     -cdrom blueyos.iso \
-    -cpu "${QEMU_CPU:-pentium}" \
     -m 256M \
-    -smp "${QEMU_SMP:-4}" \
     -serial stdio \
     -no-reboot \
     -no-shutdown \
