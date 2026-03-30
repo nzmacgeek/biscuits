@@ -32,3 +32,4 @@ typescript
 
 # Local machine firmware/images
 *.ROM
+user/init.elf
