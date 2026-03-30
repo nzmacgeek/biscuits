@@ -650,8 +650,6 @@ static int biscuitfs_open_cb(const char *path, int flags) {
         uint32_t gid = 0;
         biscuitfs_get_current_creds(&uid, &gid);
 
-        write_inode(ino, &inode);
-
         // Add to parent directory
         char parent[256], *slash;
         strncpy(parent, path, sizeof(parent) - 1);
@@ -676,6 +674,7 @@ static int biscuitfs_open_cb(const char *path, int flags) {
         inode.uid = (uint16_t)uid;
         inode.gid = (uint16_t)file_gid;
 
+        write_inode(ino, &inode);
         dir_add_entry(dir_ino, basename, ino, BISCUITFS_FT_REG_FILE);
         biscuitfs_journal_commit();
     }

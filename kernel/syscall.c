@@ -34,6 +34,7 @@ uint32_t syscall_saved_gs = 0;
 
 #define BLUEY_ENOSYS 38
 #define BLUEY_EPERM   1
+#define BLUEY_ENOENT  2
 #define BLUEY_EFAULT 14
 #define BLUEY_EINVAL 22
 #define BLUEY_E2BIG   7
@@ -316,7 +317,7 @@ static int32_t sys_execve(registers_t *regs,
     }
 
     if (vfs_stat(path_copy, &stat) != 0) {
-        result = -BLUEY_EINVAL;
+        result = -BLUEY_ENOENT;
         goto cleanup;
     }
     if (vfs_access(path_copy, VFS_ACCESS_EXEC) != 0 || stat.is_dir) {

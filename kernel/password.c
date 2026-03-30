@@ -7,6 +7,7 @@
 #include "sha256.h"
 #include "password.h"
 #include "timer.h"
+#include "process.h"
 
 #define HMAC_BLOCK_SIZE 64
 
@@ -27,6 +28,19 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t out_len) {
         if (hi < 0 || lo < 0) return -1;
         out[i] = (uint8_t)((hi << 4) | lo);
     }
+    return 0;
+}
+
+static int parse_uint32(const char *s, uint32_t *out) {
+    if (!s || !*s || !out) return -1;
+    uint32_t value = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p < '0' || *p > '9') return -1;
+        uint32_t digit = (uint32_t)(*p - '0');
+        if (value > (0xFFFFFFFFu - digit) / 10u) return -1;
+        value = value * 10u + digit;
+    }
+    *out = value;
     return 0;
 }
 
@@ -108,10 +122,12 @@ static void pbkdf2_sha256(const uint8_t *password, size_t pass_len,
 
 void password_gen_salt(char salt_hex_out[PASSWORD_SALT_HEX_LEN + 1]) {
     uint32_t t = timer_get_ticks();
-    uint32_t a = t ^ 0x9E3779B9u;
-    uint32_t b = t * 0x6C62272Eu;
-    uint32_t c = (t << 16) ^ (t >> 16) ^ 0xA5A5A5A5u;
-    uint32_t d = t + 0xDEADBEEFu;
+    uint32_t pid = process_getpid();
+    uint32_t addr = (uint32_t)(uintptr_t)salt_hex_out;
+    uint32_t a = t ^ (pid << 16) ^ addr ^ 0x9E3779B9u;
+    uint32_t b = (t * 0x6C62272Eu) ^ (addr << 7) ^ (pid << 3);
+    uint32_t c = (t << 16) ^ (t >> 16) ^ (addr >> 5) ^ 0xA5A5A5A5u;
+    uint32_t d = (t ^ (pid << 1)) + 0xDEADBEEFu;
 
     uint8_t raw[16];
     memcpy(raw + 0, &a, sizeof(a));
@@ -163,8 +179,8 @@ int password_verify(const char *password, const char *stored_hash) {
         memcpy(iter_buf, iter_start, iter_len);
         iter_buf[iter_len] = '\0';
 
-        uint32_t iterations = (uint32_t)atoi(iter_buf);
-        if (iterations == 0) return 0;
+        uint32_t iterations = 0;
+        if (parse_uint32(iter_buf, &iterations) != 0 || iterations == 0) return 0;
 
         const char *salt_start = iter_end + 1;
         const char *salt_end = strchr(salt_start, '$');
