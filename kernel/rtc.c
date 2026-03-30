@@ -218,7 +218,6 @@ void rtc_notify_tick(void) {
             /* Set a flag so rtc_poll() can be called from non-interrupt context
              * (e.g., the kernel idle loop) to avoid hardware I/O in IRQ context. */
             rtc_poll_pending = true;
-            rtc_last_poll_ms = rtc_monotonic_ms;
         }
     }
 }
@@ -227,6 +226,7 @@ void rtc_poll(void) {
     uint32_t unix_secs = 0;
 
     rtc_poll_pending = false;
+    rtc_last_poll_ms = rtc_monotonic_ms;
     if (!rtc_arch_read_unix_seconds(&unix_secs)) {
         return;
     }
