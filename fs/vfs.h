@@ -48,10 +48,17 @@ typedef struct {
     int          active;
 } vfs_mount_t;
 
+// fd type tag — stored inside every open VFS file descriptor
+#define VFS_FD_TYPE_FILE  0   // regular file on a mounted filesystem
+#define VFS_FD_TYPE_DEVEV 1   // device event channel (kernel ring buffer)
+
 void vfs_init(void);
 void vfs_register_fs(filesystem_t *fs);
 int  vfs_mount(const char *path, const char *fs_name, uint32_t start_lba);
+int  vfs_umount(const char *path);
 int  vfs_open(const char *path, int flags);
+int  vfs_devev_open(void);           // open a device event channel fd
+int  vfs_fd_is_devev(int fd);        // 1 if the fd is a device event channel
 int  vfs_read(int fd, uint8_t *buf, size_t len);
 int  vfs_write(int fd, const uint8_t *buf, size_t len);
 int  vfs_close(int fd);

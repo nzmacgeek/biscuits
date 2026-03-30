@@ -39,6 +39,19 @@
 #define SYS_GETHOSTNAME   125
 #define SYS_SETHOSTNAME   74
 #define SYS_GETDENTS      141
+// Process groups
+#define SYS_SETPGID       200
+#define SYS_GETPGID       201
+#define SYS_GETPGRP       202
+// Mount / unmount
+#define SYS_MOUNT         21
+#define SYS_UMOUNT2       52
+// Poll (event multiplexing for supervision and sockets)
+#define SYS_POLL          168
+// Device event channel
+#define SYS_DEVEV_OPEN    203
+// Reboot / poweroff
+#define SYS_REBOOT        88
 
 void syscall_init(void);
 // Called from syscall.asm - dispatches based on eax syscall number

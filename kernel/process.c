@@ -14,6 +14,7 @@
 #include "signal.h"
 #include "timer.h"
 #include "gdt.h"
+#include "devev.h"
 
 #define BLUEY_ECHILD 10
 #define BLUEY_EAGAIN 11
@@ -161,6 +162,7 @@ static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t 
     process->parent_pid = proc_current ? proc_current->pid : 0;
     process->uid = uid;
     process->gid = gid;
+    process->pgid = process->pid;  // new process starts in its own group
     process->state = PROC_READY;
     process->priority = 5;
     process->exit_code = 0;
@@ -266,6 +268,7 @@ process_t *process_fork_current(const registers_t *regs) {
     }
 
     child->flags = parent->flags & ~PROC_FLAG_SIGNAL_ACTIVE;
+    child->pgid = parent->pgid;
     child->user_stack_base = parent->user_stack_base;
     child->user_stack_top = parent->user_stack_top;
     child->page_dir = page_dir;
@@ -318,12 +321,21 @@ void process_set_memory_layout(process_t *process, uint32_t image_end) {
 
 void process_mark_exited(process_t *process, int code) {
     process_t *parent;
+    devev_event_t ev;
 
     if (!process || process->state == PROC_ZOMBIE || process->state == PROC_DEAD) return;
 
     process->state = PROC_ZOMBIE;
     process->exit_code = code;
     process->pending_signals = 0;
+
+    /* Notify the device event channel so supervisors like claw can react */
+    ev.type = DEV_EV_CHILD_EXIT;
+    ev._pad[0] = ev._pad[1] = ev._pad[2] = 0;
+    ev.pid = process->pid;
+    ev.code = (uint32_t)code;
+    ev.reserved = 0;
+    devev_push(&ev);
 
     parent = process->parent_pid ? process_get_by_pid(process->parent_pid) : NULL;
     if (parent) {
@@ -350,6 +362,9 @@ void process_set_current(process_t *p) {
         tss_set_kernel_stack(p->stack_base + PROC_STACK_SIZE);
     }
     process_reap_deferred();
+}
+void process_set_waiting(process_t *p) {
+    if (p) p->state = PROC_WAITING;
 }
 process_t *process_first(void) { return proc_list; }
 process_t *process_next(process_t *p) { return p ? p->next : NULL; }
@@ -408,6 +423,18 @@ void process_sleep(uint32_t ms) {
 void process_wake(uint32_t pid) {
     process_t *p = process_get_by_pid(pid);
     if (p && p->state == PROC_SLEEPING) p->state = PROC_READY;
+}
+
+uint32_t process_getpgid(uint32_t pid) {
+    process_t *p = pid ? process_get_by_pid(pid) : proc_current;
+    return p ? p->pgid : 0;
+}
+
+int process_setpgid(uint32_t pid, uint32_t pgid) {
+    process_t *p = pid ? process_get_by_pid(pid) : proc_current;
+    if (!p) return -1;
+    p->pgid = pgid ? pgid : p->pid;
+    return 0;
 }
 
 void process_enter_first_user(process_t *process) {

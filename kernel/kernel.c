@@ -50,6 +50,7 @@
 #include "../shell/shell.h"
 #include "syslog.h"
 #include "netcfg.h"
+#include "devev.h"
 
 // Kernel end symbol from linker script
 extern uint32_t kernel_end;
@@ -203,6 +204,9 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 13: Process management + scheduler
     process_init();
     scheduler_init();
+
+    // Step 13b: Device event channel (must be after process_init)
+    devev_init();
 
     // Create idle process (runs when nothing else is ready)
     process_t *idle = process_create("bandit-idle", idle_task, 0, 0);
