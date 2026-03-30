@@ -134,6 +134,15 @@ bool signal_is_valid(int sig) {
 void signal_init(void) {
     signal_trampoline_ready = 0;
     signal_trampoline_phys = 0;
+
+    /* Eagerly ensure the signal trampoline is mapped/reserved so that
+     * user-space cannot successfully mmap(MAP_FIXED) over
+     * SIGNAL_TRAMPOLINE_ADDR before signal delivery.
+     */
+    signal_ensure_trampoline();
+    if (!signal_trampoline_ready) {
+        kprintf("[SIG]  WARNING: trampoline init failed, signals may not work\n");
+    }
 }
 
 static void signal_mark_pending(process_t *process, int sig) {

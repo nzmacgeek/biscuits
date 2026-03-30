@@ -130,8 +130,21 @@ void paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phy
 
     uint32_t *page_table = paging_ensure_page_table(page_dir, pd_idx, flags);
     if (!page_table) return;
-    page_table[pt_idx] = (phys & ~0xFFF) | flags | PAGE_PRESENT;
-    paging_refresh_active_directory(page_dir);
+
+    uint32_t old_entry = page_table[pt_idx];
+    uint32_t new_entry = (phys & ~0xFFF) | flags | PAGE_PRESENT;
+
+    /* If nothing changes, avoid both the write and any TLB activity. */
+    if (old_entry == new_entry) {
+        return;
+    }
+
+    page_table[pt_idx] = new_entry;
+
+    /* Only flush when modifying an already-present mapping. */
+    if (old_entry & PAGE_PRESENT) {
+        paging_refresh_active_directory(page_dir);
+    }
 }
 
 uint32_t paging_virt_to_phys(uint32_t virt) {
