@@ -8,6 +8,7 @@
 
 #define MAX_PROCESSES  64
 #define PROC_STACK_SIZE 8192   // 8 KiB per process stack
+#define PROC_MAX_GROUPS 8
 
 typedef enum {
     PROC_READY,     // ready to run - like Bluey ready for a new game
@@ -39,6 +40,10 @@ typedef struct process {
     uint32_t      page_dir;      // physical address of page directory
     uint32_t      uid;           // user id
     uint32_t      gid;           // group id
+    uint32_t      euid;          // effective user id
+    uint32_t      egid;          // effective group id
+    uint32_t      groups[PROC_MAX_GROUPS];
+    uint32_t      group_count;
     int           exit_code;
     uint32_t      sleep_until;   // timer tick to wake at (0 = not sleeping)
     uint32_t      priority;      // 1 (low) .. 10 (high) - Bluey always gets priority :)
@@ -80,6 +85,12 @@ process_t *process_first(void);
 process_t *process_next(process_t *p);
 int32_t    process_waitpid(int32_t pid, int *status, int options);
 uint32_t   process_getpid(void);
+uint32_t   process_get_uid(void);
+uint32_t   process_get_gid(void);
+uint32_t   process_get_euid(void);
+uint32_t   process_get_egid(void);
+int        process_in_group(const process_t *process, uint32_t gid);
+void       process_set_effective_ids(process_t *process, uint32_t euid, uint32_t egid);
 void       process_sleep(uint32_t ms);
 void       process_wake(uint32_t pid);
 void       process_enter_first_user(process_t *process);

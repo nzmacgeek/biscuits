@@ -2,7 +2,7 @@
 // Pure C, no external libraries - runs in freestanding kernel environment
 // RFC 6234 / FIPS 180-4 compliant.
 //
-// NOTE: This uses a simple SHA-256 + salt scheme. For production systems,
+// NOTE: This is used by PBKDF2-SHA256 for password hashing. For production,
 // use bcrypt, scrypt, or argon2id which include a configurable work factor
 // and are specifically designed for password storage. This is a research OS!
 //

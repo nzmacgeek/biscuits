@@ -221,7 +221,8 @@ void netcfg_apply(void) {
         netcfg_iface_t *iface = &ifaces[i];
 
         if (iface->method == NETCFG_INET_LOOPBACK) {
-            kprintf("[NCFG] %s: loopback (skipped)\n", iface->ifname);
+            kprintf("[NCFG] %s: loopback 127.0.0.1/8\n", iface->ifname);
+            tcpip_set_loopback(htonl(0x7F000001u), htonl(0xFF000000u));
             continue;
         }
 

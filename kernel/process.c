@@ -14,6 +14,7 @@
 #include "signal.h"
 #include "timer.h"
 #include "gdt.h"
+#include "multiuser.h"
 
 #define BLUEY_ECHILD 10
 #define BLUEY_EAGAIN 11
@@ -28,6 +29,19 @@ static process_t *proc_deferred_reap = NULL;
 static void process_reap(process_t *process);
 
 uint32_t process_next_pid(void) { return next_pid++; }
+
+static void process_set_credentials(process_t *process, uint32_t uid, uint32_t gid) {
+    if (!process) return;
+    process->uid = uid;
+    process->gid = gid;
+    process->euid = uid;
+    process->egid = gid;
+    process->group_count = multiuser_get_groups(uid, gid, process->groups, PROC_MAX_GROUPS);
+    if (process->group_count == 0) {
+        process->groups[0] = gid;
+        process->group_count = 1;
+    }
+}
 
 static void process_init_kernel_frame(process_t *process, uint32_t entry) {
     memset(&process->saved_regs, 0, sizeof(process->saved_regs));
@@ -159,8 +173,7 @@ static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t 
     strncpy(process->name, name, sizeof(process->name) - 1);
     process->pid = process_next_pid();
     process->parent_pid = proc_current ? proc_current->pid : 0;
-    process->uid = uid;
-    process->gid = gid;
+    process_set_credentials(process, uid, gid);
     process->state = PROC_READY;
     process->priority = 5;
     process->exit_code = 0;
@@ -266,6 +279,10 @@ process_t *process_fork_current(const registers_t *regs) {
     }
 
     child->flags = parent->flags & ~PROC_FLAG_SIGNAL_ACTIVE;
+    child->euid = parent->euid;
+    child->egid = parent->egid;
+    child->group_count = parent->group_count;
+    memcpy(child->groups, parent->groups, sizeof(child->groups));
     child->user_stack_base = parent->user_stack_base;
     child->user_stack_top = parent->user_stack_top;
     child->page_dir = page_dir;
@@ -395,6 +412,37 @@ int32_t process_waitpid(int32_t pid, int *status, int options) {
 
 uint32_t process_getpid(void) {
     return proc_current ? proc_current->pid : 0;
+}
+
+uint32_t process_get_uid(void) {
+    return proc_current ? proc_current->uid : 0;
+}
+
+uint32_t process_get_gid(void) {
+    return proc_current ? proc_current->gid : 0;
+}
+
+uint32_t process_get_euid(void) {
+    return proc_current ? proc_current->euid : 0;
+}
+
+uint32_t process_get_egid(void) {
+    return proc_current ? proc_current->egid : 0;
+}
+
+int process_in_group(const process_t *process, uint32_t gid) {
+    if (!process) return 0;
+    if (process->egid == gid) return 1;
+    for (uint32_t i = 0; i < process->group_count; i++) {
+        if (process->groups[i] == gid) return 1;
+    }
+    return 0;
+}
+
+void process_set_effective_ids(process_t *process, uint32_t euid, uint32_t egid) {
+    if (!process) return;
+    process->euid = euid;
+    process->egid = egid;
 }
 
 void process_sleep(uint32_t ms) {

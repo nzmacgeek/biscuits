@@ -36,11 +36,14 @@
 #include "tty.h"
 #include "elf.h"
 #include "swap.h"
+#include "module.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/ata.h"
 #include "../drivers/driver.h"
+#include "../drivers/modules.h"
 #include "../drivers/net/network.h"
 #include "../drivers/net/ne2000.h"
+#include "../drivers/net/loopback.h"
 #include "../drivers/vt100.h"
 #include "../fs/vfs.h"
 #include "../fs/fat.h"
@@ -157,35 +160,37 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 3: Timer - enables IRQ0, enables interrupts
     timer_init(1000);   // 1000 Hz = 1ms resolution
 
-    // Step 4: Keyboard - PS/2, IRQ1
-    keyboard_init();
+    // Step 4: Driver framework + module loader
+    driver_framework_init();
+    module_framework_init();
+    driver_modules_register();
 
-    // Step 5: Heap - uses memory just after kernel image
+    // Step 5: Keyboard - PS/2, IRQ1 (module)
+    module_load("keyboard");
+
+    // Step 6: Heap - uses memory just after kernel image
     kheap_init((uint32_t)&kernel_end, 0x100000);  // 1MB heap
     kprintf("%s\n", MSG_HEAP_INIT);
 
-    // Step 6: Paging / virtual memory
+    // Step 7: Paging / virtual memory
     paging_init();
     signal_init();
 
-    // Step 7: System information (hostname, timezone, epoch)
+    // Step 8: System information (hostname, timezone, epoch)
     sysinfo_set_ram_mb(ram_mb);
     sysinfo_init();
     rtc_init();
 
-    // Step 8: Multi-user system (passwd + shadow)
+    // Step 9: Multi-user system (passwd + shadow)
     multiuser_init();
-
-    // Step 9: Driver framework
-    driver_framework_init();
 
     // Step 10: VFS, FAT16, and BiscuitFS
     vfs_init();
     vfs_register_fs(fat_get_filesystem());
     vfs_register_fs(biscuitfs_get_filesystem());
 
-    // Step 11: ATA disk driver
-    if (ata_init() == 0) {
+    // Step 11: ATA disk driver (module)
+    if (module_load("ata") == 0) {
         if (rootfs_mount_config(&rootfs) != 0) {
             kprintf("[VFS]  No recognised filesystem - running diskless\n");
         } else {
@@ -208,7 +213,8 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 14: Network (Ethernet layer)
     net_init();
-    ne2000_init();
+    loopback_init();
+    module_load("ne2000");
 
     // Step 15: TCP/IP IPv4 stack
     tcpip_init();

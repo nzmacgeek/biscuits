@@ -291,6 +291,7 @@ static int32_t sys_execve(registers_t *regs,
                           const char *const *envp) {
     process_t *process = process_current();
     elf_image_t image;
+    vfs_stat_t stat;
     char *path_copy = NULL;
     char **argv_copy = NULL;
     char **envp_copy = NULL;
@@ -314,6 +315,15 @@ static int32_t sys_execve(registers_t *regs,
         goto cleanup;
     }
 
+    if (vfs_stat(path_copy, &stat) != 0) {
+        result = -BLUEY_EINVAL;
+        goto cleanup;
+    }
+    if (vfs_access(path_copy, VFS_ACCESS_EXEC) != 0 || stat.is_dir) {
+        result = -BLUEY_EPERM;
+        goto cleanup;
+    }
+
     if (elf_load_image(path_copy, (const char *const *)argv_copy,
                        (const char *const *)envp_copy, &image) != 0) {
         result = -1;
@@ -327,6 +337,13 @@ static int32_t sys_execve(registers_t *regs,
     paging_switch_directory(image.page_dir);
     process_set_current(process);
     syscall_prepare_user_return(regs, process);
+    if (stat.mode & VFS_S_ISUID || stat.mode & VFS_S_ISGID) {
+        uint32_t new_euid = process->euid;
+        uint32_t new_egid = process->egid;
+        if (stat.mode & VFS_S_ISUID) new_euid = stat.uid;
+        if (stat.mode & VFS_S_ISGID) new_egid = stat.gid;
+        process_set_effective_ids(process, new_euid, new_egid);
+    }
     result = 0;
 
     if (old_page_dir && old_page_dir != image.page_dir) {
@@ -408,10 +425,10 @@ int32_t syscall_dispatch(registers_t *regs) {
             ret = (int32_t)process_getpid();
             break;
         case SYS_GETUID:
-            ret = (int32_t)multiuser_current_uid();
+            ret = (int32_t)process_get_euid();
             break;
         case SYS_GETGID:
-            ret = (int32_t)multiuser_current_gid();
+            ret = (int32_t)process_get_egid();
             break;
         case SYS_UNAME:
             ret = sys_uname((utsname_t*)regs->ebx);

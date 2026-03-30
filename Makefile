@@ -157,23 +157,27 @@ I386_C_SOURCES = \
     kernel/rootfs.c \
     kernel/scheduler.c \
     kernel/signal.c \
-    kernel/syscall.c \
-    kernel/elf.c \
-    kernel/sha256.c \
-    kernel/rtc.c \
-    kernel/multiuser.c \
-    kernel/sysinfo.c \
-    kernel/tty.c \
+  kernel/syscall.c \
+  kernel/elf.c \
+  kernel/sha256.c \
+  kernel/password.c \
+  kernel/module.c \
+  kernel/rtc.c \
+  kernel/multiuser.c \
+  kernel/sysinfo.c \
+  kernel/tty.c \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \
-    drivers/vga.c \
-    drivers/vt100.c \
-    drivers/keyboard.c \
-    drivers/ata.c \
-    drivers/driver.c \
-    drivers/net/ne2000.c \
-    drivers/net/network.c \
+  drivers/vga.c \
+  drivers/vt100.c \
+  drivers/keyboard.c \
+  drivers/ata.c \
+  drivers/driver.c \
+  drivers/modules.c \
+  drivers/net/ne2000.c \
+  drivers/net/loopback.c \
+  drivers/net/network.c \
     fs/vfs.c \
     fs/fat.c \
     fs/blueyfs.c \
