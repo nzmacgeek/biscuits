@@ -52,6 +52,11 @@ static uint32_t kernel_page_dir[1024] __attribute__((aligned(4096)));
 static uint32_t first_page_table[1024] __attribute__((aligned(4096)));
 static uint32_t *current_page_dir = kernel_page_dir;
 
+static void paging_refresh_active_directory(uint32_t *page_dir) {
+    if (!page_dir || page_dir != current_page_dir) return;
+    paging_enable((uint32_t)page_dir);
+}
+
 static uint32_t *paging_directory_ptr(uint32_t page_dir_phys) {
     return (uint32_t*)(uintptr_t)page_dir_phys;
 }
@@ -126,6 +131,7 @@ void paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phy
     uint32_t *page_table = paging_ensure_page_table(page_dir, pd_idx, flags);
     if (!page_table) return;
     page_table[pt_idx] = (phys & ~0xFFF) | flags | PAGE_PRESENT;
+    paging_refresh_active_directory(page_dir);
 }
 
 uint32_t paging_virt_to_phys(uint32_t virt) {

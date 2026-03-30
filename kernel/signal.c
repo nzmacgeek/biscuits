@@ -35,6 +35,7 @@ static const signal_name_map_t signal_names[] = {
 };
 
 static int signal_trampoline_ready = 0;
+static uint32_t signal_trampoline_phys = 0;
 static const uint8_t signal_trampoline_code[] = {
     0x8B, 0x5C, 0x24, 0x04,
     0xB8, SYS_SIGRETURN, 0x00, 0x00, 0x00,
@@ -57,23 +58,30 @@ static int signal_is_ignored_by_default(int sig) {
 }
 
 static void signal_ensure_trampoline(void) {
-    uint32_t phys;
+    uint32_t mapped_phys;
 
-    if (signal_trampoline_ready) return;
-
-    phys = pmm_alloc_frame();
-    if (!phys) {
-        kprintf("[SIG]  Failed to allocate trampoline page\n");
-        return;
+    if (!signal_trampoline_phys) {
+        signal_trampoline_phys = pmm_alloc_frame();
+        if (!signal_trampoline_phys) {
+            kprintf("[SIG]  Failed to allocate trampoline page\n");
+            return;
+        }
     }
 
-    paging_map(SIGNAL_TRAMPOLINE_ADDR, phys, PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE);
-    memset((void*)SIGNAL_TRAMPOLINE_ADDR, 0, PAGE_SIZE);
-    memcpy((void*)SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_code, sizeof(signal_trampoline_code));
+    mapped_phys = paging_virt_to_phys(SIGNAL_TRAMPOLINE_ADDR) & ~0xFFFu;
+    if (mapped_phys != signal_trampoline_phys) {
+        paging_map(SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_phys,
+                   PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE);
+    }
 
-    /* Remap as user-readable but not writable after initialization */
-    paging_map(SIGNAL_TRAMPOLINE_ADDR, phys, PAGE_PRESENT | PAGE_USER);
-    signal_trampoline_ready = 1;
+    if (!signal_trampoline_ready) {
+        memset((void*)SIGNAL_TRAMPOLINE_ADDR, 0, PAGE_SIZE);
+        memcpy((void*)SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_code, sizeof(signal_trampoline_code));
+        signal_trampoline_ready = 1;
+    }
+
+    /* Keep the trampoline executable/readable to user mode, but not writable. */
+    paging_map(SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_phys, PAGE_PRESENT | PAGE_USER);
 }
 
 static int signal_next_pending(process_t *process) {
@@ -124,7 +132,8 @@ bool signal_is_valid(int sig) {
 }
 
 void signal_init(void) {
-    signal_ensure_trampoline();
+    signal_trampoline_ready = 0;
+    signal_trampoline_phys = 0;
 }
 
 static void signal_mark_pending(process_t *process, int sig) {
