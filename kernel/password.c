@@ -38,7 +38,10 @@ static int parse_uint32(const char *s, uint32_t *out) {
     for (const char *p = s; *p; p++) {
         if (*p < '0' || *p > '9') return -1;
         uint32_t digit = (uint32_t)(*p - '0');
-        if (value > (0xFFFFFFFFu - digit) / 10u) return -1;
+        if (value > 0xFFFFFFFFu / 10u ||
+            (value == 0xFFFFFFFFu / 10u && digit > 0xFFFFFFFFu % 10u)) {
+            return -1;
+        }
         value = value * 10u + digit;
     }
     *out = value;

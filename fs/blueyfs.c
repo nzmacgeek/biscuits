@@ -646,8 +646,8 @@ static int biscuitfs_open_cb(const char *path, int flags) {
         memset(&inode, 0, sizeof(inode));
         inode.mode       = BISCUITFS_IFREG | 0644;
         inode.links_count = 1;
-        uint32_t uid = 0;
-        uint32_t gid = 0;
+        uint32_t uid;
+        uint32_t gid;
         biscuitfs_get_current_creds(&uid, &gid);
 
         // Add to parent directory
@@ -860,8 +860,8 @@ static int biscuitfs_mkdir_cb(const char *path) {
     memset(&inode, 0, sizeof(inode));
     inode.mode        = BISCUITFS_IFDIR | 0755;
     inode.links_count = 2;   /* itself + "." */
-    uint32_t uid = 0;
-    uint32_t gid = 0;
+    uint32_t uid;
+    uint32_t gid;
     biscuitfs_get_current_creds(&uid, &gid);
 
     biscuitfs_inode_t parent_inode;

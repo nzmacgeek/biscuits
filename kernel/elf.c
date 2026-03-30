@@ -434,16 +434,20 @@ process_t *elf_exec(const char *path, uint32_t uid) {
     uint32_t groups[PROC_MAX_GROUPS];
     vfs_cred_t cred;
     passwd_entry_t passwd;
-    uint32_t gid = uid;
+    uint32_t gid = 0;
     uint32_t euid = uid;
-    uint32_t egid = uid;
+    uint32_t egid = 0;
 
     if (!path) return NULL;
 
     argv_storage[0] = path;
     argv_storage[1] = NULL;
 
-    if (multiuser_get_passwd(uid, &passwd) == 0) gid = passwd.gid;
+    if (multiuser_get_passwd(uid, &passwd) != 0) {
+        kprintf("[ELF] Unknown uid %u for %s\n", uid, path);
+        return NULL;
+    }
+    gid = passwd.gid;
     egid = gid;
     memset(&cred, 0, sizeof(cred));
     cred.uid = uid;

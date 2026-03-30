@@ -54,7 +54,12 @@ int module_load(const char *name) {
     int result = 0;
     if (mod->driver) {
         result = module_load_driver(mod);
-    } else if (mod->init) {
+        if (result != 0) {
+            kprintf("[MOD]  Module '%s' driver init failed\n", mod->name);
+            return -1;
+        }
+    }
+    if (mod->init) {
         result = mod->init();
     }
 
