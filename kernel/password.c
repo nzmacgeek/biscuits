@@ -35,11 +35,13 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t out_len) {
 static int parse_uint32(const char *s, uint32_t *out) {
     if (!s || !*s || !out) return -1;
     uint32_t value = 0;
+    const uint32_t max_div10 = 0xFFFFFFFFu / 10u;
+    const uint32_t max_mod10 = 0xFFFFFFFFu % 10u;
     for (const char *p = s; *p; p++) {
         if (*p < '0' || *p > '9') return -1;
         uint32_t digit = (uint32_t)(*p - '0');
-        if (value > 0xFFFFFFFFu / 10u ||
-            (value == 0xFFFFFFFFu / 10u && digit > 0xFFFFFFFFu % 10u)) {
+        // Ensure value * 10 + digit does not overflow uint32_t.
+        if (value > max_div10 || (value == max_div10 && digit > max_mod10)) {
             return -1;
         }
         value = value * 10u + digit;
@@ -132,6 +134,7 @@ void password_gen_salt(char salt_hex_out[PASSWORD_SALT_HEX_LEN + 1]) {
     rtc_get_unix_time(&unix_time);
     uint32_t uptime = rtc_get_uptime_seconds();
 
+    // NOTE: This is a best-effort entropy mix without a CSPRNG.
     uint32_t entropy[6] = {
         t,
         pid,

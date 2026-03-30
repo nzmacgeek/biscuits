@@ -66,7 +66,7 @@ static void vfs_fill_cred_from_process(vfs_cred_t *cred) {
 static int vfs_parent_path(const char *path, char *out, size_t out_len) {
     if (!path || !out || out_len == 0) return -1;
     size_t len = strlen(path);
-    if (len == 0 || len >= out_len) return -1;
+    if (len == 0 || len >= out_len - 1) return -1;
 
     strncpy(out, path, out_len - 1);
     out[out_len - 1] = '\0';
@@ -178,6 +178,7 @@ int vfs_open(const char *path, int flags) {
         if (!vfs_check_mode(&parent_stat, VFS_ACCESS_WRITE | VFS_ACCESS_EXEC, &cred)) {
             return -1;
         }
+        // Filesystem create callbacks are responsible for setting ownership/mode.
     }
 
     int fs_fd = m->fs->open(path, flags);

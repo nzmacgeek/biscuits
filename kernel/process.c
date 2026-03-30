@@ -38,8 +38,10 @@ static void process_set_credentials(process_t *process, uint32_t uid, uint32_t g
     process->egid = gid;
     process->group_count = multiuser_get_groups(uid, gid, process->groups, PROC_MAX_GROUPS);
     if (process->group_count == 0) {
-        process->groups[0] = gid;
-        process->group_count = 1;
+        if (PROC_MAX_GROUPS > 0) {
+            process->groups[0] = gid;
+            process->group_count = 1;
+        }
     }
 }
 
