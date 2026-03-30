@@ -15,7 +15,10 @@ block = '''# Ensure object files are rebuilt when ARCH changes: maintain a small
 # stamp is updated which forces object files to be rebuilt.
 ARCH_STAMP := .arch_record
 
-$(ARCH_STAMP):
+.PHONY: FORCE
+FORCE:
+
+$(ARCH_STAMP): FORCE
 	@printf "%s\\n" "$(ARCH)" > $(ARCH_STAMP).tmp
 	@if [ -f $(ARCH_STAMP) ] && cmp -s $(ARCH_STAMP) $(ARCH_STAMP).tmp; then \\
 		rm -f $(ARCH_STAMP).tmp; \\

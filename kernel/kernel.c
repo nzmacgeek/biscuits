@@ -87,7 +87,10 @@ void bluey_panic(const char *msg) {
 // "Bandit stares at the ceiling." - Camping episode
 // ---------------------------------------------------------------------------
 static void idle_task(void) {
-    while (1) __asm__ volatile("hlt");
+    while (1) {
+        rtc_poll_if_pending();
+        __asm__ volatile("hlt");
+    }
 }
 
 static int kernel_bootstrap_first_user(void) {

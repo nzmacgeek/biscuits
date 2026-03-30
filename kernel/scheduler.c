@@ -165,6 +165,7 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
     while (next) {
         registers_t frame = next->saved_regs;
 
+        paging_switch_directory(next->page_dir);
         if (signal_dispatch_pending(next, &frame) != 0) {
             next = scheduler_pick_next_user(next, 1);
             continue;
@@ -174,7 +175,6 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
         next->state = PROC_RUNNING;
         sched_current = next;
         process_set_current(next);
-        paging_switch_directory(next->page_dir);
         *regs = frame;
         return;
     }

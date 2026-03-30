@@ -25,6 +25,13 @@
 
 extern void syscall_stub(void);
 
+/* Per-entry saved user segment registers. Interrupts are disabled (cli) when
+ * these are written and are only accessed on the single boot CPU, so no
+ * locking is required. If SMP support is added, these must become per-CPU. */
+uint32_t syscall_saved_es = 0;
+uint32_t syscall_saved_fs = 0;
+uint32_t syscall_saved_gs = 0;
+
 #define BLUEY_ENOSYS 38
 #define BLUEY_EPERM   1
 #define BLUEY_EFAULT 14

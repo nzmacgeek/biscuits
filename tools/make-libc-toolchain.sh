@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 wget https://ftp.gnu.org/gnu/binutils/binutils-2.41.tar.xz
 wget https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz
 tar xf binutils-2.41.tar.xz && tar xf gcc-13.2.0.tar.xz

@@ -70,6 +70,9 @@ static void signal_ensure_trampoline(void) {
     paging_map(SIGNAL_TRAMPOLINE_ADDR, phys, PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE);
     memset((void*)SIGNAL_TRAMPOLINE_ADDR, 0, PAGE_SIZE);
     memcpy((void*)SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_code, sizeof(signal_trampoline_code));
+
+    /* Remap as user-readable but not writable after initialization */
+    paging_map(SIGNAL_TRAMPOLINE_ADDR, phys, PAGE_PRESENT | PAGE_USER);
     signal_trampoline_ready = 1;
 }
 

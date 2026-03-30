@@ -15,6 +15,7 @@ static uint32_t rtc_base_unix = 0;
 static uint32_t rtc_base_ms = 0;
 static uint32_t rtc_last_poll_ms = 0;
 static bool rtc_synced = false;
+static volatile bool rtc_poll_pending = false;
 
 static uint32_t rtc_estimated_unix(void) {
     if (!rtc_synced) {
@@ -214,7 +215,10 @@ void rtc_notify_tick(void) {
     if (rtc_arch_poll_supported()) {
         uint32_t interval = rtc_synced ? RTC_SYNC_INTERVAL_MS : RTC_RETRY_INTERVAL_MS;
         if ((rtc_monotonic_ms - rtc_last_poll_ms) >= interval) {
-            rtc_poll();
+            /* Set a flag so rtc_poll() can be called from non-interrupt context
+             * (e.g., the kernel idle loop) to avoid hardware I/O in IRQ context. */
+            rtc_poll_pending = true;
+            rtc_last_poll_ms = rtc_monotonic_ms;
         }
     }
 }
@@ -222,12 +226,18 @@ void rtc_notify_tick(void) {
 void rtc_poll(void) {
     uint32_t unix_secs = 0;
 
-    rtc_last_poll_ms = rtc_monotonic_ms;
+    rtc_poll_pending = false;
     if (!rtc_arch_read_unix_seconds(&unix_secs)) {
         return;
     }
 
     rtc_accept_hardware_time(unix_secs);
+}
+
+void rtc_poll_if_pending(void) {
+    if (rtc_poll_pending) {
+        rtc_poll();
+    }
 }
 
 bool rtc_get_unix_time(uint32_t *unix_secs) {

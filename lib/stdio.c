@@ -83,7 +83,8 @@ static int kprintf_parse_length(const char **fmt) {
         (*fmt)++;
         if (**fmt == 'l') {
             (*fmt)++;
-            return 4;
+            /* ll (long long) is not supported; treat as l (long) to avoid
+             * silently reading the wrong argument width. */
         }
         return 3;
     }
