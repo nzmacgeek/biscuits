@@ -33,3 +33,12 @@ void page_fault_handler(registers_t regs);
 
 // ASM stub: load CR3 and set CR0 bit 31
 extern void paging_enable(uint32_t page_dir_phys);
+
+// Unmap a single virtual page in a page directory and free its frame.
+// Returns 0 on success, -1 on failure or if page not present.
+int      paging_unmap_in_directory(uint32_t page_dir_phys, uint32_t virt);
+
+// Change the flags for an existing mapped page in the given page directory.
+// `flags` should contain PAGE_WRITABLE / PAGE_USER as desired; PAGE_PRESENT
+// is preserved by the implementation. Returns 0 on success, -1 on failure.
+int      paging_set_page_flags_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t flags);

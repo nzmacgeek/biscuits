@@ -92,15 +92,25 @@ static int elf_read_file(const char *path, uint8_t **data_out, size_t *len_out) 
 }
 
 static uint32_t elf_alloc_stack_region(void) {
+    // Defensive init: ensure we have a sane user stack base. Some build/runtime
+    // scenarios can leave the static zeroed; fall back to the compile-time
+    // default if that's the case.
+    if (elf_next_stack_base == 0) elf_next_stack_base = ELF_USER_STACK_BASE;
     uint32_t base = elf_next_stack_base;
     elf_next_stack_base += ELF_USER_STACK_STRIDE;
     return base;
 }
 
 static int elf_map_stack_pages(uint32_t page_dir, uint32_t stack_base, uint32_t stack_size) {
+    kprintf("[ELF DBG] Mapping stack pages for page_dir=0x%08x base=0x%08x size=0x%08x\n",
+            page_dir, stack_base, stack_size);
     for (uint32_t addr = stack_base; addr < stack_base + stack_size; addr += PAGE_SIZE) {
         uint32_t phys = pmm_alloc_frame();
-        if (!phys) return -1;
+        if (!phys) {
+            kprintf("[ELF DBG] pmm_alloc_frame failed while mapping stack\n");
+            return -1;
+        }
+        kprintf("[ELF DBG]  map stack va=0x%08x -> phys=0x%08x\n", addr, phys);
         paging_map_in_directory(page_dir, addr, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
     return 0;
@@ -235,7 +245,7 @@ int elf_build_initial_stack(uint32_t page_dir,
     uint32_t old_page_dir = paging_current_directory();
 
     if (elf_map_stack_pages(page_dir, stack_base, ELF_USER_STACK_SIZE) != 0) return -1;
-
+    kprintf("[ELF DBG] stack_base=0x%08x stack_top=0x%08x\n", stack_base, stack_top);
     paging_switch_directory(page_dir);
     if (elf_zero_stack_pages(stack_base, ELF_USER_STACK_SIZE) != 0) {
         paging_switch_directory(old_page_dir);
@@ -299,6 +309,7 @@ int elf_build_initial_stack(uint32_t page_dir,
     if (stack_base_out) *stack_base_out = stack_base;
     if (stack_top_out) *stack_top_out = stack_top;
     if (stack_pointer_out) *stack_pointer_out = (uint32_t)(uintptr_t)stack_ptr;
+    kprintf("[ELF DBG] final user stack pointer = 0x%08x\n", (uint32_t)(uintptr_t)stack_ptr);
     return 0;
 }
 

@@ -69,6 +69,7 @@ typedef struct filesystem {
     int (*mount)(const char *mountpoint, uint32_t start_lba);
     int (*open)(const char *path, int flags);
     int (*read)(int fd, uint8_t *buf, size_t len);
+    int (*read_at)(int fd, uint8_t *buf, size_t len, uint32_t offset);
     int (*write)(int fd, const uint8_t *buf, size_t len);
     int (*close)(int fd);
     int (*readdir)(const char *path, vfs_dirent_t *out, int max);
@@ -97,6 +98,7 @@ int  vfs_open(const char *path, int flags);
 int  vfs_devev_open(void);           // open a device event channel fd
 int  vfs_fd_is_devev(int fd);        // 1 if the fd is a device event channel
 int  vfs_read(int fd, uint8_t *buf, size_t len);
+int  vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset);
 int  vfs_write(int fd, const uint8_t *buf, size_t len);
 int  vfs_close(int fd);
 int  vfs_readdir(const char *path, vfs_dirent_t *out, int max);

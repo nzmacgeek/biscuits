@@ -203,6 +203,55 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
         }
     }
 
+    /* Debug: if /bin/init cannot be opened after mounting root, dump
+     * the mount table, list the root directory and /bin to help diagnose
+     * missing init payloads created by the host mkfs tool. */
+    {
+        kprintf("[ROOTDBG] Dumping VFS mount table:\n");
+        vfs_print_mounts();
+
+        kprintf("[ROOTDBG] Listing root ('/') entries:\n");
+        vfs_dirent_t root_entries[128];
+        int rn = vfs_readdir("/", root_entries, 128);
+        if (rn < 0) {
+            kprintf("[ROOTDBG] vfs_readdir('/') failed\n");
+        } else if (rn == 0) {
+            kprintf("[ROOTDBG] root is empty (0 entries)\n");
+        } else {
+            for (int i = 0; i < rn; i++) {
+                kprintf("  %s%s\n", root_entries[i].name, root_entries[i].is_dir ? "/" : "");
+            }
+        }
+
+        kprintf("[ROOTDBG] Listing /bin entries and checking /bin/init:\n");
+        vfs_dirent_t bin_entries[128];
+        int bn = vfs_readdir("/bin", bin_entries, 128);
+        if (bn < 0) {
+            kprintf("[ROOTDBG] vfs_readdir('/bin') failed\n");
+        } else if (bn == 0) {
+            kprintf("[ROOTDBG] /bin is empty (0 entries)\n");
+        } else {
+            for (int i = 0; i < bn; i++) {
+                kprintf("  %s%s\n", bin_entries[i].name, bin_entries[i].is_dir ? "/" : "");
+            }
+        }
+
+        int fd = vfs_open("/bin/init", VFS_O_RDONLY);
+        if (fd < 0) {
+            kprintf("[ROOTDBG] /bin/init not found (vfs_open failed)\n");
+            vfs_stat_t st;
+            if (vfs_stat("/bin/init", &st) == 0) {
+                kprintf("[ROOTDBG] vfs_stat('/bin/init') reports size=%u mode=0%o is_dir=%u\n",
+                        st.size, st.mode, st.is_dir);
+            } else {
+                kprintf("[ROOTDBG] vfs_stat('/bin/init') failed\n");
+            }
+        } else {
+            kprintf("[ROOTDBG] /bin/init opened successfully (fd=%d)\n", fd);
+            vfs_close(fd);
+        }
+    }
+
     // Step 12: Syscall interface (int 0x80)
     syscall_init();
 

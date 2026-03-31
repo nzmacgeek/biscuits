@@ -22,6 +22,8 @@
 #define SYS_EXECVE        11
 #define SYS_MMAP          90
 #define SYS_MMAP2         192
+#define SYS_MUNMAP        91
+#define SYS_MPROTECT      92
 #define SYS_KILL          62
 #define SYS_EXIT          60
 #define SYS_UNAME         63

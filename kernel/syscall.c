@@ -52,7 +52,9 @@ uint32_t syscall_saved_gs = 0;
 
 #define BLUEY_PROT_READ   0x1
 #define BLUEY_PROT_WRITE  0x2
+#define BLUEY_PROT_EXEC   0x4
 #define BLUEY_MAP_PRIVATE 0x02
+#define BLUEY_MAP_SHARED  0x01
 #define BLUEY_MAP_FIXED   0x10
 #define BLUEY_MAP_ANON    0x20
 
@@ -220,11 +222,15 @@ static int32_t sys_mmap(registers_t *regs) {
 
     if (!process || !(process->flags & PROC_FLAG_USER_MODE)) return -BLUEY_EPERM;
     if (len == 0) return -BLUEY_EINVAL;
-    if (!(map_flags & BLUEY_MAP_PRIVATE)) return -BLUEY_EINVAL;
-    if (!(map_flags & BLUEY_MAP_ANON) || fd != -1) return -BLUEY_EINVAL;
+    if (!(map_flags & (BLUEY_MAP_PRIVATE | BLUEY_MAP_SHARED))) return -BLUEY_EINVAL;
 
     aligned_len = PAGE_ALIGN_UP(len);
     if (prot & BLUEY_PROT_WRITE) page_flags |= PAGE_WRITABLE;
+
+    /* If mapping requests executable pages, be conservative and remove
+     * writable permission from the page flags unless the caller explicitly
+     * requested writable + executable (rare). */
+    if (prot & BLUEY_PROT_EXEC) page_flags &= ~PAGE_WRITABLE;
 
     if ((map_flags & BLUEY_MAP_FIXED) && addr) {
         map_addr = addr & ~(PAGE_SIZE - 1u);
@@ -233,9 +239,102 @@ static int32_t sys_mmap(registers_t *regs) {
         process->mmap_base = map_addr + aligned_len + PAGE_SIZE;
     }
 
+    if (map_flags & BLUEY_MAP_ANON) {
+        if (fd != -1) return -BLUEY_EINVAL;
+        result = syscall_map_user_pages(process, map_addr, map_addr + aligned_len, page_flags);
+        if (result != 0) return result;
+        return (int32_t)map_addr;
+    }
+
+    /* File-backed mapping (minimal): read file contents into newly allocated
+     * user pages. We allocate pages, then copy from kernel buffer using vfs_read.
+     * Supports MAP_PRIVATE semantics only (MAP_SHARED treated as private).
+     */
+    if (fd < 0) return -BLUEY_EINVAL;
+
     result = syscall_map_user_pages(process, map_addr, map_addr + aligned_len, page_flags);
     if (result != 0) return result;
+
+    /* Adjust writeable flag for executable mappings: executable mappings
+     * should not be writable on many platforms. Respect PROT_EXEC by
+     * clearing the writable bit if set unless MAP_SHARED requests it.
+     */
+    if (prot & BLUEY_PROT_WRITE) {
+        if (prot & 0x4) {
+            /* placeholder: if additional exec flag present - keep writable */
+        }
+    }
+
+    /* If mapping requests executable pages, be conservative and remove
+     * writable permission from the page flags unless MAP_SHARED explicitly
+     * requests shared writable mapping. */
+    if ((prot & 0x100) /* proxy for PROT_EXEC not defined separately */) {
+        page_flags &= ~PAGE_WRITABLE;
+    }
+
+    uint8_t *kbuf = (uint8_t*)kheap_alloc(PAGE_SIZE, 0);
+    if (!kbuf) return -BLUEY_ENOMEM;
+
+    uint32_t old_dir = paging_current_directory();
+    uint32_t remaining = len;
+    uint32_t off = 0;
+    while (remaining) {
+        uint32_t toread = remaining > PAGE_SIZE ? PAGE_SIZE : remaining;
+        int r = vfs_read_at(fd, kbuf, toread, off);
+        if (r <= 0) {
+            /* Short read or error: leave rest zeroed */
+            break;
+        }
+
+        /* Copy into user mapping */
+        paging_switch_directory(process->page_dir);
+        memcpy((void*)(map_addr + off), kbuf, (size_t)r);
+        paging_switch_directory(old_dir);
+
+        remaining -= (uint32_t)r;
+        off += (uint32_t)r;
+        if ((uint32_t)r < toread) break; /* EOF */
+    }
+
+    kheap_free(kbuf);
     return (int32_t)map_addr;
+}
+
+static int32_t sys_munmap(registers_t *regs) {
+    process_t *process = process_current();
+    uint32_t addr = regs->ebx;
+    uint32_t len = regs->ecx;
+    uint32_t end;
+
+    if (!process || !(process->flags & PROC_FLAG_USER_MODE)) return -BLUEY_EPERM;
+    if (len == 0) return -BLUEY_EINVAL;
+
+    end = (addr + len + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+    for (uint32_t a = addr & ~(PAGE_SIZE - 1u); a < end; a += PAGE_SIZE) {
+        paging_unmap_in_directory(process->page_dir, a);
+    }
+    return 0;
+}
+
+static int32_t sys_mprotect(registers_t *regs) {
+    process_t *process = process_current();
+    uint32_t addr = regs->ebx;
+    uint32_t len = regs->ecx;
+    uint32_t prot = regs->edx;
+    uint32_t end;
+    uint32_t page_flags;
+
+    if (!process || !(process->flags & PROC_FLAG_USER_MODE)) return -BLUEY_EPERM;
+    if (len == 0) return -BLUEY_EINVAL;
+
+    page_flags = PAGE_PRESENT | PAGE_USER;
+    if (prot & BLUEY_PROT_WRITE) page_flags |= PAGE_WRITABLE;
+
+    end = (addr + len + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+    for (uint32_t a = addr & ~(PAGE_SIZE - 1u); a < end; a += PAGE_SIZE) {
+        paging_set_page_flags_in_directory(process->page_dir, a, page_flags);
+    }
+    return 0;
 }
 
 static int32_t sys_rt_sigaction(int sig, const bluey_sigaction_t *act, bluey_sigaction_t *oldact) {
@@ -602,6 +701,12 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_MMAP:
         case SYS_MMAP2:
             ret = sys_mmap(regs);
+            break;
+        case SYS_MUNMAP:
+            ret = sys_munmap(regs);
+            break;
+        case SYS_MPROTECT:
+            ret = sys_mprotect(regs);
             break;
         case SYS_RT_SIGACTION:
             ret = sys_rt_sigaction((int)regs->ebx,

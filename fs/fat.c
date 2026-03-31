@@ -194,6 +194,43 @@ static int fat_vfs_read(int fd, uint8_t *buf, size_t len) {
     return (int)read_total;
 }
 
+static int fat_vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
+    if (fd < 0 || fd >= FAT_MAX_OPEN || !fat_files[fd].used) return -1;
+
+    uint32_t remaining = fat_files[fd].file_size;
+    if (offset >= remaining) return 0;
+    if (len > remaining - offset) len = remaining - offset;
+    if (len == 0) return 0;
+
+    uint8_t sector[512];
+    size_t read_total = 0;
+
+    uint32_t local_offset = offset;
+    while (read_total < len) {
+        uint32_t cluster = fat_files[fd].first_cluster;
+        uint32_t cluster_index = local_offset / bytes_per_cluster;
+        // advance cluster chain cluster_index times
+        for (uint32_t c = 0; c < cluster_index && cluster < 0xFFF8; c++) cluster = fat_next_cluster(cluster);
+        if (cluster >= 0xFFF8) break;
+
+        uint32_t cluster_offset = local_offset % bytes_per_cluster;
+        uint32_t sector_in_cluster = cluster_offset / 512;
+        uint32_t byte_in_sector = cluster_offset % 512;
+        uint32_t lba = cluster_to_lba(cluster) + sector_in_cluster;
+
+        if (read_sector(lba, sector) != 0) break;
+
+        uint32_t avail = 512 - byte_in_sector;
+        uint32_t want = (uint32_t)(len - read_total);
+        if (avail > want) avail = want;
+
+        memcpy(buf + read_total, sector + byte_in_sector, avail);
+        read_total += avail;
+        local_offset += avail;
+    }
+    return (int)read_total;
+}
+
 static int fat_vfs_write(int fd, const uint8_t *buf, size_t len) {
     // Write support is beyond scope for a basic research OS - Bingo is working on it!
     (void)fd; (void)buf; (void)len;
@@ -267,6 +304,7 @@ static filesystem_t fat16_fs = {
     .mount   = fat_vfs_mount,
     .open    = fat_vfs_open,
     .read    = fat_vfs_read,
+    .read_at = fat_vfs_read_at,
     .write   = fat_vfs_write,
     .close   = fat_vfs_close,
     .readdir = fat_vfs_readdir,

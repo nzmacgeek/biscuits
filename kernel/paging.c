@@ -134,6 +134,11 @@ void paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phy
     uint32_t old_entry = page_table[pt_idx];
     uint32_t new_entry = (phys & ~0xFFF) | flags | PAGE_PRESENT;
 
+    if (flags & PAGE_USER) {
+        kprintf("[PGE DBG] paging_map_in_directory page_dir=0x%08x va=0x%08x -> phys=0x%08x flags=0x%03x\n",
+                page_dir_phys, virt, phys, flags);
+    }
+
     /* If nothing changes, avoid both the write and any TLB activity. */
     if (old_entry == new_entry) {
         return;
@@ -155,6 +160,39 @@ uint32_t paging_virt_to_phys(uint32_t virt) {
     uint32_t *pt = (uint32_t*)(uintptr_t)(current_page_dir[pd_idx] & ~0xFFFu);
     if (!(pt[pt_idx] & PAGE_PRESENT)) return 0;
     return (pt[pt_idx] & ~0xFFF) + (virt & 0xFFF);
+}
+
+int paging_unmap_in_directory(uint32_t page_dir_phys, uint32_t virt) {
+    uint32_t *page_dir = paging_directory_ptr(page_dir_phys);
+    uint32_t pd_idx = virt >> 22;
+    uint32_t pt_idx = (virt >> 12) & 0x3FF;
+
+    if (!(page_dir[pd_idx] & PAGE_PRESENT)) return -1;
+    uint32_t *pt = (uint32_t*)(uintptr_t)(page_dir[pd_idx] & ~0xFFFu);
+    if (!(pt[pt_idx] & PAGE_PRESENT)) return -1;
+
+    pmm_free_frame(pt[pt_idx] & ~0xFFFu);
+    pt[pt_idx] = 0;
+
+    if (page_dir == current_page_dir) paging_refresh_active_directory(page_dir);
+    return 0;
+}
+
+int paging_set_page_flags_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t flags) {
+    uint32_t *page_dir = paging_directory_ptr(page_dir_phys);
+    uint32_t pd_idx = virt >> 22;
+    uint32_t pt_idx = (virt >> 12) & 0x3FF;
+
+    if (!(page_dir[pd_idx] & PAGE_PRESENT)) return -1;
+    uint32_t *pt = (uint32_t*)(uintptr_t)(page_dir[pd_idx] & ~0xFFFu);
+    if (!(pt[pt_idx] & PAGE_PRESENT)) return -1;
+
+    uint32_t phys = pt[pt_idx] & ~0xFFFu;
+    uint32_t new_entry = phys | (flags & 0xFFFu) | PAGE_PRESENT;
+    pt[pt_idx] = new_entry;
+
+    if (page_dir == current_page_dir) paging_refresh_active_directory(page_dir);
+    return 0;
 }
 
 uint32_t paging_create_address_space(void) {

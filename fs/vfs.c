@@ -199,8 +199,20 @@ int vfs_fd_is_devev(int fd) {
 
 int vfs_open(const char *path, int flags) {
     vfs_mount_t *m = vfs_find_mount(path);
-    if (!m || !m->fs->open) {
-        if (path) kprintf("[VFS] Open miss path=%s mount=%d\n", path, !!m);
+    if (!m) {
+        if (path) kprintf("[VFS] Open miss path=%s mount=0\n", path);
+        return -1;
+    }
+    /* Debug: show which filesystem and whether it exposes an open() callback */
+    if (m->fs) {
+        kprintf("[VFS DBG] open request path=%s -> mount=%s fs=%p open=%p\n",
+                path, m->mountpoint, (void *)m->fs, (void *)m->fs->open);
+    } else {
+        kprintf("[VFS DBG] open request path=%s -> mount=%s fs=NULL\n",
+                path, m->mountpoint);
+    }
+    if (!m->fs->open) {
+        kprintf("[VFS] Open miss path=%s mount=1 (no open callback)\n", path);
         return -1;
     }
 
@@ -259,6 +271,18 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
     vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
     if (!m->fs->read) return -1;
     return m->fs->read(fd_table[fd].fs_fd, buf, len);
+}
+
+int vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
+    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
+    vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
+    if (!m->fs->read_at) {
+        /* Fallback: try to emulate by reading from current offset (best-effort) */
+        if (!m->fs->read) return -1;
+        return -1; /* explicit failure to avoid surprising side-effects */
+    }
+    return m->fs->read_at(fd_table[fd].fs_fd, buf, len, offset);
 }
 
 int vfs_write(int fd, const uint8_t *buf, size_t len) {

@@ -8,6 +8,10 @@ typedef unsigned int size_t;
 #define SYS_WAITPID 61
 #define SYS_BRK     45
 #define SYS_MMAP    90
+#define SYS_OPEN    2
+#define SYS_CLOSE   3
+#define SYS_MUNMAP  91
+#define SYS_MPROTECT 92
 
 #define PROT_READ   0x1
 #define PROT_WRITE  0x2
@@ -135,10 +139,38 @@ static void test_fork_wait(void) {
     write_str("[init-parent] waitpid ok\n");
 }
 
+static void test_file_mmap(void) {
+    long fd;
+    long fmap;
+
+    write_str("[init] file-backed mmap test\n");
+    fd = syscall3(SYS_OPEN, (long)"/bin/init", 0, 0);
+    if (fd < 0) {
+        write_str("[init] open /bin/init failed\n");
+        return;
+    }
+
+    fmap = syscall5(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, fd);
+    if (fmap < 0) {
+        write_str("[init] file mmap failed\n");
+        syscall1(SYS_CLOSE, fd);
+        return;
+    }
+
+    /* print first 64 bytes of mapped file */
+    syscall3(SYS_WRITE, 1, (long)fmap, 64);
+
+    /* protect read-only (no-op if already) and then unmap */
+    syscall3(SYS_MPROTECT, fmap, 4096, PROT_READ);
+    syscall3(SYS_MUNMAP, fmap, 4096, 0);
+    syscall1(SYS_CLOSE, fd);
+}
+
 int main(void) {
     write_str("[init] userspace bootstrap ok\n");
     test_heap_and_mmap();
     test_fork_wait();
+    test_file_mmap();
     write_str("[init] all tests passed\n");
     exit_now(0);
     return 0;
