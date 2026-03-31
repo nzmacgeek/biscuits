@@ -89,6 +89,12 @@ typedef struct {
 // fd type tag — stored inside every open VFS file descriptor
 #define VFS_FD_TYPE_FILE  0   // regular file on a mounted filesystem
 #define VFS_FD_TYPE_DEVEV 1   // device event channel (kernel ring buffer)
+#define VFS_FD_TYPE_PIPE  2   // pipe (in-kernel ring buffer)
+
+// lseek whence values (POSIX-compatible)
+#define VFS_SEEK_SET 0
+#define VFS_SEEK_CUR 1
+#define VFS_SEEK_END 2
 
 void vfs_init(void);
 void vfs_register_fs(filesystem_t *fs);
@@ -101,8 +107,15 @@ int  vfs_read(int fd, uint8_t *buf, size_t len);
 int  vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset);
 int  vfs_write(int fd, const uint8_t *buf, size_t len);
 int  vfs_close(int fd);
+int32_t vfs_lseek(int fd, int32_t offset, int whence);
+int  vfs_dup(int oldfd);
+int  vfs_dup2(int oldfd, int newfd);
+int  vfs_dup_above(int oldfd, int min_fd); // F_DUPFD: lowest free fd >= min_fd
+int  vfs_pipe(int fds[2]);
+const char *vfs_fd_get_path(int fd);  // return path stored for fd (NULL if not a file)
 int  vfs_readdir(const char *path, vfs_dirent_t *out, int max);
 int  vfs_mkdir(const char *path);
+int  vfs_rmdir(const char *path);
 int  vfs_unlink(const char *path);
 int  vfs_stat(const char *path, vfs_stat_t *out);
 int  vfs_fstat(int fd, vfs_stat_t *out);

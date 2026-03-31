@@ -205,41 +205,71 @@ For a shell and libc port to be useful, the kernel needs at least:
 | `write` | 1      | Write to fd (fd=1 = VGA) ✓ |
 | `open`  | 2      | Open a VFS path ✓ |
 | `close` | 3      | Close fd ✓ |
-| `fork`  | 57     | Clone process and address space |
-| `execve`| 11     | Replace process image from a VFS path |
-| `waitpid`| 61    | Wait for child |
-| `brk`   | 45     | Expand heap |
-| `mmap`  | 90     | Memory-mapped I/O / anonymous pages |
-| `ioctl` | 54     | Device control |
-| `stat`  | 4      | File metadata |
-| `chdir` | 80     | Change directory |
-| `getcwd`| 183    | Get current directory |
-| `pipe`  | 42     | Create pipe for IPC |
-| `dup2`  | 33     | Duplicate file descriptor |
-| `kill`  | 62     | Send a signal (minimal kernel path exists) |
-| `rt_sigaction` | 174 | Install a signal handler |
-| `rt_sigprocmask` | 175 | Block/unblock signals |
-| `sigreturn` | 15 | Return from signal trampoline |
+| `stat`  | 4      | File metadata ✓ |
+| `lstat` | 107    | Like stat; no symlinks so identical ✓ |
+| `lseek` | 19     | Seek within a file ✓ |
+| `fork`  | 57     | Clone process and address space ✓ |
+| `execve`| 11     | Replace process image from a VFS path ✓ |
+| `waitpid`| 61   | Wait for child ✓ |
+| `wait4` | 114    | waitpid with rusage pointer ✓ |
+| `brk`   | 45     | Expand heap ✓ |
+| `mmap`  | 90     | Memory-mapped I/O / anonymous pages ✓ |
+| `munmap`| 91     | Unmap pages ✓ |
+| `mprotect`| 92   | Change page protection ✓ |
+| `ioctl` | 54     | Device control (TIOCGWINSZ, TCGETS, TIOCGPGRP) ✓ |
+| `chdir` | 80     | Change directory ✓ |
+| `getcwd`| 183    | Get current directory ✓ |
+| `pipe`  | 42     | Create pipe for IPC ✓ |
+| `dup`   | 41     | Duplicate file descriptor ✓ |
+| `dup2`  | 33     | Duplicate file descriptor to specific fd ✓ |
+| `fcntl` | 55     | File control (F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL) ✓ |
+| `access`| 85     | Check file accessibility ✓ |
+| `unlink`| 10     | Remove a file ✓ |
+| `mkdir` | 39     | Create directory ✓ |
+| `rmdir` | 40     | Remove directory ✓ |
+| `getdents`| 141  | Read directory entries ✓ |
+| `getpid`| 20     | Get process ID ✓ |
+| `getppid`| 64    | Get parent process ID ✓ |
+| `kill`  | 62     | Send a signal ✓ |
+| `rt_sigaction` | 174 | Install a signal handler ✓ |
+| `rt_sigprocmask` | 175 | Block/unblock signals ✓ |
+| `sigreturn` | 15 | Return from signal trampoline ✓ |
+| `nanosleep` | 162 | Sleep for a duration ✓ |
+| `sched_yield` | 158 | Yield the CPU ✓ |
+| `exit_group` | 252 | Exit all threads (same as exit) ✓ |
+| `set_tid_address` | 258 | Thread-local pointer (stub) ✓ |
+| `getrandom` | 355 | Fill buffer with random bytes ✓ |
+| `clock_gettime` | 265 | Get monotonic time ✓ |
+| `gettimeofday` | 78 | Get time of day ✓ |
 
 Current status by bucket:
 
-- Implemented now: `read`, `write`, `open`, `close`, `getpid`, `getuid`,
-    `getgid`, `uname`, `gethostname`, `gettimeofday`, `waitpid`, `fork`,
-    `rt_sigaction`, `rt_sigprocmask`, `sigreturn`.
+- Implemented: `read`, `write`, `open`, `close`, `stat`, `fstat`, `lstat`,
+    `lseek`, `getpid`, `getppid`, `getuid`, `getgid`, `uname`, `gethostname`,
+    `gettimeofday`, `clock_gettime`, `waitpid`, `wait4`, `fork`, `execve`,
+    `rt_sigaction`, `rt_sigprocmask`, `sigreturn`, `brk`, `mmap`, `mmap2`,
+    `munmap`, `mprotect`, `kill`, `exit`, `exit_group`, `ioctl`, `chdir`,
+    `getcwd`, `pipe`, `dup`, `dup2`, `fcntl`, `access`, `unlink`, `mkdir`,
+    `rmdir`, `getdents`, `nanosleep`, `sched_yield`, `set_tid_address`,
+    `getrandom`, `setpgid`, `getpgid`, `getpgrp`, `mount`, `umount2`,
+    `poll`, `reboot`.
 - Partially scaffolded: `kill` plus kernel signal numbers and pending-signal
     bits on each process; `execve` now copies `argv`/`envp`, loads into a fresh
     per-process address space, and returns to ring 3 through the syscall `iret`
     path; the kernel can also bootstrap `/bin/init` or `/bin/bash` directly at
     boot.
-- Still missing for musl completeness: `brk`, `stat`, `fstat`, `lseek`,
-  `mmap`, `munmap`, `ioctl`, `chdir`, `getcwd`, `dup`, `dup2`, `pipe`,
-    and a fully blocking `waitpid` path.
+- Still missing for full POSIX completeness: a fully blocking `waitpid` path
+    (currently polls/degrades to EAGAIN for non-WNOHANG with live children),
+    `select`/`pselect6`, socket syscalls, `readlink`, `symlink`, `rename`,
+    `link`, `chown`, `chmod`, `truncate`, `ftruncate`, `setuid`/`setgid`,
+    full `getdents64`, TLS/thread setup (`set_thread_area`), `getrlimit`,
+    and alternate signal stacks.
 
 The short-term musl goal should be:
 
-1. Complete file-descriptor syscalls around the existing VFS.
-2. Add process-image replacement from a path-based ELF loader.
-3. Add `brk` and a minimal `mmap` for libc allocation and loader support.
+1. Complete file-descriptor syscalls around the existing VFS — **done**.
+2. Add process-image replacement from a path-based ELF loader — **done**.
+3. Add `brk` and a minimal `mmap` for libc allocation and loader support — **done**.
 4. Tighten signal semantics around restart rules, ignored handlers across
     `execve`, and uncatchable defaults.
 5. Replace the current polling-style `waitpid` fallback with a true blocking
@@ -508,34 +538,75 @@ qemu-system-i386 \
 ## 7. Current BlueyOS syscall numbers (kernel/syscall.h)
 
 ```c
-#define SYS_READ       0
-#define SYS_WRITE      1
-#define SYS_OPEN       2
-#define SYS_CLOSE      3
-#define SYS_STAT       4
-#define SYS_EXECVE     11
-#define SYS_GETPID    20
-#define SYS_GETUID    24
-#define SYS_GETGID    47
-#define SYS_BRK       45
-#define SYS_KILL      62
-#define SYS_EXIT      60
-#define SYS_UNAME     63
-#define SYS_IOCTL     54
-#define SYS_WAITPID   61
-#define SYS_CHDIR     80
-#define SYS_GETCWD    183
-#define SYS_PIPE      42
-#define SYS_DUP2      33
-#define SYS_RT_SIGACTION 174
+/* File I/O */
+#define SYS_READ        0
+#define SYS_WRITE       1
+#define SYS_OPEN        2
+#define SYS_CLOSE       3
+#define SYS_STAT        4
+#define SYS_FSTAT       5
+#define SYS_LSEEK       19
+#define SYS_UNLINK      10
+#define SYS_MKDIR       39
+#define SYS_RMDIR       40
+#define SYS_DUP         41
+#define SYS_PIPE        42
+#define SYS_DUP2        33
+#define SYS_FCNTL       55
+#define SYS_IOCTL       54
+#define SYS_ACCESS      85
+#define SYS_LSTAT       107
+#define SYS_GETDENTS    141
+#define SYS_CHDIR       80
+#define SYS_GETCWD      183
+/* Process */
+#define SYS_EXECVE      11
+#define SYS_FORK        57
+#define SYS_CLONE       120
+#define SYS_WAITPID     61
+#define SYS_WAIT4       114
+#define SYS_EXIT        60
+#define SYS_EXIT_GROUP  252
+#define SYS_GETPID      20
+#define SYS_GETPPID     64
+#define SYS_GETUID      24
+#define SYS_GETGID      47
+#define SYS_KILL        62
+#define SYS_SETPGID     200
+#define SYS_GETPGID     201
+#define SYS_GETPGRP     202
+#define SYS_SCHED_YIELD 158
+/* Memory */
+#define SYS_BRK         45
+#define SYS_MMAP        90
+#define SYS_MMAP2       192
+#define SYS_MUNMAP      91
+#define SYS_MPROTECT    92
+/* Signals */
+#define SYS_RT_SIGACTION   174
 #define SYS_RT_SIGPROCMASK 175
-#define SYS_SIGRETURN 15
-#define SYS_GETHOSTNAME 125
+#define SYS_SIGRETURN      15
+/* Time */
+#define SYS_GETTIMEOFDAY   78
+#define SYS_CLOCK_GETTIME  265
+#define SYS_NANOSLEEP      162
+/* Misc */
+#define SYS_UNAME           63
+#define SYS_GETHOSTNAME     125
+#define SYS_SET_TID_ADDRESS 258
+#define SYS_GETRANDOM       355
+/* Mount / boot */
+#define SYS_MOUNT       21
+#define SYS_UMOUNT2     52
+#define SYS_REBOOT      88
+/* BlueyOS extensions */
+#define SYS_POLL        168
+#define SYS_DEVEV_OPEN  203
 ```
 
-Some of these are currently implemented, while several intentionally return
-`ENOSYS` placeholders in `kernel/syscall.c` until the process and MMU layers
-catch up.
+All of these are now implemented in `kernel/syscall.c`. The implementation
+details are in `fs/vfs.c` (VFS layer), `kernel/process.c` (process management),
+and `kernel/syscall.c` (dispatch and glue).
 
 ## 8. glibc roadmap
 

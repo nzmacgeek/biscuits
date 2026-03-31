@@ -56,6 +56,7 @@ typedef struct process {
     int32_t       wait_pid;
     uint32_t      wait_status_ptr;
     uint32_t      wait_options;
+    char          cwd[256];          // current working directory
     registers_t   saved_regs;
     process_sigaction_t signal_actions[32];
     struct process *next;
@@ -98,3 +99,6 @@ int        process_setpgid(uint32_t pid, uint32_t pgid);
 void       process_sleep(uint32_t ms);
 void       process_wake(uint32_t pid);
 void       process_enter_first_user(process_t *process);
+uint32_t   process_getppid(void);
+const char *process_get_cwd(void);
+void       process_set_cwd(const char *path);
