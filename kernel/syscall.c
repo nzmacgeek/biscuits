@@ -470,18 +470,27 @@ static int32_t sys_access(const char *path, int mode) {
 
 static int32_t sys_unlink(const char *path) {
     if (!path) return -BLUEY_EFAULT;
-    return vfs_unlink(path) == 0 ? 0 : -BLUEY_ENOENT;
+    /* First check whether the path exists so we can distinguish ENOENT
+     * from other unlink failures (e.g., permissions or wrong type). */
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) != 0) {
+        return -BLUEY_ENOENT;
+    }
+    /* Path exists but unlink failed: report a generic permission error
+     * rather than incorrectly mapping everything to ENOENT. */
+    return vfs_unlink(path) == 0 ? 0 : -BLUEY_EPERM;
 }
 
 static int32_t sys_mkdir(const char *path, uint32_t mode) {
     (void)mode;
     if (!path) return -BLUEY_EFAULT;
-    return vfs_mkdir(path) == 0 ? 0 : -BLUEY_ENOENT;
+    return vfs_mkdir(path);
 }
 
 static int32_t sys_rmdir(const char *path) {
     if (!path) return -BLUEY_EFAULT;
-    return vfs_rmdir(path) == 0 ? 0 : -BLUEY_ENOENT;
+    int32_t res = vfs_rmdir(path);
+    return res;
 }
 
 /* ---- lseek -------------------------------------------------------------- */
@@ -502,9 +511,7 @@ static int32_t sys_lseek(int fd, int32_t offset, int whence) {
 
     int32_t r = vfs_lseek(fd, offset, whence);
     /* At this point, argument-related issues have been filtered. Any remaining
-     * failure from vfs_lseek is treated as a bad file descriptor. */
-    if (r < 0) return -BLUEY_EBADF;
-    return r;
+    return vfs_lseek(fd, offset, whence);
 }
 
 /* ---- dup / dup2 / pipe / fcntl / ioctl ---------------------------------- */
@@ -540,7 +547,14 @@ static int32_t sys_fcntl(int fd, int cmd, int arg) {
             /* Duplicate to the lowest *free* fd >= arg */
             if (arg < 0) return -BLUEY_EINVAL;
             int r = vfs_dup_above(fd, arg);
-            return r < 0 ? -BLUEY_EMFILE : r;
+            if (r < 0) {
+                /* Preserve EBADF for invalid input fds; map other failures to EMFILE */
+                if (r == -BLUEY_EBADF) {
+                    return r;
+                }
+                return -BLUEY_EMFILE;
+            }
+            return r;
         }
         case FCNTL_F_GETFD:
             /* Return close-on-exec flag; we don't track it, so return 0 */
@@ -609,12 +623,115 @@ static int32_t sys_ioctl(int fd, uint32_t request, void *arg) {
 
 /* ---- chdir / getcwd ----------------------------------------------------- */
 
+/* Resolve a user-supplied path against the current working directory and
+ * normalize '.', '..' and redundant slashes. The result is written into
+ * out, which is guaranteed to be NUL-terminated on success. */
+static int32_t resolve_normalize_path(const char *path, char *out, size_t out_size) {
+    if (!path || !out || out_size == 0) return -BLUEY_EFAULT;
+
+    const char *cwd = NULL;
+    char temp[512];
+
+    if (path[0] == '/') {
+        /* Already absolute: copy directly into temp for normalization. */
+        size_t len = strlen(path);
+        if (len + 1 > sizeof(temp)) return -BLUEY_ERANGE;
+        memcpy(temp, path, len + 1);
+    } else {
+        /* Relative: prepend current working directory. */
+        cwd = process_get_cwd();
+        if (!cwd || cwd[0] == '\0') {
+            cwd = "/";
+        }
+        size_t cwd_len  = strlen(cwd);
+        size_t path_len = strlen(path);
+        int need_slash  = (cwd_len > 1 && cwd[cwd_len - 1] != '/');
+        size_t total    = cwd_len + (need_slash ? 1u : 0u) + path_len + 1u;
+        if (total > sizeof(temp)) return -BLUEY_ERANGE;
+
+        size_t pos = 0;
+        memcpy(temp + pos, cwd, cwd_len);
+        pos += cwd_len;
+        if (need_slash) {
+            temp[pos++] = '/';
+        }
+        memcpy(temp + pos, path, path_len);
+        pos += path_len;
+        temp[pos] = '\0';
+    }
+
+    /* Normalize temp into out using a simple component stack algorithm. */
+    size_t out_pos = 0;
+
+    /* Ensure leading slash. */
+    if (temp[0] != '/') {
+        if (out_size < 2) return -BLUEY_ERANGE;
+        out[out_pos++] = '/';
+    }
+
+    const char *p = temp;
+    while (*p == '/') p++; /* skip leading slashes */
+
+    while (*p != '\0') {
+        /* Extract next component. */
+        const char *start = p;
+        while (*p != '/' && *p != '\0') p++;
+        size_t comp_len = (size_t)(p - start);
+
+        if (comp_len == 0 || (comp_len == 1 && start[0] == '.')) {
+            /* Skip empty or '.' components. */
+        } else if (comp_len == 2 && start[0] == '.' && start[1] == '.') {
+            /* Handle '..': remove previous component if possible. */
+            if (out_pos > 1) {
+                /* Remove trailing slash first if present (but keep root). */
+                if (out[out_pos - 1] == '/' && out_pos > 1) {
+                    out_pos--;
+                }
+                /* Walk back to previous slash (or root). */
+                while (out_pos > 1 && out[out_pos - 1] != '/') {
+                    out_pos--;
+                }
+            }
+        } else {
+            /* Append separator if needed (avoid duplicate leading '/'). */
+            if (out_pos == 0) {
+                if (out_size < 2) return -BLUEY_ERANGE;
+                out[out_pos++] = '/';
+            } else if (out[out_pos - 1] != '/') {
+                if (out_pos + 1 >= out_size) return -BLUEY_ERANGE;
+                out[out_pos++] = '/';
+            }
+            /* Append component. */
+            if (out_pos + comp_len + 1 >= out_size) return -BLUEY_ERANGE;
+            memcpy(out + out_pos, start, comp_len);
+            out_pos += comp_len;
+        }
+
+        /* Skip consecutive slashes. */
+        while (*p == '/') p++;
+    }
+
+    /* Ensure we have at least "/" */
+    if (out_pos == 0) {
+        if (out_size < 2) return -BLUEY_ERANGE;
+        out[out_pos++] = '/';
+    }
+
+    out[out_pos] = '\0';
+    return 0;
+}
+
 static int32_t sys_chdir(const char *path) {
     if (!path) return -BLUEY_EFAULT;
+
+    char abs_path[512];
+    int32_t rc = resolve_normalize_path(path, abs_path, sizeof(abs_path));
+    if (rc != 0) return rc;
+
     vfs_stat_t st;
-    if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
+    if (vfs_stat(abs_path, &st) != 0) return -BLUEY_ENOENT;
     if (!st.is_dir) return -BLUEY_ENOTDIR;
-    process_set_cwd(path);
+    process_set_cwd(abs_path);
     return 0;
 }
 
@@ -625,7 +742,7 @@ static int32_t sys_getcwd(char *buf, size_t size) {
     if (len + 1 > size) return -BLUEY_ERANGE;
     strncpy(buf, cwd, size - 1);
     buf[size - 1] = '\0';
-    return (int32_t)(uintptr_t)buf;
+    return (int32_t)(len + 1);
 }
 
 /* ---- getdents ----------------------------------------------------------- */
@@ -644,12 +761,12 @@ static int32_t sys_getdents(int fd, void *buf, uint32_t count) {
 
     /* Verify fd refers to a directory */
     vfs_stat_t fst;
-    if (vfs_fstat(fd, &fst) == 0 && !fst.is_dir) return -BLUEY_ENOTDIR;
+    if (vfs_fstat(fd, &fst) != 0) return -BLUEY_EBADF;
+    if (!fst.is_dir) return -BLUEY_ENOTDIR;
 
     /* Use the path stored for the fd if available; fall back to cwd */
     const char *fdpath = vfs_fd_get_path(fd);
     const char *dirpath = fdpath ? fdpath : process_get_cwd();
-
     vfs_dirent_t entries[32];
     int nent = vfs_readdir(dirpath, entries, 32);
     if (nent < 0) return -BLUEY_EINVAL;
@@ -732,18 +849,13 @@ static int32_t sys_set_tid_address(void *tidptr) {
 /* ---- getrandom ---------------------------------------------------------- */
 
 static int32_t sys_getrandom(void *buf, size_t buflen, uint32_t flags) {
+    (void)buf;
+    (void)buflen;
     (void)flags;
-    if (!buf) return -BLUEY_EFAULT;
-    /* NOTE: This is a minimal pseudo-random implementation seeded from timer
-     * ticks using an LCG. It is NOT cryptographically secure and should be
-     * treated as a placeholder until a proper entropy source is available. */
-    uint32_t state = timer_get_ticks() ^ 0xDEADBEEFu;
-    uint8_t *out = (uint8_t *)buf;
-    for (size_t i = 0; i < buflen; i++) {
-        state = state * 1664525u + 1013904223u; /* LCG */
-        out[i] = (uint8_t)(state >> 16);
-    }
-    return (int32_t)buflen;
+    /* getrandom(2) is expected to provide cryptographically secure randomness.
+     * Until a real entropy source and secure PRNG are available, report the
+     * syscall as not implemented rather than returning weak, predictable data. */
+    return -BLUEY_ENOSYS;
 }
 
 void syscall_init(void) {
@@ -767,7 +879,6 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
         int r = vfs_write((int)fd, (const uint8_t *)buf, len);
-        if (r < 0) return -BLUEY_EBADF;
         return r;
     }
     return -BLUEY_EBADF;
@@ -880,7 +991,6 @@ static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
         int r = vfs_read((int)fd, (uint8_t *)buf, len);
-        if (r < 0) return -BLUEY_EBADF;
         return r;
     }
     return -BLUEY_EBADF;
