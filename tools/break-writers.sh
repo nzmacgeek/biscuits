@@ -111,7 +111,6 @@ commands
   continue
 end
 
-break blueyfs.c
 # fallback: break functions known to touch data
 break write_page
 commands

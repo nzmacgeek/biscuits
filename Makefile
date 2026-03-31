@@ -374,7 +374,11 @@ version:
 	@echo "Built by: $(BUILD_USER)@$(BUILD_HOST)"
 	@echo "Architecture: $(ARCH)"
 
-clean: ; @find . \( -name '*.o' -o -name '*.d' \) -not -path './.git/*' -delete; rm -rf $(BUILD_DIR); rm -f $(M68K_GENERATED_HEADERS); echo "  Clean! Build outputs removed from $(BUILD_DIR)."
+clean: ; @find . \( -name '*.o' -o -name '*.d' \) -not -path './.git/*' -delete; \
+	if [ -z "$(BUILD_DIR)" ] || [ "$(BUILD_DIR)" = "/" ] || [ "$(BUILD_DIR)" = "." ] || [ "$(BUILD_DIR)" = ".." ]; then \
+		echo "  [CLEAN] Refusing to remove unsafe BUILD_DIR='$(BUILD_DIR)'"; exit 1; \
+	fi; \
+	rm -rf -- "$(BUILD_DIR)"; rm -f $(M68K_GENERATED_HEADERS); echo "  Clean! Build outputs removed from $(BUILD_DIR)."
 
 full-clean: clean ; @echo "  Full clean! All build artifacts removed."
 

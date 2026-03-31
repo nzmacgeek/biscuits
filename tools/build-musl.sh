@@ -44,9 +44,9 @@ elif [ -n "${CROSS_COMPILE-}" ]; then
   export CC=${CROSS_COMPILE}gcc
 fi
 
-./configure --prefix=${PREFIX} --target=${TARGET} || true
+./configure --prefix=${PREFIX} --target=${TARGET}
 make -j$(nproc)
-make install DESTDIR=${PREFIX}
+make install
 
 popd
 echo "musl install should be under: ${PREFIX}"

@@ -286,16 +286,34 @@ void syslog_flush_to_fs(void) {
      * to a conservative direct-write approach. */
     size_t entry_sz = sizeof(syslog_entry_t);
     size_t buf_sz = (size_t)n * entry_sz;
-    syslog_entry_t *snapshot = kheap_alloc(buf_sz, 4);
+    syslog_entry_t *snapshot = kheap_alloc(buf_sz, 0);
     if (snapshot) {
         /* Copy each entry ensuring seq didn't change during the copy. */
         for (uint32_t i = 0; i < n; i++) {
             syslog_entry_t *src = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
+            /* 
+             * Attempt to obtain a stable snapshot of the entry. Under very
+             * heavy concurrent logging the seq field may change repeatedly,
+             * so we bound the number of retries to avoid spinning forever.
+             */
+            uint32_t attempts = 0;
             for (;;) {
                 uint32_t before = src->seq;
                 memcpy(&snapshot[i], src, entry_sz);
                 uint32_t after = src->seq;
-                if (before == after) break; /* stable copy */
+                if (before == after) {
+                    /* seq stable during copy: accept this snapshot */
+                    break;
+                }
+                if (++attempts >= 1024) {
+                    /*
+                     * Give up on a fully stable copy after too many retries.
+                     * Use the latest best-effort snapshot to guarantee
+                     * forward progress instead of potentially hanging.
+                     */
+                    memcpy(&snapshot[i], src, entry_sz);
+                    break;
+                }
             }
         }
 
