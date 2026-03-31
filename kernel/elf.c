@@ -386,6 +386,19 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
     if (!path || !image_out) return -1;
 
     memset(image_out, 0, sizeof(*image_out));
+    /* Enforce execute-permission bits when supported by the filesystem.
+       If vfs_stat is not available for the filesystem, allow execution. */
+    uint16_t mode = 0;
+    if (vfs_stat(path, &mode) == 0) {
+        /* check any execute bit: owner/group/other
+           Mode bit masks: owner=0x40, group=0x8, other=0x1 (octal 0100/0010/0001)
+           Combined mask = 0x49 */
+        if ((mode & 0x49) == 0) {
+            kprintf("[ELF] Permission denied: %s not executable (mode=0%o)\n", path, mode);
+            return -1;
+        }
+    }
+
     if (elf_read_file(path, &data, &len) != 0) {
         kprintf("[ELF] Failed to read %s\n", path);
         return -1;

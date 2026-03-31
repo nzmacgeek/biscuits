@@ -232,6 +232,7 @@ static int locate_inode(uint32_t inode_no, uint32_t *blk_out, uint32_t *off_out)
 
     if (group >= fs_num_groups) return -1;
 
+    if (fs_block_size == 0) return -1;
     uint32_t inodes_per_block = fs_block_size / BISCUITFS_INODE_SIZE;
     uint32_t blk_in_table     = local / inodes_per_block;
     uint32_t offset_in_blk    = (local % inodes_per_block) * BISCUITFS_INODE_SIZE;
@@ -365,11 +366,13 @@ static uint32_t alloc_inode(void) {
 
 // Get the n-th data block number for an inode (0-based)
 static uint32_t inode_get_block(biscuitfs_inode_t *inode, uint32_t n) {
+    if (fs_block_size == 0) return 0;
     if (n < BISCUITFS_N_DIRECT) return inode->block[n];
 
     // Singly indirect
     n -= BISCUITFS_N_DIRECT;
     uint32_t ptrs_per_block = fs_block_size / sizeof(uint32_t);
+    if (ptrs_per_block == 0) return 0;
     if (n < ptrs_per_block) {
         uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
         if (!inode->block[12] || read_block(inode->block[12], blkbuf) != 0)
@@ -560,6 +563,7 @@ static int dir_add_entry(uint32_t dir_ino, const char *name,
         de->file_type = ftype;
         memcpy(de->name, name, namelen);
 
+        if (fs_block_size == 0) return -1;
         uint32_t blk_n = dir_inode.size_lo / fs_block_size;
         inode_set_block(&dir_inode, blk_n, new_blk);
 
@@ -1001,6 +1005,20 @@ static int biscuitfs_stat_cb(const char *path, vfs_stat_t *out) {
     return 0;
 }
 
+/*
+ * Minimal stat implementation to return inode.mode for callers that need
+ * POSIX-like permission bits (mode). Returns 0 on success, -1 on failure.
+ */
+static int biscuitfs_stat_cb(const char *path, uint16_t *mode_out) {
+    if (!path || !mode_out) return -1;
+    uint32_t ino = path_to_inode(path);
+    if (!ino) return -1;
+    biscuitfs_inode_t inode;
+    if (read_inode(ino, &inode) != 0) return -1;
+    *mode_out = inode.mode;
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // VFS registration
 // ---------------------------------------------------------------------------
@@ -1015,6 +1033,7 @@ static filesystem_t biscuitfs_driver = {
     .readdir = biscuitfs_readdir_cb,
     .mkdir   = biscuitfs_mkdir_cb,
     .unlink  = biscuitfs_unlink_cb,
+    .stat    = biscuitfs_stat_cb,
     .stat    = biscuitfs_stat_cb,
 };
 

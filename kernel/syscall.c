@@ -247,6 +247,41 @@ static int32_t sys_rt_sigprocmask(int how, const uint32_t *set, uint32_t *oldset
     return signal_sigprocmask(process, how, set, oldset);
 }
 
+// Minimal kernel-side representation of timespec for userland
+typedef struct {
+    uint32_t tv_sec;
+    uint32_t tv_nsec;
+} k_timespec_t;
+
+static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
+    (void)clk_id;
+    if (!tp) return -BLUEY_EFAULT;
+    uint32_t ticks = timer_get_ticks();
+    uint32_t freq = timer_get_freq();
+    uint32_t sec = ticks / freq;
+    uint32_t rem = ticks % freq;
+    uint32_t nsec = (uint32_t)((uint64_t)rem * 1000000000ULL / freq);
+    tp->tv_sec = sec;
+    tp->tv_nsec = nsec;
+    return 0;
+}
+
+static int32_t sys_fstat(int fd, void *buf) {
+    if (fd < 0) return -BLUEY_EINVAL;
+    if (!buf) return -BLUEY_EFAULT;
+    uint16_t mode = 0;
+    if (vfs_fstat(fd, &mode) != 0) return -BLUEY_EINVAL;
+
+    // Minimal stat: write st_mode (32-bit) at start and zero the rest of a small struct
+    uint32_t st_mode = (uint32_t)mode;
+    uint32_t *u = (uint32_t*)buf;
+    u[0] = st_mode; // st_mode
+    u[1] = 0; // st_ino / padding
+    u[2] = 0; // st_size low
+    u[3] = 0; // st_size high / padding
+    return 0;
+}
+
 static int32_t sys_sigreturn(registers_t *regs, void *frame_ptr) {
     process_t *process = process_current();
     if (!process || !regs) return -BLUEY_EPERM;
@@ -475,6 +510,12 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_SIGRETURN:
             ret = sys_sigreturn(regs, (void*)regs->ebx);
+            break;
+        case SYS_FSTAT:
+            ret = sys_fstat((int)regs->ebx, (void*)regs->ecx);
+            break;
+        case SYS_CLOCK_GETTIME:
+            ret = sys_clock_gettime((int)regs->ebx, (k_timespec_t*)regs->ecx);
             break;
         case SYS_IOCTL:
         case SYS_CHDIR:

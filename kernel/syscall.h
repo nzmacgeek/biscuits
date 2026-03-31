@@ -13,6 +13,7 @@
 #define SYS_OPEN          2
 #define SYS_CLOSE         3
 #define SYS_STAT          4
+#define SYS_FSTAT         5
 #define SYS_FORK          57
 #define SYS_CLONE         120
 #define SYS_GETPID        20
@@ -32,6 +33,7 @@
 #define SYS_PIPE          42
 #define SYS_DUP2          33
 #define SYS_GETTIMEOFDAY  78
+#define SYS_CLOCK_GETTIME 265
 #define SYS_SETTIMEOFDAY  79
 #define SYS_RT_SIGACTION  174
 #define SYS_RT_SIGPROCMASK 175
