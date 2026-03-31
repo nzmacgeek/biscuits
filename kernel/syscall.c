@@ -488,8 +488,22 @@ static int32_t sys_rmdir(const char *path) {
 
 static int32_t sys_lseek(int fd, int32_t offset, int whence) {
     if (fd < 0) return -BLUEY_EBADF;
+
+    /* Validate whence for POSIX-like semantics. Only SEEK_SET/SEEK_CUR/SEEK_END
+     * are valid. Invalid whence should yield -EINVAL. */
+    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
+        return -BLUEY_EINVAL;
+    }
+
+    /* For SEEK_SET, a negative offset is always invalid and should be EINVAL. */
+    if (whence == SEEK_SET && offset < 0) {
+        return -BLUEY_EINVAL;
+    }
+
     int32_t r = vfs_lseek(fd, offset, whence);
-    if (r < 0) return -BLUEY_EINVAL;
+    /* At this point, argument-related issues have been filtered. Any remaining
+     * failure from vfs_lseek is treated as a bad file descriptor. */
+    if (r < 0) return -BLUEY_EBADF;
     return r;
 }
 
