@@ -509,7 +509,8 @@ static int32_t sys_dup2_impl(int oldfd, int newfd) {
 
 static int32_t sys_pipe_impl(int *fds) {
     if (!fds) return -BLUEY_EFAULT;
-    return vfs_pipe(fds) == 0 ? 0 : -BLUEY_ENOMEM;
+    int r = vfs_pipe(fds);
+    return r < 0 ? r : 0;
 }
 
 /* Minimal fcntl: F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL */
