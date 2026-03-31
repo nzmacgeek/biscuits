@@ -185,6 +185,8 @@ static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t 
     process->exit_code = 0;
     process->sleep_until = 0;
     process->page_dir = paging_current_directory();
+    process->cwd[0] = '/';
+    process->cwd[1] = '\0';
 
     process->next = proc_list;
     proc_list = process;
@@ -298,6 +300,7 @@ process_t *process_fork_current(const registers_t *regs) {
     child->mmap_base = parent->mmap_base;
     child->blocked_signals = parent->blocked_signals;
     memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
+    memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
     child->saved_regs = *regs;
     child->saved_regs.eax = 0;
     child->eip = child->saved_regs.eip;
@@ -487,6 +490,20 @@ int process_setpgid(uint32_t pid, uint32_t pgid) {
     if (!p) return -1;
     p->pgid = pgid ? pgid : p->pid;
     return 0;
+}
+
+uint32_t process_getppid(void) {
+    return proc_current ? proc_current->parent_pid : 0;
+}
+
+const char *process_get_cwd(void) {
+    return proc_current ? proc_current->cwd : "/";
+}
+
+void process_set_cwd(const char *path) {
+    if (!proc_current || !path) return;
+    strncpy(proc_current->cwd, path, sizeof(proc_current->cwd) - 1);
+    proc_current->cwd[sizeof(proc_current->cwd) - 1] = '\0';
 }
 
 void process_enter_first_user(process_t *process) {

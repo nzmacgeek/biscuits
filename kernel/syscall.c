@@ -42,6 +42,12 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_EINVAL 22
 #define BLUEY_E2BIG   7
 #define BLUEY_EAGAIN 11
+#define BLUEY_ENOTDIR 20
+#define BLUEY_EBADF   9
+#define BLUEY_EISDIR 21
+#define BLUEY_ERANGE 34
+#define BLUEY_EPIPE  32
+#define BLUEY_EMFILE 24
 
 #define BLUEY_ENOMEM 12
 
@@ -374,17 +380,29 @@ static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
 }
 
 static int32_t sys_fstat(int fd, void *buf) {
-    if (fd < 0) return -BLUEY_EINVAL;
+    if (fd < 0) return -BLUEY_EBADF;
     if (!buf) return -BLUEY_EFAULT;
     vfs_stat_t st;
-    if (vfs_fstat(fd, &st) != 0) return -BLUEY_EINVAL;
-
-    // Minimal stat: write st_mode (32-bit) at start, then st_ino and st_size
-    uint32_t *u = (uint32_t*)buf;
-    u[0] = (uint32_t)st.mode; // st_mode
-    u[1] = 0;                 // st_ino / padding
-    u[2] = st.size;           // st_size low
-    u[3] = 0;                 // st_size high / padding
+    if (vfs_fstat(fd, &st) != 0) return -BLUEY_EBADF;
+    /* Layout filled after vfs_stat_to_buf is defined below; forward-call via
+     * inline copy to avoid forward-declaration dependency. */
+    uint32_t ticks = timer_get_ticks();
+    uint32_t *u = (uint32_t *)buf;
+    memset(u, 0, 64);
+    u[0]  = 1;
+    u[1]  = 1;
+    u[2]  = (uint32_t)st.mode | ((uint32_t)1 << 16);
+    u[3]  = (uint32_t)st.uid | ((uint32_t)st.gid << 16);
+    u[4]  = 0;
+    u[5]  = st.size;
+    u[6]  = 512;
+    u[7]  = (st.size + 511) / 512;
+    u[8]  = ticks;
+    u[9]  = 0;
+    u[10] = ticks;
+    u[11] = 0;
+    u[12] = ticks;
+    u[13] = 0;
     return 0;
 }
 
@@ -394,16 +412,335 @@ static int32_t sys_sigreturn(registers_t *regs, void *frame_ptr) {
     return signal_sigreturn(process, regs, frame_ptr);
 }
 
+/* ---- stat / lstat / access / unlink / mkdir / rmdir -------------------- */
+
+/*
+ * Linux-compatible stat buffer layout for i386 (struct stat, 64-byte):
+ *   u32 st_dev, u32 st_ino, u16 st_mode, u16 st_nlink, u16 st_uid, u16 st_gid
+ *   u32 st_rdev, u32 st_size, u32 st_blksize, u32 st_blocks
+ *   u32 st_atime, u32 st_atime_ns, u32 st_mtime, u32 st_mtime_ns
+ *   u32 st_ctime, u32 st_ctime_ns
+ */
+static void vfs_stat_to_buf(const vfs_stat_t *st, uint32_t *u) {
+    uint32_t ticks = timer_get_ticks();
+    memset(u, 0, 64);
+    u[0]  = 1;               /* st_dev */
+    u[1]  = 1;               /* st_ino (placeholder) */
+    /* st_mode (16-bit) in low half of u[2], st_nlink (16-bit) in high */
+    u[2]  = (uint32_t)st->mode | ((uint32_t)1 << 16); /* nlink = 1 */
+    /* st_uid / st_gid packed into u[3] */
+    u[3]  = (uint32_t)st->uid | ((uint32_t)st->gid << 16);
+    u[4]  = 0;               /* st_rdev */
+    u[5]  = st->size;        /* st_size */
+    u[6]  = 512;             /* st_blksize */
+    u[7]  = (st->size + 511) / 512; /* st_blocks */
+    u[8]  = ticks;           /* st_atime (ticks as proxy) */
+    u[9]  = 0;               /* st_atime_ns */
+    u[10] = ticks;           /* st_mtime */
+    u[11] = 0;               /* st_mtime_ns */
+    u[12] = ticks;           /* st_ctime */
+    u[13] = 0;               /* st_ctime_ns */
+}
+
+static int32_t sys_stat(const char *path, void *buf) {
+    if (!path) return -BLUEY_EFAULT;
+    if (!buf)  return -BLUEY_EFAULT;
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
+    vfs_stat_to_buf(&st, (uint32_t *)buf);
+    return 0;
+}
+
+static int32_t sys_lstat(const char *path, void *buf) {
+    /* No symlinks — lstat is identical to stat */
+    return sys_stat(path, buf);
+}
+
+static int32_t sys_access(const char *path, int mode) {
+    if (!path) return -BLUEY_EFAULT;
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
+    if (mode == 0) return 0; /* F_OK */
+    uint8_t need = 0;
+    if (mode & 4) need |= VFS_ACCESS_READ;
+    if (mode & 2) need |= VFS_ACCESS_WRITE;
+    if (mode & 1) need |= VFS_ACCESS_EXEC;
+    return vfs_access(path, need) == 0 ? 0 : -BLUEY_EPERM;
+}
+
+static int32_t sys_unlink(const char *path) {
+    if (!path) return -BLUEY_EFAULT;
+    return vfs_unlink(path) == 0 ? 0 : -BLUEY_ENOENT;
+}
+
+static int32_t sys_mkdir(const char *path, uint32_t mode) {
+    (void)mode;
+    if (!path) return -BLUEY_EFAULT;
+    return vfs_mkdir(path) == 0 ? 0 : -BLUEY_ENOENT;
+}
+
+static int32_t sys_rmdir(const char *path) {
+    if (!path) return -BLUEY_EFAULT;
+    return vfs_rmdir(path) == 0 ? 0 : -BLUEY_ENOENT;
+}
+
+/* ---- lseek -------------------------------------------------------------- */
+
+static int32_t sys_lseek(int fd, int32_t offset, int whence) {
+    if (fd < 0) return -BLUEY_EBADF;
+    int32_t r = vfs_lseek(fd, offset, whence);
+    if (r < 0) return -BLUEY_EINVAL;
+    return r;
+}
+
+/* ---- dup / dup2 / pipe / fcntl / ioctl ---------------------------------- */
+
+static int32_t sys_dup(int oldfd) {
+    if (oldfd < 0) return -BLUEY_EBADF;
+    int r = vfs_dup(oldfd);
+    return r < 0 ? -BLUEY_EBADF : r;
+}
+
+static int32_t sys_dup2_impl(int oldfd, int newfd) {
+    if (oldfd < 0 || newfd < 0) return -BLUEY_EBADF;
+    int r = vfs_dup2(oldfd, newfd);
+    return r < 0 ? -BLUEY_EBADF : r;
+}
+
+static int32_t sys_pipe_impl(int *fds) {
+    if (!fds) return -BLUEY_EFAULT;
+    return vfs_pipe(fds) == 0 ? 0 : -BLUEY_ENOMEM;
+}
+
+/* Minimal fcntl: F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL */
+#define FCNTL_F_DUPFD   0
+#define FCNTL_F_GETFD   1
+#define FCNTL_F_SETFD   2
+#define FCNTL_F_GETFL   3
+#define FCNTL_F_SETFL   4
+
+static int32_t sys_fcntl(int fd, int cmd, int arg) {
+    switch (cmd) {
+        case FCNTL_F_DUPFD: {
+            /* Duplicate to the lowest *free* fd >= arg */
+            if (arg < 0) return -BLUEY_EINVAL;
+            int r = vfs_dup_above(fd, arg);
+            return r < 0 ? -BLUEY_EMFILE : r;
+        }
+        case FCNTL_F_GETFD:
+            /* Return close-on-exec flag; we don't track it, so return 0 */
+            return 0;
+        case FCNTL_F_SETFD:
+            /* Set close-on-exec flag; accept but ignore */
+            return 0;
+        case FCNTL_F_GETFL:
+            /* Return O_RDONLY placeholder */
+            return 0;
+        case FCNTL_F_SETFL:
+            /* Accept flag updates (O_NONBLOCK etc.) but ignore for now */
+            (void)arg;
+            return 0;
+        default:
+            return -BLUEY_EINVAL;
+    }
+}
+
+/* Minimal ioctl: support terminal size and basic termios queries */
+#define IOCTL_TIOCGWINSZ 0x5413
+#define IOCTL_TCGETS     0x5401
+#define IOCTL_TCSETSW    0x5403
+#define IOCTL_TCSETSF    0x5404
+#define IOCTL_TCSETS     0x5402
+#define IOCTL_TIOCGPGRP  0x540F
+#define IOCTL_TIOCSPGRP  0x5410
+
+typedef struct { uint16_t ws_row; uint16_t ws_col;
+                 uint16_t ws_xpixel; uint16_t ws_ypixel; } k_winsize_t;
+
+static int32_t sys_ioctl(int fd, uint32_t request, void *arg) {
+    (void)fd;
+    switch (request) {
+        case IOCTL_TIOCGWINSZ: {
+            if (!arg) return -BLUEY_EFAULT;
+            k_winsize_t *ws = (k_winsize_t *)arg;
+            ws->ws_row    = 25;
+            ws->ws_col    = 80;
+            ws->ws_xpixel = 0;
+            ws->ws_ypixel = 0;
+            return 0;
+        }
+        case IOCTL_TCGETS:
+            /* Return a zeroed termios struct (minimal; callers tolerate this) */
+            if (arg) memset(arg, 0, 60); /* sizeof(struct termios) ~ 60 bytes */
+            return 0;
+        case IOCTL_TCSETS:
+        case IOCTL_TCSETSW:
+        case IOCTL_TCSETSF:
+            /* Accept but ignore termios updates */
+            return 0;
+        case IOCTL_TIOCGPGRP: {
+            if (!arg) return -BLUEY_EFAULT;
+            process_t *p = process_current();
+            *(uint32_t *)arg = p ? p->pgid : 0;
+            return 0;
+        }
+        case IOCTL_TIOCSPGRP:
+            /* Accept but ignore setting foreground process group */
+            return 0;
+        default:
+            return -BLUEY_EINVAL;
+    }
+}
+
+/* ---- chdir / getcwd ----------------------------------------------------- */
+
+static int32_t sys_chdir(const char *path) {
+    if (!path) return -BLUEY_EFAULT;
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
+    if (!st.is_dir) return -BLUEY_ENOTDIR;
+    process_set_cwd(path);
+    return 0;
+}
+
+static int32_t sys_getcwd(char *buf, size_t size) {
+    if (!buf || size == 0) return -BLUEY_EFAULT;
+    const char *cwd = process_get_cwd();
+    size_t len = strlen(cwd);
+    if (len + 1 > size) return -BLUEY_ERANGE;
+    strncpy(buf, cwd, size - 1);
+    buf[size - 1] = '\0';
+    return (int32_t)(uintptr_t)buf;
+}
+
+/* ---- getdents ----------------------------------------------------------- */
+
+/* Linux-compatible dirent structure (32-bit) */
+typedef struct {
+    uint32_t d_ino;
+    uint32_t d_off;
+    uint16_t d_reclen;
+    char     d_name[1]; /* variable length */
+} k_dirent_t;
+
+static int32_t sys_getdents(int fd, void *buf, uint32_t count) {
+    if (!buf) return -BLUEY_EFAULT;
+    if (fd < 0) return -BLUEY_EBADF;
+
+    /* Verify fd refers to a directory */
+    vfs_stat_t fst;
+    if (vfs_fstat(fd, &fst) == 0 && !fst.is_dir) return -BLUEY_ENOTDIR;
+
+    /* Use the path stored for the fd if available; fall back to cwd */
+    const char *fdpath = vfs_fd_get_path(fd);
+    const char *dirpath = fdpath ? fdpath : process_get_cwd();
+
+    vfs_dirent_t entries[32];
+    int nent = vfs_readdir(dirpath, entries, 32);
+    if (nent < 0) return -BLUEY_EINVAL;
+
+    uint8_t *out = (uint8_t *)buf;
+    uint32_t written = 0;
+
+    for (int i = 0; i < nent; i++) {
+        size_t namelen = strlen(entries[i].name);
+        /* dirent record: d_ino(4) + d_off(4) + d_reclen(2) + name + NUL, aligned to 4 */
+        uint16_t reclen = (uint16_t)((sizeof(uint32_t) + sizeof(uint32_t) +
+                                      sizeof(uint16_t) + namelen + 1 + 3) & ~3u);
+        if (written + reclen > count) break;
+
+        k_dirent_t *de = (k_dirent_t *)out;
+        de->d_ino    = entries[i].inode ? entries[i].inode : (uint32_t)(i + 1);
+        de->d_off    = written + reclen;
+        de->d_reclen = reclen;
+        memcpy(de->d_name, entries[i].name, namelen + 1);
+
+        out     += reclen;
+        written += reclen;
+    }
+
+    return (int32_t)written;
+}
+
+/* ---- getppid ------------------------------------------------------------ */
+
+static int32_t sys_getppid(void) {
+    return (int32_t)process_getppid();
+}
+
+/* ---- wait4 -------------------------------------------------------------- */
+
+static int32_t sys_wait4(int32_t pid, int *status, int options, void *rusage) {
+    (void)rusage; /* rusage not implemented */
+    return process_waitpid(pid, status, options);
+}
+
+/* ---- sched_yield -------------------------------------------------------- */
+
+static int32_t sys_sched_yield(void) {
+    scheduler_yield();
+    return 0;
+}
+
+/* ---- nanosleep ---------------------------------------------------------- */
+
+typedef struct { uint32_t tv_sec; uint32_t tv_nsec; } k_timespec_req_t;
+
+static int32_t sys_nanosleep(const k_timespec_req_t *req, void *rem) {
+    (void)rem;
+    if (!req) return -BLUEY_EFAULT;
+    /* Guard against overflow: cap seconds at floor(UINT32_MAX / 1000) */
+    uint32_t ms;
+    if (req->tv_sec > 4294967u) {
+        ms = 0xFFFFFFFFu;
+    } else {
+        ms = req->tv_sec * 1000u + req->tv_nsec / 1000000u;
+    }
+    if (ms) process_sleep(ms);
+    return 0;
+}
+
+/* ---- exit_group --------------------------------------------------------- */
+
+static int32_t sys_exit_group(int code) {
+    process_exit(code);
+    return 0;
+}
+
+/* ---- set_tid_address ---------------------------------------------------- */
+
+static int32_t sys_set_tid_address(void *tidptr) {
+    (void)tidptr; /* single-threaded: no thread pointer tracking needed */
+    return (int32_t)process_getpid();
+}
+
+/* ---- getrandom ---------------------------------------------------------- */
+
+static int32_t sys_getrandom(void *buf, size_t buflen, uint32_t flags) {
+    (void)flags;
+    if (!buf) return -BLUEY_EFAULT;
+    /* NOTE: This is a minimal pseudo-random implementation seeded from timer
+     * ticks using an LCG. It is NOT cryptographically secure and should be
+     * treated as a placeholder until a proper entropy source is available. */
+    uint32_t state = timer_get_ticks() ^ 0xDEADBEEFu;
+    uint8_t *out = (uint8_t *)buf;
+    for (size_t i = 0; i < buflen; i++) {
+        state = state * 1664525u + 1013904223u; /* LCG */
+        out[i] = (uint8_t)(state >> 16);
+    }
+    return (int32_t)buflen;
+}
+
 void syscall_init(void) {
     // Register int 0x80 as a gate accessible from ring 3 (DPL=3 = 0x60|0x8E = 0xEE)
     idt_set_gate(0x80, (uint32_t)syscall_stub, 0x08, 0xEE);
     kprintf("%s\n", MSG_SYSCALL_INIT);
 }
 
-// SYS_WRITE (1): fd=1 -> stdout -> TTY
+// SYS_WRITE (1): fd=1/2 -> stdout/stderr -> TTY; fd>=3 -> VFS
 static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
     if (fd == 1 || fd == 2) {
-        if (!buf) return -1;
+        if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
         // Bounds check: refuse oversized writes to avoid flooding
         if (len > 4096) len = 4096;
@@ -411,7 +748,14 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
         tty_flush();
         return (int32_t)len;
     }
-    return -1; // other fds not yet implemented
+    if (fd >= 3) {
+        if (!buf) return -BLUEY_EFAULT;
+        if (len == 0) return 0;
+        int r = vfs_write((int)fd, (const uint8_t *)buf, len);
+        if (r < 0) return -BLUEY_EBADF;
+        return r;
+    }
+    return -BLUEY_EBADF;
 }
 
 static int32_t sys_open(const char *path, int flags) {
@@ -510,14 +854,21 @@ cleanup:
     return result;
 }
 
-// SYS_READ (0): fd=0 -> stdin -> TTY
+// SYS_READ (0): fd=0 -> stdin -> TTY; fd>=3 -> VFS
 static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
     if (fd == 0) {
-        if (!buf) return -1;
+        if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
         return tty_read(buf, len);
     }
-    return -1;
+    if (fd >= 3) {
+        if (!buf) return -BLUEY_EFAULT;
+        if (len == 0) return 0;
+        int r = vfs_read((int)fd, (uint8_t *)buf, len);
+        if (r < 0) return -BLUEY_EBADF;
+        return r;
+    }
+    return -BLUEY_EBADF;
 }
 
 // uname structure (mirrors Linux utsname)
@@ -655,6 +1006,51 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_CLOSE:
             ret = sys_close((int)regs->ebx);
             break;
+        case SYS_STAT:
+            ret = sys_stat((const char*)regs->ebx, (void*)regs->ecx);
+            break;
+        case SYS_LSTAT:
+            ret = sys_lstat((const char*)regs->ebx, (void*)regs->ecx);
+            break;
+        case SYS_LSEEK:
+            ret = sys_lseek((int)regs->ebx, (int32_t)regs->ecx, (int)regs->edx);
+            break;
+        case SYS_UNLINK:
+            ret = sys_unlink((const char*)regs->ebx);
+            break;
+        case SYS_MKDIR:
+            ret = sys_mkdir((const char*)regs->ebx, regs->ecx);
+            break;
+        case SYS_RMDIR:
+            ret = sys_rmdir((const char*)regs->ebx);
+            break;
+        case SYS_DUP:
+            ret = sys_dup((int)regs->ebx);
+            break;
+        case SYS_DUP2:
+            ret = sys_dup2_impl((int)regs->ebx, (int)regs->ecx);
+            break;
+        case SYS_PIPE:
+            ret = sys_pipe_impl((int*)regs->ebx);
+            break;
+        case SYS_FCNTL:
+            ret = sys_fcntl((int)regs->ebx, (int)regs->ecx, (int)regs->edx);
+            break;
+        case SYS_IOCTL:
+            ret = sys_ioctl((int)regs->ebx, regs->ecx, (void*)regs->edx);
+            break;
+        case SYS_CHDIR:
+            ret = sys_chdir((const char*)regs->ebx);
+            break;
+        case SYS_GETCWD:
+            ret = sys_getcwd((char*)regs->ebx, (size_t)regs->ecx);
+            break;
+        case SYS_ACCESS:
+            ret = sys_access((const char*)regs->ebx, (int)regs->ecx);
+            break;
+        case SYS_GETDENTS:
+            ret = sys_getdents((int)regs->ebx, (void*)regs->ecx, regs->edx);
+            break;
         case SYS_KILL:
             ret = sys_kill((int32_t)regs->ebx, (int)regs->ecx);
             break;
@@ -662,8 +1058,14 @@ int32_t syscall_dispatch(registers_t *regs) {
             process_exit((int)regs->ebx);
             ret = 0;
             break;
+        case SYS_EXIT_GROUP:
+            ret = sys_exit_group((int)regs->ebx);
+            break;
         case SYS_GETPID:
             ret = (int32_t)process_getpid();
+            break;
+        case SYS_GETPPID:
+            ret = sys_getppid();
             break;
         case SYS_GETUID:
             ret = (int32_t)process_get_euid();
@@ -682,6 +1084,12 @@ int32_t syscall_dispatch(registers_t *regs) {
             if (regs->ebx) *(uint32_t*)regs->ebx = timer_get_ticks();
             ret = 0;
             break;
+        case SYS_CLOCK_GETTIME:
+            ret = sys_clock_gettime((int)regs->ebx, (k_timespec_t*)regs->ecx);
+            break;
+        case SYS_NANOSLEEP:
+            ret = sys_nanosleep((const k_timespec_req_t*)regs->ebx, (void*)regs->ecx);
+            break;
         case SYS_EXECVE:
             ret = sys_execve(regs,
                              (const char*)regs->ebx,
@@ -691,9 +1099,16 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_WAITPID:
             ret = process_waitpid((int32_t)regs->ebx, (int*)regs->ecx, (int)regs->edx);
             break;
+        case SYS_WAIT4:
+            ret = sys_wait4((int32_t)regs->ebx, (int*)regs->ecx,
+                            (int)regs->edx, (void*)regs->esi);
+            break;
         case SYS_FORK:
         case SYS_CLONE:
             ret = sys_fork(regs);
+            break;
+        case SYS_SCHED_YIELD:
+            ret = sys_sched_yield();
             break;
         case SYS_BRK:
             ret = sys_brk(regs->ebx);
@@ -724,17 +1139,11 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_FSTAT:
             ret = sys_fstat((int)regs->ebx, (void*)regs->ecx);
             break;
-        case SYS_CLOCK_GETTIME:
-            ret = sys_clock_gettime((int)regs->ebx, (k_timespec_t*)regs->ecx);
+        case SYS_SET_TID_ADDRESS:
+            ret = sys_set_tid_address((void*)regs->ebx);
             break;
-        case SYS_IOCTL:
-        case SYS_CHDIR:
-        case SYS_GETCWD:
-        case SYS_PIPE:
-        case SYS_DUP2:
-        case SYS_STAT:
-        case SYS_GETDENTS:
-            ret = -BLUEY_ENOSYS;
+        case SYS_GETRANDOM:
+            ret = sys_getrandom((void*)regs->ebx, (size_t)regs->ecx, regs->edx);
             break;
         /* ---- Process groups -------------------------------------------- */
         case SYS_SETPGID:
