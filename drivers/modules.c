@@ -10,9 +10,9 @@
 #include "ata.h"
 #include "net/ne2000.h"
 
-static int keyboard_driver_init(void) { return keyboard_init(); }
+static int keyboard_driver_init(void) { keyboard_init(); return 0; }
 static int ata_driver_init(void)      { return ata_init(); }
-static int ne2000_driver_init(void)   { return ne2000_init(); }
+static int ne2000_driver_init(void)   { ne2000_init(); return 0; }
 
 static driver_t keyboard_driver = {
     .name = "keyboard",

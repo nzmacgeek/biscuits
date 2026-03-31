@@ -263,7 +263,12 @@ static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
     uint32_t freq = timer_get_freq();
     uint32_t sec = ticks / freq;
     uint32_t rem = ticks % freq;
-    uint32_t nsec = (uint32_t)((uint64_t)rem * 1000000000ULL / freq);
+    /* Avoid 64-bit division helper (`__udivdi3`) by scaling in 32-bit when
+     * timer frequency is small (typical PIT=1000). Compute nsec = rem *
+     * (1_000_000_000 / freq). This truncates sub-tick precision but
+     * avoids pulling in libgcc helpers. */
+    uint32_t scale = 1000000000u / (freq ? freq : 1000u);
+    uint32_t nsec = rem * scale;
     tp->tv_sec = sec;
     tp->tv_nsec = nsec;
     return 0;
