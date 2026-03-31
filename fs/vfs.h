@@ -19,6 +19,27 @@
 #define VFS_O_TRUNC   0x0200
 #define VFS_O_APPEND  0x0400
 
+// Stat mode bits (mirrors POSIX)
+#define VFS_S_IFMT   0xF000
+#define VFS_S_IFREG  0x8000
+#define VFS_S_IFDIR  0x4000
+#define VFS_S_ISUID  04000
+#define VFS_S_ISGID  02000
+#define VFS_S_IRUSR  0400
+#define VFS_S_IWUSR  0200
+#define VFS_S_IXUSR  0100
+#define VFS_S_IRGRP  0040
+#define VFS_S_IWGRP  0020
+#define VFS_S_IXGRP  0010
+#define VFS_S_IROTH  0004
+#define VFS_S_IWOTH  0002
+#define VFS_S_IXOTH  0001
+
+// Access mask bits (R/W/X aligned with mode bits)
+#define VFS_ACCESS_READ   4
+#define VFS_ACCESS_WRITE  2
+#define VFS_ACCESS_EXEC   1
+
 // Directory entry
 typedef struct {
     char     name[VFS_NAME_LEN];
@@ -26,6 +47,21 @@ typedef struct {
     uint32_t inode;
     uint8_t  is_dir;
 } vfs_dirent_t;
+
+typedef struct {
+    uint16_t mode;
+    uint32_t uid;
+    uint32_t gid;
+    uint32_t size;
+    uint8_t  is_dir;
+} vfs_stat_t;
+
+typedef struct {
+    uint32_t uid;
+    uint32_t gid;
+    const uint32_t *groups;
+    uint32_t group_count;
+} vfs_cred_t;
 
 // Filesystem driver vtable - every filesystem registers one of these
 typedef struct filesystem {
@@ -38,6 +74,7 @@ typedef struct filesystem {
     int (*readdir)(const char *path, vfs_dirent_t *out, int max);
     int (*mkdir)(const char *path);
     int (*unlink)(const char *path);
+    int (*stat)(const char *path, vfs_stat_t *out);
 } filesystem_t;
 
 // Mount point descriptor
@@ -65,4 +102,8 @@ int  vfs_close(int fd);
 int  vfs_readdir(const char *path, vfs_dirent_t *out, int max);
 int  vfs_mkdir(const char *path);
 int  vfs_unlink(const char *path);
+int  vfs_stat(const char *path, vfs_stat_t *out);
+int  vfs_fstat(int fd, vfs_stat_t *out);
+int  vfs_access(const char *path, uint8_t access);
+int  vfs_access_cred(const char *path, uint8_t access, const vfs_cred_t *cred);
 void vfs_print_mounts(void);

@@ -29,18 +29,25 @@ uint16_t ip_checksum(const void *hdr, size_t len) {
 int ip_send(uint8_t proto, uint32_t dst_ip,
             const uint8_t *payload, uint16_t payload_len) {
     const tcpip_config_t *cfg = tcpip_get_config();
+    int use_loopback = tcpip_is_loopback_addr(dst_ip);
 
     // Determine next hop: if dst is on same subnet, use dst directly;
     // otherwise use the gateway.
     uint32_t nexthop;
-    if ((dst_ip & cfg->netmask) == (cfg->ip & cfg->netmask))
+    if (!use_loopback) {
+        if ((dst_ip & cfg->netmask) == (cfg->ip & cfg->netmask))
+            nexthop = dst_ip;
+        else
+            nexthop = cfg->gateway;
+    } else {
         nexthop = dst_ip;
-    else
-        nexthop = cfg->gateway;
+    }
 
     // Resolve next-hop MAC via ARP
     uint8_t dst_mac[6];
-    if (arp_lookup(nexthop, dst_mac) != 0) {
+    if (use_loopback) {
+        memset(dst_mac, 0, sizeof(dst_mac));
+    } else if (arp_lookup(nexthop, dst_mac) != 0) {
         // Not in cache - send ARP request and fail this send
         arp_send_request(nexthop);
         return -1;
@@ -57,7 +64,10 @@ int ip_send(uint8_t proto, uint32_t dst_ip,
     // Ethernet header
     eth_hdr_t *eth = (eth_hdr_t *)frame;
     memcpy(eth->dst, dst_mac, 6);
-    memcpy(eth->src, cfg->mac, 6);
+    if (use_loopback)
+        memset(eth->src, 0, 6);
+    else
+        memcpy(eth->src, cfg->mac, 6);
     eth->ethertype = htons(ETHERTYPE_IPV4);
 
     // IP header
@@ -70,7 +80,7 @@ int ip_send(uint8_t proto, uint32_t dst_ip,
     ip->ttl        = 64;
     ip->protocol   = proto;
     ip->checksum   = 0;
-    ip->src_ip     = cfg->ip;
+    ip->src_ip     = use_loopback ? cfg->loopback_ip : cfg->ip;
     ip->dst_ip     = dst_ip;
     ip->checksum   = ip_checksum(ip, sizeof(ip_hdr_t));
 
@@ -79,7 +89,7 @@ int ip_send(uint8_t proto, uint32_t dst_ip,
         memcpy(frame + sizeof(eth_hdr_t) + sizeof(ip_hdr_t),
                payload, payload_len);
 
-    return net_send(cfg->ifname, frame, frame_len);
+    return net_send(use_loopback ? "lo" : cfg->ifname, frame, frame_len);
 }
 
 void ip_handle(const uint8_t *frame, uint16_t len) {
@@ -96,8 +106,9 @@ void ip_handle(const uint8_t *frame, uint16_t len) {
 
     const tcpip_config_t *cfg = tcpip_get_config();
 
-    // Only process packets destined for us or broadcast
-    if (ip->dst_ip != cfg->ip && ip->dst_ip != 0xFFFFFFFF) return;
+    // Only process packets destined for us, loopback, or broadcast
+    if (ip->dst_ip != cfg->ip && ip->dst_ip != 0xFFFFFFFF &&
+        !tcpip_is_loopback_addr(ip->dst_ip)) return;
 
     // Learn sender's MAC from ethernet header
     const eth_hdr_t *eth = (const eth_hdr_t *)frame;

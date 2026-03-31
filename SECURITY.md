@@ -25,17 +25,17 @@ These are real security controls present in the codebase:
 
 The GDT (`kernel/gdt.c`) defines separate kernel (ring 0) and user (ring 3) code/data segments. Kernel code runs at CPL=0 ("Bandit's domain — grown-ups only"). User code runs at CPL=3 ("Bluey's domain — where the kids play"). The TSS enables stack switching on privilege transitions.
 
-### 2. SHA-256 Salted Password Hashing
+### 2. PBKDF2-SHA256 Password Hashing
 
 Passwords are never stored in plaintext. `/etc/shadow`-style entries use the format:
 
 ```
-$sha256$<16 hex salt>$<64 hex hash>
+$pbkdf2-sha256$<iters>$<32 hex salt>$<64 hex hash>
 ```
 
-The hash is `SHA-256(salt || password)`. The implementation is in `kernel/sha256.c`.
+The hash uses PBKDF2-HMAC-SHA256 with a configurable iteration count. The implementation is in `kernel/password.c` and `kernel/sha256.c`.
 
-> **Production note:** For a real OS, use **bcrypt**, **scrypt**, or **argon2id** which include a configurable work factor to resist brute-force attacks. SHA-256 without a work factor is too fast for password storage. This is documented in `kernel/sha256.h`.
+> **Production note:** For a real OS, use **bcrypt**, **scrypt**, or **argon2id** which include memory-hard work factors. PBKDF2 is an improvement over plain SHA-256, but still not ideal for production.
 
 ### 3. UID/GID Separation
 
@@ -102,13 +102,13 @@ This is a research OS. There are **many** known limitations:
 1. **No ASLR** — kernel and user processes load at fixed addresses
 2. **No stack canaries** (`-fno-stack-protector` is required for freestanding builds)
 3. **No NX bit** — no W^X enforcement on memory pages
-4. **SHA-256 without work factor** — not suitable for production password storage
+4. **PBKDF2 iteration counts are conservative** — not suitable for production password storage
 5. **Hardcoded default passwords** — never acceptable in production
 6. **No process isolation** — user processes share the same page directory as the kernel
 7. **No SMEP/SMAP** — no protection against kernel executing/accessing user memory
 8. **No audit logging** — no record of login attempts or privilege escalation
 9. **No network security** — the NE2000 driver accepts all packets with no filtering
-10. **No cryptographic random number generator** — salt generation uses timer ticks
+10. **No cryptographic random number generator** — salt generation mixes timer/RTC/pid without a CSPRNG
 11. **No secure boot** — no verification of kernel image integrity
 12. **No memory encryption** — all memory is plaintext
 

@@ -37,6 +37,7 @@ uint32_t syscall_saved_gs = 0;
 
 #define BLUEY_ENOSYS 38
 #define BLUEY_EPERM   1
+#define BLUEY_ENOENT  2
 #define BLUEY_EFAULT 14
 #define BLUEY_EINVAL 22
 #define BLUEY_E2BIG   7
@@ -249,6 +250,40 @@ static int32_t sys_rt_sigprocmask(int how, const uint32_t *set, uint32_t *oldset
     return signal_sigprocmask(process, how, set, oldset);
 }
 
+// Minimal kernel-side representation of timespec for userland
+typedef struct {
+    uint32_t tv_sec;
+    uint32_t tv_nsec;
+} k_timespec_t;
+
+static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
+    (void)clk_id;
+    if (!tp) return -BLUEY_EFAULT;
+    uint32_t ticks = timer_get_ticks();
+    uint32_t freq = timer_get_freq();
+    uint32_t sec = ticks / freq;
+    uint32_t rem = ticks % freq;
+    uint32_t nsec = (uint32_t)((uint64_t)rem * 1000000000ULL / freq);
+    tp->tv_sec = sec;
+    tp->tv_nsec = nsec;
+    return 0;
+}
+
+static int32_t sys_fstat(int fd, void *buf) {
+    if (fd < 0) return -BLUEY_EINVAL;
+    if (!buf) return -BLUEY_EFAULT;
+    vfs_stat_t st;
+    if (vfs_fstat(fd, &st) != 0) return -BLUEY_EINVAL;
+
+    // Minimal stat: write st_mode (32-bit) at start, then st_ino and st_size
+    uint32_t *u = (uint32_t*)buf;
+    u[0] = (uint32_t)st.mode; // st_mode
+    u[1] = 0;                 // st_ino / padding
+    u[2] = st.size;           // st_size low
+    u[3] = 0;                 // st_size high / padding
+    return 0;
+}
+
 static int32_t sys_sigreturn(registers_t *regs, void *frame_ptr) {
     process_t *process = process_current();
     if (!process || !regs) return -BLUEY_EPERM;
@@ -304,6 +339,7 @@ static int32_t sys_execve(registers_t *regs,
                           const char *const *envp) {
     process_t *process = process_current();
     elf_image_t image;
+    vfs_stat_t stat;
     char *path_copy = NULL;
     char **argv_copy = NULL;
     char **envp_copy = NULL;
@@ -327,6 +363,16 @@ static int32_t sys_execve(registers_t *regs,
         goto cleanup;
     }
 
+    if (vfs_stat(path_copy, &stat) != 0) {
+        result = -BLUEY_ENOENT;
+        goto cleanup;
+    }
+    // Execute permission is still required even for setuid/setgid binaries.
+    if (vfs_access(path_copy, VFS_ACCESS_EXEC) != 0 || stat.is_dir) {
+        result = -BLUEY_EPERM;
+        goto cleanup;
+    }
+
     if (elf_load_image(path_copy, (const char *const *)argv_copy,
                        (const char *const *)envp_copy, &image) != 0) {
         result = -1;
@@ -340,6 +386,13 @@ static int32_t sys_execve(registers_t *regs,
     paging_switch_directory(image.page_dir);
     process_set_current(process);
     syscall_prepare_user_return(regs, process);
+    if (stat.mode & VFS_S_ISUID || stat.mode & VFS_S_ISGID) {
+        uint32_t new_euid = process->euid;
+        uint32_t new_egid = process->egid;
+        if (stat.mode & VFS_S_ISUID) new_euid = stat.uid;
+        if (stat.mode & VFS_S_ISGID) new_egid = stat.gid;
+        process_set_effective_ids(process, new_euid, new_egid);
+    }
     result = 0;
 
     if (old_page_dir && old_page_dir != image.page_dir) {
@@ -509,10 +562,10 @@ int32_t syscall_dispatch(registers_t *regs) {
             ret = (int32_t)process_getpid();
             break;
         case SYS_GETUID:
-            ret = (int32_t)multiuser_current_uid();
+            ret = (int32_t)process_get_euid();
             break;
         case SYS_GETGID:
-            ret = (int32_t)multiuser_current_gid();
+            ret = (int32_t)process_get_egid();
             break;
         case SYS_UNAME:
             ret = sys_uname((utsname_t*)regs->ebx);
@@ -557,6 +610,12 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_SIGRETURN:
             ret = sys_sigreturn(regs, (void*)regs->ebx);
+            break;
+        case SYS_FSTAT:
+            ret = sys_fstat((int)regs->ebx, (void*)regs->ecx);
+            break;
+        case SYS_CLOCK_GETTIME:
+            ret = sys_clock_gettime((int)regs->ebx, (k_timespec_t*)regs->ecx);
             break;
         case SYS_IOCTL:
         case SYS_CHDIR:

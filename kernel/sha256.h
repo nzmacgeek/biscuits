@@ -1,10 +1,10 @@
 #pragma once
 // BlueyOS SHA-256 Implementation
-// Used for password hashing in /etc/shadow
+// Used for password hashing (PBKDF2-SHA256) in /etc/shadow
 // Pure C, no external dependencies - freestanding kernel code
 //
-// NOTE: SHA-256 with salt is acceptable for this research OS, but production
-//       systems should use bcrypt, scrypt, or argon2 which include work factors.
+// NOTE: PBKDF2-SHA256 with a work factor is acceptable for this research OS,
+//       but production systems should use bcrypt, scrypt, or argon2.
 //
 // Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
 // licensed by BBC Studios. BlueyOS is an unofficial fan/research project.

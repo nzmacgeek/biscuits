@@ -9,6 +9,7 @@
 #include "elf.h"
 #include "kheap.h"
 #include "paging.h"
+#include "multiuser.h"
 
 #define ELF_READ_CHUNK_SIZE   512u
 #define ELF_MAX_IMAGE_SIZE    (1024u * 1024u)
@@ -32,15 +33,22 @@ static int elf_read_file(const char *path, uint8_t **data_out, size_t *len_out) 
     uint8_t *buffer = NULL;
     size_t length = 0;
     size_t capacity = 0;
+    uint32_t heap_total = 0;
+    uint32_t heap_used = 0;
+    uint32_t heap_free = 0;
 
     if (!path || !data_out || !len_out) return -1;
 
     fd = vfs_open(path, VFS_O_RDONLY);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        kprintf("[ELF] Open failed for %s\n", path);
+        return -1;
+    }
 
     for (;;) {
         int nread = vfs_read(fd, chunk, sizeof(chunk));
         if (nread < 0) {
+            kprintf("[ELF] Read failed for %s at offset=%u\n", path, (uint32_t)length);
             vfs_close(fd);
             if (buffer) kheap_free(buffer);
             return -1;
@@ -60,6 +68,9 @@ static int elf_read_file(const char *path, uint8_t **data_out, size_t *len_out) 
 
             next_buffer = (uint8_t*)kheap_alloc(next_capacity, 0);
             if (!next_buffer) {
+                kheap_get_stats(&heap_total, &heap_used, &heap_free);
+                kprintf("[ELF] Heap alloc failed for %s size=%u total=%u used=%u free=%u\n",
+                        path, (uint32_t)next_capacity, heap_total, heap_used, heap_free);
                 vfs_close(fd);
                 if (buffer) kheap_free(buffer);
                 return -1;
@@ -375,6 +386,19 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
     if (!path || !image_out) return -1;
 
     memset(image_out, 0, sizeof(*image_out));
+    /* Enforce execute-permission bits when supported by the filesystem.
+       If vfs_stat is not available for the filesystem, allow execution. */
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) == 0) {
+        /* check any execute bit: owner/group/other
+           Mode bit masks: owner=0x40, group=0x8, other=0x1 (octal 0100/0010/0001)
+           Combined mask = 0x49 */
+        if ((st.mode & 0x49) == 0) {
+            kprintf("[ELF] Permission denied: %s not executable (mode=0%o)\n", path, st.mode);
+            return -1;
+        }
+    }
+
     if (elf_read_file(path, &data, &len) != 0) {
         kprintf("[ELF] Failed to read %s\n", path);
         return -1;
@@ -419,11 +443,40 @@ process_t *elf_exec(const char *path, uint32_t uid) {
     const char *argv_storage[2];
     elf_image_t image;
     process_t *process;
+    vfs_stat_t stat;
+    uint32_t groups[PROC_MAX_GROUPS];
+    vfs_cred_t cred;
+    passwd_entry_t passwd;
+    uint32_t gid = 0;
+    uint32_t euid = uid;
+    uint32_t egid = 0;
 
     if (!path) return NULL;
 
     argv_storage[0] = path;
     argv_storage[1] = NULL;
+
+    if (multiuser_get_passwd(uid, &passwd) != 0) {
+        kprintf("[ELF] Unknown uid %u for %s\n", uid, path);
+        return NULL;
+    }
+    gid = passwd.gid;
+    egid = gid;
+    memset(&cred, 0, sizeof(cred));
+    cred.uid = uid;
+    cred.gid = gid;
+    cred.group_count = multiuser_get_groups(uid, gid, groups, PROC_MAX_GROUPS);
+    cred.groups = groups;
+
+    if (vfs_stat(path, &stat) == 0) {
+        if (vfs_access_cred(path, VFS_ACCESS_EXEC, &cred) != 0 || stat.is_dir) {
+            kprintf("[ELF] Exec denied for %s (uid=%u)\n", path, uid);
+            return NULL;
+        }
+        if (stat.mode & VFS_S_ISUID) euid = stat.uid;
+        if (stat.mode & VFS_S_ISGID) egid = stat.gid;
+    }
+
     if (elf_load_image(path, argv_storage, empty_envp, &image) != 0) {
         return NULL;
     }
@@ -435,6 +488,7 @@ process_t *elf_exec(const char *path, uint32_t uid) {
     if (!process) return NULL;
 
     process_set_memory_layout(process, image.image_end);
+    process_set_effective_ids(process, euid, egid);
 
     kprintf("[ELF] Prepared %s entry=0x%x stack=0x%x\n", path, image.entry, image.stack_pointer);
     return process;

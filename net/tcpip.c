@@ -25,6 +25,9 @@ void tcpip_init(void) {
     cfg.netmask = htonl(TCPIP_CFG_MASK_DEFAULT);
     cfg.dns     = htonl(TCPIP_CFG_DNS_DEFAULT);
     strncpy(cfg.ifname, "eth0", sizeof(cfg.ifname) - 1);
+    cfg.loopback_ip = htonl(0x7F000001u);
+    cfg.loopback_mask = htonl(0xFF000000u);
+    cfg.loopback_enabled = 1;
 
     // Grab MAC from the registered NE2000 interface
     net_interface_t *iface = net_get_interface("eth0");
@@ -58,6 +61,17 @@ void tcpip_set_config(uint32_t ip, uint32_t gw, uint32_t mask, uint32_t dns) {
     cfg.dns     = dns;
 }
 
+void tcpip_set_loopback(uint32_t ip, uint32_t mask) {
+    cfg.loopback_ip = ip;
+    cfg.loopback_mask = mask;
+    cfg.loopback_enabled = 1;
+}
+
+int tcpip_is_loopback_addr(uint32_t ip) {
+    if (!cfg.loopback_enabled) return 0;
+    return (ip & cfg.loopback_mask) == (cfg.loopback_ip & cfg.loopback_mask);
+}
+
 const tcpip_config_t *tcpip_get_config(void) {
     return &cfg;
 }
@@ -71,24 +85,34 @@ void tcpip_poll(void) {
     static uint8_t frame[1536];
     uint16_t len;
 
-    // Drain up to 16 packets per call so we don't monopolise the CPU
-    for (int i = 0; i < 16; i++) {
-        len = 0;
-        if (net_recv(cfg.ifname, frame, &len) != 0) break;
-        if (len < sizeof(eth_hdr_t)) continue;
+    const char *ifaces[] = { cfg.ifname, "lo", NULL };
+    int seen_loopback = 0;
+    for (int iface_idx = 0; ifaces[iface_idx]; iface_idx++) {
+        const char *ifname = ifaces[iface_idx];
+        if (strcmp(ifname, "lo") == 0) {
+            if (!cfg.loopback_enabled || seen_loopback) continue;
+            seen_loopback = 1;
+        }
 
-        eth_hdr_t *eth = (eth_hdr_t *)frame;
-        uint16_t et = ntohs(eth->ethertype);
+        // Drain up to 16 packets per call so we don't monopolise the CPU
+        for (int i = 0; i < 16; i++) {
+            len = 0;
+            if (net_recv(ifname, frame, &len) != 0) break;
+            if (len < sizeof(eth_hdr_t)) continue;
 
-        switch (et) {
-            case ETHERTYPE_ARP:
-                arp_handle(frame, len);
-                break;
-            case ETHERTYPE_IPV4:
-                ip_handle(frame, len);
-                break;
-            default:
-                break;
+            eth_hdr_t *eth = (eth_hdr_t *)frame;
+            uint16_t et = ntohs(eth->ethertype);
+
+            switch (et) {
+                case ETHERTYPE_ARP:
+                    arp_handle(frame, len);
+                    break;
+                case ETHERTYPE_IPV4:
+                    ip_handle(frame, len);
+                    break;
+                default:
+                    break;
+            }
         }
     }
 }

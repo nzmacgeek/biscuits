@@ -109,10 +109,31 @@ sudo apt-get install -y \
 make                   # Build kernel ELF (build #1)
 make BUILD_NUMBER=42   # Build with a specific build number
 make iso               # Create bootable ISO
+make disk              # Create blueyos-disk.img with BlueyFS root + swap
 make run               # Launch in QEMU
 make version           # Print version info
 make clean             # Clean build artifacts
 ```
+
+`/bin/init` is already built from [user/init.c](user/init.c) into `user/init.elf`.
+The `make disk` target lays that payload down into the BlueyFS root partition as `/bin/init`
+and writes an `/etc/fstab` that activates the swap partition on boot.
+
+Host-side filesystem tools:
+
+```bash
+make tools-host
+./tools/fsck_blueyfs -o 67584 blueyos-disk.img   # 67584 = default BlueyFS root partition LBA
+```
+
+The default disk layout is:
+
+- `LBA 2048`: ext2 boot partition (`/dev/hda1`) — GRUB bootloader files
+- `LBA 67584`: BlueyFS root partition (`/dev/hda2`) — `BOOT_START_LBA + boot_sectors` (32 MB boot)
+- `LBA 198656`: swap partition (`/dev/hda3`)
+
+GRUB now boots with `root=/dev/hda2 rootfstype=blueyfs`, and the kernel reads `/etc/fstab`
+after mounting root to enable swap and any additional simple mounts.
 
 See [TESTING.md](TESTING.md) for detailed testing instructions and expected output.
 

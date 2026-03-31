@@ -19,6 +19,10 @@
  *   -L <label>        volume label (up to 16 chars)
  *   -b <block-size>   block size in bytes (must be 4096; default: 4096)
  *   -s <size-MB>      image size in MB for new image files (default: 64)
+ *   -o <start-sector> sector offset within a disk image (default: 0)
+ *   -n <sectors>      size of the filesystem region in 512-byte sectors
+ *   -I <host-file>    install host file as /bin/init in the new filesystem
+ *   -T <host-file>    install host file as /etc/fstab in the new filesystem
  *   -j <journal-blks> journal size in blocks (default: 2048 = 8 MB)
  *   -F                force overwrite without prompting
  *   -q                quiet: suppress informational messages
@@ -40,6 +44,8 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+
+#define HOST_SECTOR_SIZE 512u
 
 /* -------------------------------------------------------------------------
  * On-disk structures (kept in sync with fs/blueyfs.h)
@@ -65,6 +71,7 @@
 
 #define BISCUITFS_IFDIR           0x4000
 #define BISCUITFS_IFREG           0x8000
+#define BISCUITFS_N_DIRECT        12
 #define BISCUITFS_FT_DIR          2
 #define BISCUITFS_FT_REG_FILE     1
 #define BISCUITFS_DIRENT_MIN      8
@@ -164,6 +171,7 @@ static FILE    *g_fp          = NULL;
 static uint32_t g_block_size  = BISCUITFS_BLOCK_SIZE;
 static uint32_t g_blocks_total= 0;
 static int      g_quiet       = 0;
+static uint64_t g_fs_offset_bytes = 0;
 
 #define MSG(...) do { if (!g_quiet) printf(__VA_ARGS__); } while(0)
 
@@ -172,7 +180,7 @@ static int      g_quiet       = 0;
  * -------------------------------------------------------------------------*/
 
 static void write_block(uint32_t blk, const void *data) {
-    long off = (long)blk * (long)g_block_size;
+    long off = (long)(g_fs_offset_bytes + (uint64_t)blk * (uint64_t)g_block_size);
     if (fseek(g_fp, off, SEEK_SET) != 0) {
         perror("fseek"); exit(1);
     }
@@ -182,7 +190,7 @@ static void write_block(uint32_t blk, const void *data) {
 }
 
 static void read_block(uint32_t blk, void *data) {
-    long off = (long)blk * (long)g_block_size;
+    long off = (long)(g_fs_offset_bytes + (uint64_t)blk * (uint64_t)g_block_size);
     if (fseek(g_fp, off, SEEK_SET) != 0) {
         perror("fseek"); exit(1);
     }
@@ -469,6 +477,378 @@ static void do_mkfs(const char *label, uint32_t journal_blocks) {
     MSG("\n\"This is the BEST filesystem EVER!\" - Bluey Heeler\n");
 }
 
+static void load_superblock(biscuitfs_super_t *sb) {
+    uint8_t blk0[BISCUITFS_BLOCK_SIZE];
+
+    memset(blk0, 0, sizeof(blk0));
+    read_block(0, blk0);
+    memcpy(sb, blk0 + 1024, sizeof(*sb));
+}
+
+static void store_superblock(const biscuitfs_super_t *sb) {
+    uint8_t blk0[BISCUITFS_BLOCK_SIZE];
+
+    read_block(0, blk0);
+    memcpy(blk0 + 1024, sb, sizeof(*sb));
+    write_block(0, blk0);
+}
+
+static void read_bgd_group(uint32_t group, biscuitfs_bgd_t *bgd) {
+    uint8_t blk[BISCUITFS_BLOCK_SIZE];
+    biscuitfs_bgd_t *table;
+
+    memset(bgd, 0, sizeof(*bgd));
+    read_block(1, blk);
+    table = (biscuitfs_bgd_t *)blk;
+    memcpy(bgd, &table[group], sizeof(*bgd));
+}
+
+static void write_bgd_group(uint32_t group, const biscuitfs_bgd_t *bgd) {
+    uint8_t blk[BISCUITFS_BLOCK_SIZE];
+    biscuitfs_bgd_t *table;
+
+    read_block(1, blk);
+    table = (biscuitfs_bgd_t *)blk;
+    memcpy(&table[group], bgd, sizeof(*bgd));
+    write_block(1, blk);
+}
+
+static int locate_inode_host(uint32_t inode_no, uint32_t *blk_out, uint32_t *off_out) {
+    uint32_t idx;
+    uint32_t group;
+    uint32_t local;
+    uint32_t inodes_per_block;
+    biscuitfs_bgd_t bgd;
+
+    if (inode_no == 0) return -1;
+
+    idx = inode_no - 1u;
+    group = idx / BISCUITFS_INODES_PER_GRP;
+    local = idx % BISCUITFS_INODES_PER_GRP;
+    inodes_per_block = g_block_size / BISCUITFS_INODE_SIZE;
+
+    read_bgd_group(group, &bgd);
+    *blk_out = bgd.inode_table + (local / inodes_per_block);
+    *off_out = (local % inodes_per_block) * BISCUITFS_INODE_SIZE;
+    return 0;
+}
+
+static int read_inode_host(uint32_t inode_no, biscuitfs_inode_t *inode) {
+    uint32_t blk;
+    uint32_t off;
+    uint8_t buf[BISCUITFS_BLOCK_SIZE];
+
+    if (locate_inode_host(inode_no, &blk, &off) != 0) return -1;
+    read_block(blk, buf);
+    memcpy(inode, buf + off, sizeof(*inode));
+    return 0;
+}
+
+static int write_inode_host(uint32_t inode_no, const biscuitfs_inode_t *inode) {
+    uint32_t blk;
+    uint32_t off;
+    uint8_t buf[BISCUITFS_BLOCK_SIZE];
+
+    if (locate_inode_host(inode_no, &blk, &off) != 0) return -1;
+    read_block(blk, buf);
+    memcpy(buf + off, inode, sizeof(*inode));
+    write_block(blk, buf);
+    return 0;
+}
+
+static uint32_t alloc_block_host(void) {
+    biscuitfs_super_t sb;
+    uint32_t groups;
+
+    load_superblock(&sb);
+    groups = (sb.block_count + BISCUITFS_BLOCKS_PER_GRP - 1u) / BISCUITFS_BLOCKS_PER_GRP;
+
+    for (uint32_t group = 0; group < groups; group++) {
+        biscuitfs_bgd_t bgd;
+        uint8_t bitmap[BISCUITFS_BLOCK_SIZE];
+        uint32_t group_blocks = BISCUITFS_BLOCKS_PER_GRP;
+
+        read_bgd_group(group, &bgd);
+        if (bgd.free_blocks == 0) continue;
+
+        if (group + 1u == groups) {
+            group_blocks = sb.block_count - (group * BISCUITFS_BLOCKS_PER_GRP);
+        }
+
+        read_block(bgd.block_bitmap, bitmap);
+        for (uint32_t index = 0; index < group_blocks; index++) {
+            uint8_t mask = (uint8_t)(1u << (index & 7u));
+            uint32_t byte = index >> 3;
+
+            if (bitmap[byte] & mask) continue;
+
+            bitmap[byte] |= mask;
+            write_block(bgd.block_bitmap, bitmap);
+            bgd.free_blocks = (uint16_t)(bgd.free_blocks - 1u);
+            write_bgd_group(group, &bgd);
+            sb.free_blocks--;
+            store_superblock(&sb);
+            return group * BISCUITFS_BLOCKS_PER_GRP + index;
+        }
+    }
+
+    return 0;
+}
+
+static uint32_t alloc_inode_host(void) {
+    biscuitfs_super_t sb;
+    uint32_t groups;
+
+    load_superblock(&sb);
+    groups = (sb.inode_count + BISCUITFS_INODES_PER_GRP - 1u) / BISCUITFS_INODES_PER_GRP;
+
+    for (uint32_t group = 0; group < groups; group++) {
+        biscuitfs_bgd_t bgd;
+        uint8_t bitmap[BISCUITFS_BLOCK_SIZE];
+        uint32_t group_inodes = BISCUITFS_INODES_PER_GRP;
+
+        read_bgd_group(group, &bgd);
+        if (bgd.free_inodes == 0) continue;
+
+        if (group + 1u == groups) {
+            group_inodes = sb.inode_count - (group * BISCUITFS_INODES_PER_GRP);
+        }
+
+        read_block(bgd.inode_bitmap, bitmap);
+        for (uint32_t index = 0; index < group_inodes; index++) {
+            uint8_t mask = (uint8_t)(1u << (index & 7u));
+            uint32_t byte = index >> 3;
+
+            if (bitmap[byte] & mask) continue;
+
+            bitmap[byte] |= mask;
+            write_block(bgd.inode_bitmap, bitmap);
+            bgd.free_inodes = (uint16_t)(bgd.free_inodes - 1u);
+            write_bgd_group(group, &bgd);
+            sb.free_inodes--;
+            store_superblock(&sb);
+            return group * BISCUITFS_INODES_PER_GRP + index + 1u;
+        }
+    }
+
+    return 0;
+}
+
+static int dir_add_entry_host(uint32_t dir_ino, const char *name, uint32_t ino, uint8_t ftype) {
+    biscuitfs_inode_t dir_inode;
+    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
+    uint32_t namelen = (uint32_t)strlen(name);
+    uint16_t needed = (uint16_t)((BISCUITFS_DIRENT_MIN + namelen + 3u) & ~3u);
+
+    if (read_inode_host(dir_ino, &dir_inode) != 0) return -1;
+
+    for (uint32_t block_index = 0; block_index < BISCUITFS_N_DIRECT; block_index++) {
+        uint32_t phys = dir_inode.block[block_index];
+        uint32_t off = 0;
+
+        if (!phys) continue;
+        read_block(phys, blkbuf);
+
+        while (off < g_block_size) {
+            biscuitfs_dirent_t *de = (biscuitfs_dirent_t *)(blkbuf + off);
+            uint16_t actual;
+            uint16_t slack;
+
+            if (de->rec_len == 0) break;
+            actual = de->inode ? (uint16_t)((BISCUITFS_DIRENT_MIN + de->name_len + 3u) & ~3u) : 0;
+            slack = (uint16_t)(de->rec_len - actual);
+            if (slack >= needed) {
+                uint16_t old_len = de->rec_len;
+                biscuitfs_dirent_t *ne;
+
+                if (de->inode) de->rec_len = actual;
+                ne = (biscuitfs_dirent_t *)(blkbuf + off + actual);
+                ne->inode = ino;
+                ne->rec_len = (uint16_t)(old_len - actual);
+                ne->name_len = (uint8_t)namelen;
+                ne->file_type = ftype;
+                memcpy(ne->name, name, namelen);
+                write_block(phys, blkbuf);
+                return 0;
+            }
+
+            off += de->rec_len;
+        }
+    }
+
+    return -1;
+}
+
+static int create_dir_host(uint32_t parent_ino, const char *name, uint32_t now, uint32_t *ino_out) {
+    uint32_t ino = alloc_inode_host();
+    uint32_t data_blk = alloc_block_host();
+    biscuitfs_inode_t inode;
+    biscuitfs_inode_t parent;
+    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
+    biscuitfs_dirent_t *dot;
+    biscuitfs_dirent_t *dotdot;
+
+    if (!ino || !data_blk) return -1;
+
+    memset(&inode, 0, sizeof(inode));
+    inode.mode = BISCUITFS_IFDIR | 0755;
+    inode.uid = 0;
+    inode.gid = 0;
+    inode.links_count = 2;
+    inode.atime = now;
+    inode.ctime = now;
+    inode.mtime = now;
+    inode.crtime = now;
+    inode.size_lo = g_block_size;
+    inode.blocks_lo = g_block_size / HOST_SECTOR_SIZE;
+    inode.block[0] = data_blk;
+    if (write_inode_host(ino, &inode) != 0) return -1;
+
+    memset(blkbuf, 0, sizeof(blkbuf));
+    dot = (biscuitfs_dirent_t *)blkbuf;
+    dot->inode = ino;
+    dot->rec_len = 12;
+    dot->name_len = 1;
+    dot->file_type = BISCUITFS_FT_DIR;
+    dot->name[0] = '.';
+
+    dotdot = (biscuitfs_dirent_t *)(blkbuf + 12);
+    dotdot->inode = parent_ino;
+    dotdot->rec_len = (uint16_t)(g_block_size - 12u);
+    dotdot->name_len = 2;
+    dotdot->file_type = BISCUITFS_FT_DIR;
+    dotdot->name[0] = '.';
+    dotdot->name[1] = '.';
+    write_block(data_blk, blkbuf);
+
+    if (dir_add_entry_host(parent_ino, name, ino, BISCUITFS_FT_DIR) != 0) return -1;
+
+    if (read_inode_host(parent_ino, &parent) == 0) {
+        parent.links_count = (uint16_t)(parent.links_count + 1u);
+        parent.mtime = now;
+        parent.ctime = now;
+        write_inode_host(parent_ino, &parent);
+    }
+
+    if (ino_out) *ino_out = ino;
+    return 0;
+}
+
+static int create_file_host(uint32_t parent_ino, const char *name,
+                            const uint8_t *data, size_t len, uint32_t now) {
+    uint32_t ino = alloc_inode_host();
+    biscuitfs_inode_t inode;
+    size_t remaining = len;
+    size_t offset = 0;
+    uint32_t block_index = 0;
+
+    if (!ino) return -1;
+
+    memset(&inode, 0, sizeof(inode));
+    inode.mode = BISCUITFS_IFREG | 0755;
+    inode.uid = 0;
+    inode.gid = 0;
+    inode.links_count = 1;
+    inode.atime = now;
+    inode.ctime = now;
+    inode.mtime = now;
+    inode.crtime = now;
+    inode.size_lo = (uint32_t)len;
+
+    while (remaining > 0 && block_index < BISCUITFS_N_DIRECT) {
+        uint32_t blk = alloc_block_host();
+        uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
+        size_t chunk;
+
+        if (!blk) return -1;
+
+        memset(blkbuf, 0, sizeof(blkbuf));
+        chunk = remaining > sizeof(blkbuf) ? sizeof(blkbuf) : remaining;
+        memcpy(blkbuf, data + offset, chunk);
+        write_block(blk, blkbuf);
+        inode.block[block_index++] = blk;
+        inode.blocks_lo += g_block_size / HOST_SECTOR_SIZE;
+        offset += chunk;
+        remaining -= chunk;
+    }
+
+    if (remaining != 0) return -1;
+    if (write_inode_host(ino, &inode) != 0) return -1;
+    return dir_add_entry_host(parent_ino, name, ino, BISCUITFS_FT_REG_FILE);
+}
+
+static int read_host_file(const char *path, uint8_t **data_out, size_t *size_out) {
+    FILE *fp;
+    long size;
+    uint8_t *data;
+
+    fp = fopen(path, "rb");
+    if (!fp) return -1;
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return -1;
+    }
+    size = ftell(fp);
+    if (size < 0) {
+        fclose(fp);
+        return -1;
+    }
+    rewind(fp);
+
+    data = (uint8_t *)malloc((size_t)size);
+    if (!data) {
+        fclose(fp);
+        return -1;
+    }
+
+    if (size != 0 && fread(data, 1, (size_t)size, fp) != (size_t)size) {
+        free(data);
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+    *data_out = data;
+    *size_out = (size_t)size;
+    return 0;
+}
+
+static int populate_standard_layout(const char *init_path, const char *fstab_path) {
+    biscuitfs_super_t sb;
+    uint32_t now;
+    uint32_t bin_ino = 0;
+    uint32_t etc_ino = 0;
+    uint8_t *data = NULL;
+    size_t size = 0;
+
+    load_superblock(&sb);
+    now = sb.wtime;
+
+    if (create_dir_host(BISCUITFS_ROOT_INO, "bin", now, &bin_ino) != 0) return -1;
+    if (create_dir_host(BISCUITFS_ROOT_INO, "etc", now, &etc_ino) != 0) return -1;
+
+    if (init_path) {
+        if (read_host_file(init_path, &data, &size) != 0) return -1;
+        if (create_file_host(bin_ino, "init", data, size, now) != 0) {
+            free(data);
+            return -1;
+        }
+        free(data);
+        data = NULL;
+    }
+
+    if (fstab_path) {
+        if (read_host_file(fstab_path, &data, &size) != 0) return -1;
+        if (create_file_host(etc_ino, "fstab", data, size, now) != 0) {
+            free(data);
+            return -1;
+        }
+        free(data);
+    }
+
+    return 0;
+}
+
 /* -------------------------------------------------------------------------
  * main
  * -------------------------------------------------------------------------*/
@@ -480,6 +860,10 @@ static void usage(const char *prog) {
         "Options:\n"
         "  -L <label>    volume label (max 16 chars)\n"
         "  -s <size-MB>  image size in MB for new image files (default: 64)\n"
+        "  -o <sector>   start sector inside a larger disk image\n"
+        "  -n <sectors>  size of the filesystem region in sectors\n"
+        "  -I <file>     install a host file as /bin/init\n"
+        "  -T <file>     install a host file as /etc/fstab\n"
         "  -j <blocks>   journal size in blocks (default: 2048 = 8 MB)\n"
         "  -F            force: do not prompt\n"
         "  -q            quiet output\n"
@@ -500,6 +884,10 @@ int main(int argc, char *argv[]) {
     uint32_t journal_blocks = BISCUITFS_JOURNAL_BLOCKS;
     int      force          = 0;
     const char *target      = NULL;
+    const char *install_init = NULL;
+    const char *install_fstab = NULL;
+    uint32_t offset_sectors = 0;
+    uint32_t region_sectors = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-L") == 0 && i + 1 < argc) {
@@ -512,6 +900,14 @@ int main(int argc, char *argv[]) {
             force = 1;
         } else if (strcmp(argv[i], "-q") == 0) {
             g_quiet = 1;
+        } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
+            install_init = argv[++i];
+        } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
+            install_fstab = argv[++i];
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            offset_sectors = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+            region_sectors = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "-h") == 0 ||
                    strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
@@ -535,6 +931,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: size must be between 1 and 65536 MB\n");
         return 1;
     }
+
+    g_fs_offset_bytes = (uint64_t)offset_sectors * HOST_SECTOR_SIZE;
 
     if (!force) {
         printf("This will overwrite '%s' with BiscuitFS.\n", target);
@@ -576,7 +974,11 @@ int main(int argc, char *argv[]) {
     long file_size = ftell(g_fp);
     rewind(g_fp);
 
-    g_blocks_total = (uint32_t)(file_size / BISCUITFS_BLOCK_SIZE);
+    if (region_sectors != 0) {
+        g_blocks_total = (uint32_t)(((uint64_t)region_sectors * HOST_SECTOR_SIZE) / BISCUITFS_BLOCK_SIZE);
+    } else {
+        g_blocks_total = (uint32_t)(((uint64_t)file_size - g_fs_offset_bytes) / BISCUITFS_BLOCK_SIZE);
+    }
     if (g_blocks_total < 64) {
         fprintf(stderr, "Error: image too small (need at least 64 blocks = 256 KB)\n");
         fclose(g_fp);
@@ -590,6 +992,14 @@ int main(int argc, char *argv[]) {
     }
 
     do_mkfs(label, journal_blocks);
+
+    if (install_init || install_fstab) {
+        if (populate_standard_layout(install_init, install_fstab) != 0) {
+            fprintf(stderr, "Error: failed to populate initial BlueyFS layout\n");
+            fclose(g_fp);
+            return 1;
+        }
+    }
 
     fclose(g_fp);
     return 0;

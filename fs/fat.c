@@ -234,6 +234,34 @@ done:
     return count;
 }
 
+static int fat_vfs_stat(const char *path, vfs_stat_t *out) {
+    if (!path || !out) return -1;
+    const char *fname = path;
+    const char *slash = strrchr(path, '/');
+    if (slash) fname = slash + 1;
+
+    char name83[12];
+    int ni = 0;
+    for (int i = 0; fname[i] && ni < 8; i++) {
+        char c = fname[i];
+        if (c == '.') break;
+        if (c >= 'a' && c <= 'z') c -= 32;
+        name83[ni++] = c;
+    }
+    name83[ni] = '\0';
+
+    fat16_dirent_t ent;
+    if (fat_find_root(name83, &ent) != 0) return -1;
+
+    memset(out, 0, sizeof(*out));
+    out->uid = 0;
+    out->gid = 0;
+    out->size = ent.file_size;
+    out->is_dir = (ent.attributes & FAT_ATTR_DIRECTORY) ? 1 : 0;
+    out->mode = out->is_dir ? (VFS_S_IFDIR | 0777) : (VFS_S_IFREG | 0777);
+    return 0;
+}
+
 static filesystem_t fat16_fs = {
     .name    = "fat16",
     .mount   = fat_vfs_mount,
@@ -244,6 +272,7 @@ static filesystem_t fat16_fs = {
     .readdir = fat_vfs_readdir,
     .mkdir   = NULL,
     .unlink  = NULL,
+    .stat    = fat_vfs_stat,
 };
 
 filesystem_t *fat_get_filesystem(void) {

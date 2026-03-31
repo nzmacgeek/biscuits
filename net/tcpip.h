@@ -172,10 +172,15 @@ typedef struct {
     uint32_t dns;
     uint8_t  mac[6];
     char     ifname[16];
+    uint32_t loopback_ip;
+    uint32_t loopback_mask;
+    uint8_t  loopback_enabled;
 } tcpip_config_t;
 
 void tcpip_init(void);
 void tcpip_set_config(uint32_t ip, uint32_t gw, uint32_t mask, uint32_t dns);
+void tcpip_set_loopback(uint32_t ip, uint32_t mask);
+int  tcpip_is_loopback_addr(uint32_t ip);
 const tcpip_config_t *tcpip_get_config(void);
 void tcpip_poll(void);           /* call periodically to drain the RX queue */
 

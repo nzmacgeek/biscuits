@@ -34,6 +34,8 @@ void timer_init(uint32_t freq) {
 
 uint32_t timer_get_ticks(void) { return ticks; }
 
+uint32_t timer_get_freq(void) { return timer_freq ? timer_freq : 1000; }
+
 void timer_sleep(uint32_t ms) {
     if (timer_freq == 0) return;
     uint32_t target = ticks + (ms * timer_freq / 1000);
