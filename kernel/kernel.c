@@ -32,6 +32,7 @@
 #include "signal.h"
 #include "syscall.h"
 #include "multiuser.h"
+#include "smp.h"
 #include "sysinfo.h"
 #include "tty.h"
 #include "elf.h"
@@ -52,6 +53,7 @@
 #include "../shell/shell.h"
 #include "syslog.h"
 #include "netcfg.h"
+#include "devev.h"
 
 // Kernel end symbol from linker script
 extern uint32_t kernel_end;
@@ -156,6 +158,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     kprintf("%s\n", MSG_IDT_INIT);
     kprintf("%s\n", MSG_ISR_INIT);
     kprintf("%s\n", MSG_IRQ_INIT);
+    smp_init();
 
     // Step 3: Timer - enables IRQ0, enables interrupts
     timer_init(1000);   // 1000 Hz = 1ms resolution
@@ -206,6 +209,9 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 13: Process management + scheduler
     process_init();
     scheduler_init();
+
+    // Step 13b: Device event channel (must be after process_init)
+    devev_init();
 
     // Create idle process (runs when nothing else is ready)
     process_t *idle = process_create("bandit-idle", idle_task, 0, 0);

@@ -178,6 +178,26 @@ I386_C_SOURCES = \
   drivers/net/ne2000.c \
   drivers/net/loopback.c \
   drivers/net/network.c \
+    kernel/syscall.c \
+    kernel/elf.c \
+    kernel/sha256.c \
+    kernel/rtc.c \
+    kernel/multiuser.c \
+    kernel/sysinfo.c \
+    kernel/smp.c \
+    kernel/tty.c \
+    kernel/swap.c \
+    kernel/syslog.c \
+    kernel/netcfg.c \
+    kernel/poll.c \
+    kernel/devev.c \
+    drivers/vga.c \
+    drivers/vt100.c \
+    drivers/keyboard.c \
+    drivers/ata.c \
+    drivers/driver.c \
+    drivers/net/ne2000.c \
+    drivers/net/network.c \
     fs/vfs.c \
     fs/fat.c \
     fs/blueyfs.c \

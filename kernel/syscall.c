@@ -5,6 +5,7 @@
 #include "../include/types.h"
 #include "../include/bluey.h"
 #include "../include/version.h"
+#include "../include/ports.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../drivers/vga.h"
@@ -21,6 +22,8 @@
 #include "kheap.h"
 #include "paging.h"
 #include "gdt.h"
+#include "poll.h"
+#include "devev.h"
 #include "../fs/vfs.h"
 
 extern void syscall_stub(void);
@@ -317,8 +320,18 @@ static int32_t sys_close(int fd) {
     return vfs_close(fd);
 }
 
-static int32_t sys_kill(uint32_t pid, int sig) {
-    return signal_send_pid(pid, sig);
+static int32_t sys_kill(int32_t pid, int sig) {
+    process_t *current;
+
+    if (pid > 0) return signal_send_pid((uint32_t)pid, sig);
+    if (pid == 0) {
+        /* Send to own process group */
+        current = process_current();
+        if (!current) return -BLUEY_EPERM;
+        return signal_send_pgrp(current->pgid, sig);
+    }
+    /* pid < 0: send to process group -pid */
+    return signal_send_pgrp((uint32_t)(-pid), sig);
 }
 
 static int32_t sys_execve(registers_t *regs,
@@ -432,6 +445,94 @@ static int32_t sys_gethostname(char *buf, size_t len) {
     return 0;
 }
 
+/* ---- Process groups ---------------------------------------------------- */
+
+static int32_t sys_setpgid(uint32_t pid, uint32_t pgid) {
+    return process_setpgid(pid, pgid);
+}
+
+static int32_t sys_getpgid(uint32_t pid) {
+    uint32_t pgid = process_getpgid(pid);
+    return pgid ? (int32_t)pgid : -BLUEY_EPERM;
+}
+
+static int32_t sys_getpgrp(void) {
+    process_t *p = process_current();
+    return p ? (int32_t)p->pgid : -BLUEY_EPERM;
+}
+
+/* ---- Mount / umount ---------------------------------------------------- */
+
+static int32_t sys_mount(const char *source, const char *target,
+                         const char *fstype, uint32_t flags,
+                         const void *data) {
+    (void)source; (void)flags; (void)data;
+    if (!target || !fstype) return -BLUEY_EFAULT;
+    return vfs_mount(target, fstype, 0);
+}
+
+static int32_t sys_umount2(const char *target, uint32_t flags) {
+    (void)flags;
+    if (!target) return -BLUEY_EFAULT;
+    return vfs_umount(target);
+}
+
+/* ---- Poll -------------------------------------------------------------- */
+
+static int32_t sys_poll(pollfd_t *fds, uint32_t nfds, int32_t timeout_ms) {
+    if (!fds) return -BLUEY_EFAULT;
+    return kernel_poll(fds, nfds, timeout_ms);
+}
+
+/* ---- Device event channel --------------------------------------------- */
+
+static int32_t sys_devev_open(void) {
+    return vfs_devev_open();
+}
+
+/* ---- Reboot / poweroff ------------------------------------------------- */
+
+/*
+ * sys_reboot - reboot or power off the machine.
+ *
+ * To avoid accidents the caller must supply two magic numbers:
+ *   magic1 = 0xfee1dead  ("feel dead" — you're about to shut down)
+ *   magic2 = 0x28121969  (28 Dec 1969 — the day before Unix epoch; a nod to
+ *                         the Linux reboot(2) API which uses the same values)
+ * cmd selects the action:
+ *   REBOOT_CMD_RESTART   (0x01234567) = reset the CPU
+ *   REBOOT_CMD_POWER_OFF (0x4321fedc) = power off (default)
+ */
+#define REBOOT_MAGIC1        0xfee1deadU
+#define REBOOT_MAGIC2        0x28121969U
+#define REBOOT_CMD_RESTART   0x01234567U
+#define REBOOT_CMD_POWER_OFF 0x4321fedcU
+
+static int32_t sys_reboot(uint32_t magic1, uint32_t magic2, uint32_t cmd) {
+    if (magic1 != REBOOT_MAGIC1 || magic2 != REBOOT_MAGIC2) return -BLUEY_EINVAL;
+
+    kprintf("[SYS]  Reboot/poweroff requested (cmd=0x%x) - bye bye!\n", cmd);
+    __asm__ volatile("cli");
+
+    if (cmd == REBOOT_CMD_RESTART) {
+        /* Keyboard controller CPU reset (works on real PC and QEMU) */
+        uint8_t val;
+        do { val = inb(0x64); } while (val & 0x02u);
+        outb(0x64, 0xFE);
+        /* Fallback: port 0xCF9 hard reset */
+        outb(0xCF9, 0x06u);
+    } else {
+        /* ACPI S5 poweroff — tried in order of most-to-least likely */
+        outw(0x604, 0x2000);
+        outw(0xB004, 0x2000);  /* older QEMU / Bochs */
+        outw(0x4004, 0x3400);  /* SeaBIOS */
+    }
+
+    /* Should never reach here */
+    for (;;) __asm__ volatile("hlt");
+    return 0;
+}
+
 // Main syscall dispatch function - called from syscall.asm
 // regs.eax = syscall number, regs.ebx = arg1, regs.ecx = arg2, regs.edx = arg3
 int32_t syscall_dispatch(registers_t *regs) {
@@ -452,7 +553,7 @@ int32_t syscall_dispatch(registers_t *regs) {
             ret = sys_close((int)regs->ebx);
             break;
         case SYS_KILL:
-            ret = sys_kill(regs->ebx, (int)regs->ecx);
+            ret = sys_kill((int32_t)regs->ebx, (int)regs->ecx);
             break;
         case SYS_EXIT:
             process_exit((int)regs->ebx);
@@ -525,6 +626,36 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_STAT:
         case SYS_GETDENTS:
             ret = -BLUEY_ENOSYS;
+            break;
+        /* ---- Process groups -------------------------------------------- */
+        case SYS_SETPGID:
+            ret = sys_setpgid(regs->ebx, regs->ecx);
+            break;
+        case SYS_GETPGID:
+            ret = sys_getpgid(regs->ebx);
+            break;
+        case SYS_GETPGRP:
+            ret = sys_getpgrp();
+            break;
+        /* ---- Mount / umount -------------------------------------------- */
+        case SYS_MOUNT:
+            ret = sys_mount((const char*)regs->ebx, (const char*)regs->ecx,
+                            (const char*)regs->edx, 0, NULL);
+            break;
+        case SYS_UMOUNT2:
+            ret = sys_umount2((const char*)regs->ebx, regs->ecx);
+            break;
+        /* ---- Poll ------------------------------------------------------- */
+        case SYS_POLL:
+            ret = sys_poll((pollfd_t*)regs->ebx, regs->ecx, (int32_t)regs->edx);
+            break;
+        /* ---- Device event channel --------------------------------------- */
+        case SYS_DEVEV_OPEN:
+            ret = sys_devev_open();
+            break;
+        /* ---- Reboot / poweroff ----------------------------------------- */
+        case SYS_REBOOT:
+            ret = sys_reboot(regs->ebx, regs->ecx, regs->edx);
             break;
         default:
             // Unknown syscall - don't crash, just return -1
