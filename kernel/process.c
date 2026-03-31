@@ -518,26 +518,38 @@ void process_enter_first_user(process_t *process) {
     paging_switch_directory(process->page_dir);
     regs = &process->saved_regs;
 
+    /* Move segment selector into 16-bit register from a memory operand
+     * to avoid register-size mismatches, then push the user-mode stack
+     * frame and iret into user space. Using local temporaries ensures
+     * GCC can generate valid memory/register operands for the asm. */
+    uint16_t ds_val = (uint16_t)regs->ds;
+    uint32_t ss_val = regs->ss;
+    uint32_t esp_val = regs->useresp;
+    uint32_t eflags_val = regs->eflags;
+    uint32_t cs_val = regs->cs;
+    uint32_t eip_val = regs->eip;
+
     __asm__ volatile (
-        "mov %[ds], %%ax\n\t"
-        "mov %%ax, %%ds\n\t"
-        "mov %%ax, %%es\n\t"
-        "mov %%ax, %%fs\n\t"
-        "mov %%ax, %%gs\n\t"
-        "push %[ss]\n\t"
-        "push %[esp]\n\t"
-        "push %[eflags]\n\t"
-        "push %[cs]\n\t"
-        "push %[eip]\n\t"
+        "movw %0, %%ax\n\t"
+        "movw %%ax, %%ds\n\t"
+        "movw %%ax, %%es\n\t"
+        "movw %%ax, %%fs\n\t"
+        "movw %%ax, %%gs\n\t"
+        : /* no outputs */
+        : "m" (ds_val)
+        : "ax", "memory"
+    );
+
+    __asm__ volatile (
+        "pushl %0\n\t"
+        "pushl %1\n\t"
+        "pushl %2\n\t"
+        "pushl %3\n\t"
+        "pushl %4\n\t"
         "iret\n\t"
         :
-        : [ds] "r" ((uint16_t)regs->ds),
-          [ss] "r" (regs->ss),
-          [esp] "r" (regs->useresp),
-          [eflags] "r" (regs->eflags),
-          [cs] "r" (regs->cs),
-          [eip] "r" (regs->eip)
-        : "eax", "memory"
+        : "r" (ss_val), "r" (esp_val), "r" (eflags_val), "r" (cs_val), "r" (eip_val)
+        : "memory"
     );
 
     for (;;) __asm__ volatile ("hlt");

@@ -5,15 +5,20 @@
 *.o
 *.d
 
-# Kernel ELF and disk images
+# Central build output tree
+build/
+
+# Legacy root-level build outputs
 blueyos.elf
 blueyos.iso
-
-# ISO build directory
+blueyos-disk.img
+root.img
 isodir/
-
-# Host-side compiled tools
+.boot-stage/
 tools/mkfs_blueyfs
+tools/mkswap_blueyfs
+tools/fsck_blueyfs
+tools/list_blueyfs
 
 # Editor junk
 *.swp
@@ -25,6 +30,7 @@ tools/mkfs_blueyfs
 *.log
 *.out
 *.pid
+*.tmp
 qemu-status.txt
 qemu-root/
 pram-q800.img
@@ -33,3 +39,11 @@ typescript
 # Local machine firmware/images
 *.ROM
 user/init.elf
+
+# Local editor configuration
+.vscode/
+
+# Legacy qemu/debug artifacts left in repo root by older scripts
+qemu*.log
+qemu*.out
+qemu*.pid

@@ -207,32 +207,41 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
      * the mount table, list the root directory and /bin to help diagnose
      * missing init payloads created by the host mkfs tool. */
     {
+        const int rootdbg_max_entries = 16;
+        vfs_dirent_t *entries = (vfs_dirent_t *)kheap_alloc(sizeof(vfs_dirent_t) * rootdbg_max_entries, 0);
+
         kprintf("[ROOTDBG] Dumping VFS mount table:\n");
         vfs_print_mounts();
 
         kprintf("[ROOTDBG] Listing root ('/') entries:\n");
-        vfs_dirent_t root_entries[128];
-        int rn = vfs_readdir("/", root_entries, 128);
-        if (rn < 0) {
-            kprintf("[ROOTDBG] vfs_readdir('/') failed\n");
-        } else if (rn == 0) {
-            kprintf("[ROOTDBG] root is empty (0 entries)\n");
+        if (!entries) {
+            kprintf("[ROOTDBG] unable to allocate entry buffer\n");
         } else {
-            for (int i = 0; i < rn; i++) {
-                kprintf("  %s%s\n", root_entries[i].name, root_entries[i].is_dir ? "/" : "");
+            int rn = vfs_readdir("/", entries, rootdbg_max_entries);
+            if (rn < 0) {
+            kprintf("[ROOTDBG] vfs_readdir('/') failed\n");
+            } else if (rn == 0) {
+            kprintf("[ROOTDBG] root is empty (0 entries)\n");
+            } else {
+                for (int i = 0; i < rn; i++) {
+                    kprintf("  %s%s\n", entries[i].name, entries[i].is_dir ? "/" : "");
+                }
             }
         }
 
         kprintf("[ROOTDBG] Listing /bin entries and checking /bin/init:\n");
-        vfs_dirent_t bin_entries[128];
-        int bn = vfs_readdir("/bin", bin_entries, 128);
-        if (bn < 0) {
-            kprintf("[ROOTDBG] vfs_readdir('/bin') failed\n");
-        } else if (bn == 0) {
-            kprintf("[ROOTDBG] /bin is empty (0 entries)\n");
+        if (!entries) {
+            kprintf("[ROOTDBG] unable to allocate entry buffer\n");
         } else {
-            for (int i = 0; i < bn; i++) {
-                kprintf("  %s%s\n", bin_entries[i].name, bin_entries[i].is_dir ? "/" : "");
+            int bn = vfs_readdir("/bin", entries, rootdbg_max_entries);
+            if (bn < 0) {
+            kprintf("[ROOTDBG] vfs_readdir('/bin') failed\n");
+            } else if (bn == 0) {
+            kprintf("[ROOTDBG] /bin is empty (0 entries)\n");
+            } else {
+                for (int i = 0; i < bn; i++) {
+                    kprintf("  %s%s\n", entries[i].name, entries[i].is_dir ? "/" : "");
+                }
             }
         }
 
@@ -250,6 +259,8 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
             kprintf("[ROOTDBG] /bin/init opened successfully (fd=%d)\n", fd);
             vfs_close(fd);
         }
+
+        if (entries) kheap_free(entries);
     }
 
     // Step 12: Syscall interface (int 0x80)

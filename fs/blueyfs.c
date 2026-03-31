@@ -28,6 +28,7 @@
 #include "../kernel/process.h"
 #include "blueyfs.h"
 #include "vfs.h"
+#include "../kernel/syslog.h"
 
 // ---------------------------------------------------------------------------
 // Runtime state
@@ -66,6 +67,50 @@ typedef struct {
 } biscuitfs_fd_t;
 
 static biscuitfs_fd_t fd_table[BISCUITFS_MAX_OPEN];
+
+#define BISCUITFS_DBG_CANARY 0xB15CA9E5u
+#define BISCUITFS_BLOCK_BUF_POOL_SIZE 8u
+
+static uint8_t biscuitfs_block_buf_pool[BISCUITFS_BLOCK_BUF_POOL_SIZE][BISCUITFS_BLOCK_SIZE];
+static uint8_t biscuitfs_block_buf_used[BISCUITFS_BLOCK_BUF_POOL_SIZE];
+
+static int biscuitfs_dbg_log_limited(int *counter, int limit) {
+    if (*counter >= limit) return 0;
+    (*counter)++;
+    return 1;
+}
+
+static void biscuitfs_dbg_check_canary(const char *func,
+                                       uint32_t head,
+                                       uint32_t tail) {
+    if (head == BISCUITFS_DBG_CANARY && tail == BISCUITFS_DBG_CANARY) return;
+    kprintf("[BISCUITFS DBG] %s stack canary tripped head=0x%x tail=0x%x\n",
+            func, head, tail);
+}
+
+static uint8_t *biscuitfs_alloc_block_buf(const char *func) {
+    for (uint32_t i = 0; i < BISCUITFS_BLOCK_BUF_POOL_SIZE; i++) {
+        if (!biscuitfs_block_buf_used[i]) {
+            biscuitfs_block_buf_used[i] = 1;
+            return biscuitfs_block_buf_pool[i];
+        }
+    }
+
+    kprintf("[BISCUITFS DBG] %s exhausted %u scratch block buffers\n",
+            func, (unsigned)BISCUITFS_BLOCK_BUF_POOL_SIZE);
+    return NULL;
+}
+
+static void biscuitfs_free_block_buf(uint8_t *buf) {
+    if (!buf) return;
+
+    for (uint32_t i = 0; i < BISCUITFS_BLOCK_BUF_POOL_SIZE; i++) {
+        if (buf == biscuitfs_block_buf_pool[i]) {
+            biscuitfs_block_buf_used[i] = 0;
+            return;
+        }
+    }
+}
 
 static void biscuitfs_get_current_creds(uint32_t *uid, uint32_t *gid) {
     process_t *process = process_current();
@@ -202,24 +247,34 @@ void biscuitfs_journal_replay(void) {
 // Read the group descriptor for a given block group
 static void read_bgd(uint32_t group) {
     if (group >= MAX_GROUPS) return;
-    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
     uint32_t bgd_block = 1;  /* BGD table starts at block 1 */
 
-    if (read_block(bgd_block, blkbuf) != 0) return;
+    if (!blkbuf) return;
+    if (read_block(bgd_block, blkbuf) != 0) {
+        biscuitfs_free_block_buf(blkbuf);
+        return;
+    }
 
     // Each BGD is 32 bytes; pack them into one block (up to 128 groups per block)
     biscuitfs_bgd_t *table = (biscuitfs_bgd_t *)blkbuf;
     memcpy(&bgd_table[group], &table[group], sizeof(biscuitfs_bgd_t));
+    biscuitfs_free_block_buf(blkbuf);
 }
 
 // Write the group descriptor for a group back to disk (journalled)
 static void write_bgd(uint32_t group) {
     if (group >= MAX_GROUPS) return;
-    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
-    if (read_block(1, blkbuf) != 0) return;
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+    if (!blkbuf) return;
+    if (read_block(1, blkbuf) != 0) {
+        biscuitfs_free_block_buf(blkbuf);
+        return;
+    }
     biscuitfs_bgd_t *table = (biscuitfs_bgd_t *)blkbuf;
     memcpy(&table[group], &bgd_table[group], sizeof(biscuitfs_bgd_t));
     biscuitfs_journal_write_block(1, blkbuf);
+    biscuitfs_free_block_buf(blkbuf);
 }
 
 // Return the block number of the inode table block containing inode_no
@@ -247,10 +302,15 @@ static int read_inode(uint32_t inode_no, biscuitfs_inode_t *out) {
     uint32_t blk, off;
     if (locate_inode(inode_no, &blk, &off) != 0) return -1;
 
-    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
-    if (read_block(blk, blkbuf) != 0) return -1;
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+    if (!blkbuf) return -1;
+    if (read_block(blk, blkbuf) != 0) {
+        biscuitfs_free_block_buf(blkbuf);
+        return -1;
+    }
 
     memcpy(out, blkbuf + off, sizeof(biscuitfs_inode_t));
+    biscuitfs_free_block_buf(blkbuf);
     return 0;
 }
 
@@ -259,11 +319,16 @@ static int write_inode(uint32_t inode_no, const biscuitfs_inode_t *in) {
     uint32_t blk, off;
     if (locate_inode(inode_no, &blk, &off) != 0) return -1;
 
-    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
-    if (read_block(blk, blkbuf) != 0) return -1;
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+    if (!blkbuf) return -1;
+    if (read_block(blk, blkbuf) != 0) {
+        biscuitfs_free_block_buf(blkbuf);
+        return -1;
+    }
 
     memcpy(blkbuf + off, in, sizeof(biscuitfs_inode_t));
     biscuitfs_journal_write_block(blk, blkbuf);
+    biscuitfs_free_block_buf(blkbuf);
     return 0;
 }
 
@@ -443,7 +508,9 @@ static uint32_t dir_lookup(uint32_t dir_ino, const char *name) {
     uint32_t namelen = (uint32_t)strlen(name);
     uint32_t offset  = 0;
     uint32_t size    = inode.size_lo;
-    uint8_t  blkbuf[BISCUITFS_BLOCK_SIZE];
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+
+    if (!blkbuf) return 0;
 
     while (offset < size) {
         uint32_t blk_n = offset / fs_block_size;
@@ -458,12 +525,14 @@ static uint32_t dir_lookup(uint32_t dir_ino, const char *name) {
         biscuitfs_dirent_t *de = (biscuitfs_dirent_t *)(blkbuf + blk_off);
         if (de->inode && de->name_len == namelen &&
             memcmp(de->name, name, namelen) == 0) {
+            biscuitfs_free_block_buf(blkbuf);
             return de->inode;
         }
 
         if (de->rec_len == 0) break;
         offset += de->rec_len;
     }
+    biscuitfs_free_block_buf(blkbuf);
     return 0;
 }
 
@@ -474,6 +543,8 @@ static uint32_t path_to_inode(const char *path) {
     uint32_t cur_ino = BISCUITFS_ROOT_INO;
 
     if (path[1] == '\0') return cur_ino;  /* root */
+
+    kprintf("[BISCUITFS DBG] path_to_inode('%s') start root_ino=%u\n", path, cur_ino);
 
     // Walk each component
     char component[256];
@@ -492,15 +563,79 @@ static uint32_t path_to_inode(const char *path) {
         }
         if (!component[0]) continue;  /* skip consecutive slashes */
 
-        cur_ino = dir_lookup(cur_ino, component);
-        if (!cur_ino) return 0;
+        uint32_t next = dir_lookup(cur_ino, component);
+        kprintf("[BISCUITFS DBG]  component='%s' parent_ino=%u -> child_ino=%u\n",
+            component, cur_ino, next);
+        if (!next) {
+            kprintf("[BISCUITFS DBG]  -> component '%s' not found under ino=%u\n",
+                component, cur_ino);
+            return 0;
+        }
+        cur_ino = next;
     }
     return cur_ino;
+}
+
+// Diagnostic helper: dump a directory's raw entries
+static void biscuitfs_dump_dir(uint32_t dir_ino, const char *label) {
+    static int dbg_calls;
+    biscuitfs_inode_t din;
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+
+    if (biscuitfs_dbg_log_limited(&dbg_calls, 32)) {
+        kprintf("[BISCUITFS DBG] dump_dir enter dir_ino=%u label_ptr=%p fs_block_size=%u caller=%p\n",
+                dir_ino, label, fs_block_size, __builtin_return_address(0));
+    }
+
+    if (!blkbuf) return;
+
+    if (read_inode(dir_ino, &din) != 0) {
+        kprintf("[BISCUITFS DBG] dump_dir %s: read_inode failed\n", label);
+        biscuitfs_free_block_buf(blkbuf);
+        return;
+    }
+    kprintf("[BISCUITFS DBG] dump_dir %s: ino=%u size=%u blocks=%u\n",
+            label, dir_ino, din.size_lo, din.blocks_lo);
+    uint32_t offset = 0;
+    while (offset < din.size_lo) {
+        if (fs_block_size == 0) {
+            kprintf("[BISCUITFS DBG] dump_dir fs_block_size=0 dir_ino=%u offset=%u size=%u\n",
+                    dir_ino, offset, din.size_lo);
+            biscuitfs_free_block_buf(blkbuf);
+            return;
+        }
+        uint32_t blk_n = offset / fs_block_size;
+        uint32_t blk_off = offset % fs_block_size;
+        if (blk_off == 0) {
+            uint32_t phys = inode_get_block(&din, blk_n);
+            if (!phys) break;
+            if (biscuitfs_dbg_log_limited(&dbg_calls, 32)) {
+                kprintf("[BISCUITFS DBG] dump_dir loop dir_ino=%u offset=%u blk_n=%u blk_off=%u phys=%u size=%u\n",
+                        dir_ino, offset, blk_n, blk_off, phys, din.size_lo);
+            }
+            if (read_block(phys, blkbuf) != 0) break;
+        }
+        biscuitfs_dirent_t *de = (biscuitfs_dirent_t *)(blkbuf + blk_off);
+        if (de->rec_len == 0) break;
+        if (de->inode) {
+            char namebuf[256];
+            uint32_t nlen = de->name_len;
+            if (nlen >= sizeof(namebuf)) nlen = sizeof(namebuf) - 1;
+            memcpy(namebuf, de->name, nlen);
+            namebuf[nlen] = '\0';
+            kprintf("[BISCUITFS DBG]  %s: entry name='%s' ino=%u type=%u rec_len=%u\n",
+                    label, namebuf, de->inode, de->file_type, de->rec_len);
+        }
+        offset += de->rec_len;
+    }
+    biscuitfs_free_block_buf(blkbuf);
 }
 
 // Add a directory entry (name -> inode) to a directory
 static int dir_add_entry(uint32_t dir_ino, const char *name,
                          uint32_t ino, uint8_t ftype) {
+    static int dbg_calls;
+    int own_txn = 0;
     biscuitfs_inode_t dir_inode;
     if (read_inode(dir_ino, &dir_inode) != 0) return -1;
 
@@ -508,9 +643,16 @@ static int dir_add_entry(uint32_t dir_ino, const char *name,
     // Align record length to 4 bytes
     uint16_t needed = (uint16_t)((BISCUITFS_DIRENT_MIN + namelen + 3) & ~3U);
 
-    uint8_t  blkbuf[BISCUITFS_BLOCK_SIZE];
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
     uint32_t size     = dir_inode.size_lo;
     int      inserted = 0;
+
+    if (!blkbuf) return -1;
+
+    if (biscuitfs_dbg_log_limited(&dbg_calls, 24)) {
+        kprintf("[BISCUITFS DBG] dir_add_entry enter dir_ino=%u name_ptr=%p ino=%u ftype=%u size=%u fs_block_size=%u\n",
+                dir_ino, name, ino, ftype, size, fs_block_size);
+    }
 
     // Scan existing directory blocks for a hole
     for (uint32_t b = 0; b * fs_block_size < size; b++) {
@@ -539,9 +681,12 @@ static int dir_add_entry(uint32_t dir_ino, const char *name,
                 ne->file_type = ftype;
                 memcpy(ne->name, name, namelen);
 
-                biscuitfs_journal_begin();
+                if (jnl_count == 0) {
+                    biscuitfs_journal_begin();
+                    own_txn = 1;
+                }
                 biscuitfs_journal_write_block(phys, blkbuf);
-                biscuitfs_journal_commit();
+                if (own_txn) biscuitfs_journal_commit();
                 inserted = 1;
                 break;
             }
@@ -553,9 +698,12 @@ static int dir_add_entry(uint32_t dir_ino, const char *name,
     if (!inserted) {
         // Allocate a new block for the directory
         uint32_t new_blk = alloc_block();
-        if (!new_blk) return -1;
+        if (!new_blk) {
+            biscuitfs_free_block_buf(blkbuf);
+            return -1;
+        }
 
-        memset(blkbuf, 0, sizeof(blkbuf));
+        memset(blkbuf, 0, BISCUITFS_BLOCK_SIZE);
         biscuitfs_dirent_t *de = (biscuitfs_dirent_t *)blkbuf;
         de->inode     = ino;
         de->rec_len   = (uint16_t)fs_block_size;
@@ -563,18 +711,25 @@ static int dir_add_entry(uint32_t dir_ino, const char *name,
         de->file_type = ftype;
         memcpy(de->name, name, namelen);
 
-        if (fs_block_size == 0) return -1;
+        if (fs_block_size == 0) {
+            biscuitfs_free_block_buf(blkbuf);
+            return -1;
+        }
         uint32_t blk_n = dir_inode.size_lo / fs_block_size;
         inode_set_block(&dir_inode, blk_n, new_blk);
 
         dir_inode.size_lo += fs_block_size;
         dir_inode.blocks_lo += fs_sectors_per_block;
 
-        biscuitfs_journal_begin();
+        if (jnl_count == 0) {
+            biscuitfs_journal_begin();
+            own_txn = 1;
+        }
         biscuitfs_journal_write_block(new_blk, blkbuf);
         write_inode(dir_ino, &dir_inode);
-        biscuitfs_journal_commit();
+        if (own_txn) biscuitfs_journal_commit();
     }
+    biscuitfs_free_block_buf(blkbuf);
     return 0;
 }
 
@@ -624,10 +779,29 @@ static int biscuitfs_mount_cb(const char *mountpoint, uint32_t start_lba) {
     kprintf("[BISCUITFS] Mounted '%.*s' (%d blocks, %d inodes free)\n",
             (int)sizeof(sb.volume_name), sb.volume_name,
             sb.free_blocks, sb.free_inodes);
+    // Post-mount diagnostic: dump root and /bin directory entries
+    biscuitfs_dump_dir(BISCUITFS_ROOT_INO, "/");
+    {
+        uint32_t bin_ino = path_to_inode("/bin");
+        kprintf("[BISCUITFS DBG] /bin inode at mount-time = %u\n", bin_ino);
+        if (bin_ino) biscuitfs_dump_dir(bin_ino, "/bin");
+    }
     return 0;
 }
 
 static int biscuitfs_open_cb(const char *path, int flags) {
+    static int dbg_calls;
+    struct {
+        uint32_t head;
+        char buf[256];
+        uint32_t tail;
+    } parent_guard = { BISCUITFS_DBG_CANARY, {0}, BISCUITFS_DBG_CANARY };
+
+    if (biscuitfs_dbg_log_limited(&dbg_calls, 48)) {
+        kprintf("[BISCUITFS DBG] open enter path_ptr=%p flags=0x%x caller=%p fs_block_size=%u\n",
+                path, flags, __builtin_return_address(0), fs_block_size);
+    }
+
     uint32_t ino = path_to_inode(path);
     if (!ino) {
         if (strcmp(path, "/bin/init") == 0 || strcmp(path, "/bin/bash") == 0 ||
@@ -655,16 +829,20 @@ static int biscuitfs_open_cb(const char *path, int flags) {
         biscuitfs_get_current_creds(&uid, &gid);
 
         // Add to parent directory
-        char parent[256], *slash;
-        strncpy(parent, path, sizeof(parent) - 1);
-        parent[sizeof(parent) - 1] = '\0';
-        slash = strrchr(parent, '/');
+        char *slash;
+        strncpy(parent_guard.buf, path, sizeof(parent_guard.buf) - 1);
+        parent_guard.buf[sizeof(parent_guard.buf) - 1] = '\0';
+        slash = strrchr(parent_guard.buf, '/');
         const char *basename = path;
         if (slash) {
             *slash   = '\0';
             basename = slash + 1;
         }
-        uint32_t dir_ino = slash ? path_to_inode(parent[0] ? parent : "/")
+        if (biscuitfs_dbg_log_limited(&dbg_calls, 48)) {
+            kprintf("[BISCUITFS DBG] open create basename_ptr=%p slash=%p parent_buf='%s'\n",
+                    basename, slash, parent_guard.buf);
+        }
+        uint32_t dir_ino = slash ? path_to_inode(parent_guard.buf[0] ? parent_guard.buf : "/")
                                  : BISCUITFS_ROOT_INO;
         if (!dir_ino) { biscuitfs_journal_abort(); return -1; }
 
@@ -679,7 +857,10 @@ static int biscuitfs_open_cb(const char *path, int flags) {
         inode.gid = (uint16_t)file_gid;
 
         write_inode(ino, &inode);
-        dir_add_entry(dir_ino, basename, ino, BISCUITFS_FT_REG_FILE);
+        if (dir_add_entry(dir_ino, basename, ino, BISCUITFS_FT_REG_FILE) != 0) {
+            biscuitfs_journal_abort();
+            return -1;
+        }
         biscuitfs_journal_commit();
     }
 
@@ -700,28 +881,51 @@ static int biscuitfs_open_cb(const char *path, int flags) {
             return i;
         }
     }
+    biscuitfs_dbg_check_canary("biscuitfs_open_cb", parent_guard.head, parent_guard.tail);
     kprintf("[BISCUITFS] open fd-table full for %s\n", path);
     return -1;
 }
 
 static int biscuitfs_read_cb(int fd, uint8_t *buf, size_t len) {
+    static int dbg_calls;
     if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
     biscuitfs_fd_t *f = &fd_table[fd];
 
-    if (f->offset >= f->size) return 0;   /* EOF */
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+
+    if (!blkbuf) return -1;
+
+    if (biscuitfs_dbg_log_limited(&dbg_calls, 32)) {
+        kprintf("[BISCUITFS DBG] read enter fd=%d buf_ptr=%p len=%u ino=%u offset=%u size=%u fs_block_size=%u\n",
+                fd, buf, (unsigned)len, f->inode_no, f->offset, f->size, fs_block_size);
+    }
+
+    if (f->offset >= f->size) {
+        biscuitfs_free_block_buf(blkbuf);
+        return 0;
+    }
 
     uint32_t remaining = f->size - f->offset;
     if (len > remaining) len = remaining;
 
     uint32_t done = 0;
-    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
 
     biscuitfs_inode_t inode;
     read_inode(f->inode_no, &inode);
 
     while (done < len) {
+        if (fs_block_size == 0) {
+            kprintf("[BISCUITFS DBG] read fs_block_size=0 fd=%d done=%u offset=%u size=%u ino=%u\n",
+                    fd, done, f->offset, f->size, f->inode_no);
+            biscuitfs_free_block_buf(blkbuf);
+            return (int)done;
+        }
         uint32_t blk_n   = f->offset / fs_block_size;
         uint32_t blk_off = f->offset % fs_block_size;
+        if (biscuitfs_dbg_log_limited(&dbg_calls, 32)) {
+            kprintf("[BISCUITFS DBG] read loop fd=%d done=%u blk_n=%u blk_off=%u offset=%u size=%u\n",
+                    fd, done, blk_n, blk_off, f->offset, f->size);
+        }
         uint32_t phys    = inode_get_block(&inode, blk_n);
         if (!phys) break;
         if (read_block(phys, blkbuf) != 0) break;
@@ -734,6 +938,64 @@ static int biscuitfs_read_cb(int fd, uint8_t *buf, size_t len) {
         done      += chunk;
         f->offset += chunk;
     }
+    biscuitfs_free_block_buf(blkbuf);
+    return (int)done;
+}
+
+static int biscuitfs_read_at_cb(int fd, uint8_t *buf, size_t len, uint32_t offset) {
+    static int dbg_calls;
+    if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    biscuitfs_fd_t *f = &fd_table[fd];
+
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+
+    if (!blkbuf) return -1;
+
+    if (biscuitfs_dbg_log_limited(&dbg_calls, 32)) {
+        kprintf("[BISCUITFS DBG] read_at enter fd=%d buf_ptr=%p len=%u offset=%u ino=%u size=%u fs_block_size=%u\n",
+                fd, buf, (unsigned)len, offset, f->inode_no, f->size, fs_block_size);
+    }
+
+    if (offset >= f->size) {
+        biscuitfs_free_block_buf(blkbuf);
+        return 0;
+    }
+
+    uint32_t remaining = f->size - offset;
+    if (len > remaining) len = remaining;
+
+    uint32_t done = 0;
+
+    biscuitfs_inode_t inode;
+    read_inode(f->inode_no, &inode);
+
+    uint32_t local_off = offset;
+    while (done < len) {
+        if (fs_block_size == 0) {
+            kprintf("[BISCUITFS DBG] read_at fs_block_size=0 fd=%d done=%u local_off=%u size=%u ino=%u\n",
+                    fd, done, local_off, f->size, f->inode_no);
+            biscuitfs_free_block_buf(blkbuf);
+            return (int)done;
+        }
+        uint32_t blk_n   = local_off / fs_block_size;
+        uint32_t blk_off = local_off % fs_block_size;
+        if (biscuitfs_dbg_log_limited(&dbg_calls, 32)) {
+            kprintf("[BISCUITFS DBG] read_at loop fd=%d done=%u blk_n=%u blk_off=%u local_off=%u size=%u\n",
+                    fd, done, blk_n, blk_off, local_off, f->size);
+        }
+        uint32_t phys    = inode_get_block(&inode, blk_n);
+        if (!phys) break;
+        if (read_block(phys, blkbuf) != 0) break;
+
+        uint32_t chunk = (uint32_t)(len - done);
+        if (chunk > fs_block_size - blk_off)
+            chunk = fs_block_size - blk_off;
+
+        memcpy(buf + done, blkbuf + blk_off, chunk);
+        done += chunk;
+        local_off += chunk;
+    }
+    biscuitfs_free_block_buf(blkbuf);
     return (int)done;
 }
 
@@ -741,8 +1003,18 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
     if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
     biscuitfs_fd_t *f = &fd_table[fd];
 
+    /* Instrumentation: record which caller invoked BiscuitFS write. This
+     * helps correlate write attempts with syslog flush activity when
+     * tracking memory corruption sources. */
+    void *caller = __builtin_return_address(0);
+    syslog_record_caller(caller);
+    kprintf("[BISCUITFS DBG] write caller=%p fd=%d len=%u ino=%u\n",
+            caller, fd, (unsigned)len, f->inode_no);
+
     uint32_t done = 0;
-    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+
+    if (!blkbuf) return -1;
 
     biscuitfs_inode_t inode;
     read_inode(f->inode_no, &inode);
@@ -757,9 +1029,8 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
         if (!phys) {
             phys = alloc_block();
             if (!phys) break;
-            uint8_t empty[BISCUITFS_BLOCK_SIZE];
-            memset(empty, 0, sizeof(empty));
-            write_block(phys, empty);
+            memset(blkbuf, 0, BISCUITFS_BLOCK_SIZE);
+            write_block(phys, blkbuf);
             inode_set_block(&inode, blk_n, phys);
             inode.blocks_lo += fs_sectors_per_block;
         }
@@ -781,6 +1052,7 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
     f->size = inode.size_lo;
     write_inode(f->inode_no, &inode);
     biscuitfs_journal_commit();
+    biscuitfs_free_block_buf(blkbuf);
 
     return (int)done;
 }
@@ -886,8 +1158,12 @@ static int biscuitfs_mkdir_cb(const char *path) {
         return -1;
     }
 
-    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
-    memset(blkbuf, 0, sizeof(blkbuf));
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+    if (!blkbuf) {
+        biscuitfs_journal_abort();
+        return -1;
+    }
+    memset(blkbuf, 0, BISCUITFS_BLOCK_SIZE);
 
     // "." entry
     biscuitfs_dirent_t *dot = (biscuitfs_dirent_t *)blkbuf;
@@ -914,8 +1190,13 @@ static int biscuitfs_mkdir_cb(const char *path) {
     write_inode(ino, &inode);
 
     // Add entry to parent
-    dir_add_entry(parent_ino, name, ino, BISCUITFS_FT_DIR);
+    if (dir_add_entry(parent_ino, name, ino, BISCUITFS_FT_DIR) != 0) {
+        biscuitfs_free_block_buf(blkbuf);
+        biscuitfs_journal_abort();
+        return -1;
+    }
 
+    biscuitfs_free_block_buf(blkbuf);
     biscuitfs_journal_commit();
     return 0;
 }
@@ -1014,6 +1295,7 @@ static filesystem_t biscuitfs_driver = {
     .mount   = biscuitfs_mount_cb,
     .open    = biscuitfs_open_cb,
     .read    = biscuitfs_read_cb,
+    .read_at = biscuitfs_read_at_cb,
     .write   = biscuitfs_write_cb,
     .close   = biscuitfs_close_cb,
     .readdir = biscuitfs_readdir_cb,

@@ -39,6 +39,7 @@
 typedef struct {
     uint32_t seq;       /* monotonically increasing sequence number */
     uint8_t  level;     /* LOG_* severity */
+    uint8_t  _pad[3];   /* padding for alignment */
     char     tag[16];   /* subsystem tag, e.g. "KERN", "NET", "FS" */
     char     msg[SYSLOG_MSG_MAX];
 } syslog_entry_t;
@@ -72,3 +73,9 @@ void syslog_dmesg(void);
 
 // Return the number of entries currently in the ring buffer.
 uint32_t syslog_count(void);
+
+// Lightweight hook for other subsystems to record a caller into the
+// syslog flush history buffer. Callers should pass their return address
+// (e.g. __builtin_return_address(0)). This is useful for short-lived
+// instrumentation while debugging corruption sources.
+void syslog_record_caller(void *caller);

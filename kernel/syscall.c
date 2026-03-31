@@ -498,19 +498,18 @@ static int32_t sys_rmdir(const char *path) {
 static int32_t sys_lseek(int fd, int32_t offset, int whence) {
     if (fd < 0) return -BLUEY_EBADF;
 
-    /* Validate whence for POSIX-like semantics. Only SEEK_SET/SEEK_CUR/SEEK_END
-     * are valid. Invalid whence should yield -EINVAL. */
-    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
+    /* Validate whence for POSIX-like semantics. Only VFS_SEEK_SET/VFS_SEEK_CUR/
+     * VFS_SEEK_END are valid. Invalid whence should yield -EINVAL. */
+    if (whence != VFS_SEEK_SET && whence != VFS_SEEK_CUR && whence != VFS_SEEK_END) {
         return -BLUEY_EINVAL;
     }
 
-    /* For SEEK_SET, a negative offset is always invalid and should be EINVAL. */
-    if (whence == SEEK_SET && offset < 0) {
+    /* For VFS_SEEK_SET, a negative offset is always invalid and should be EINVAL. */
+    if (whence == VFS_SEEK_SET && offset < 0) {
         return -BLUEY_EINVAL;
     }
 
-    int32_t r = vfs_lseek(fd, offset, whence);
-    /* At this point, argument-related issues have been filtered. Any remaining
+    /* Delegate to VFS and return its result (or error code). */
     return vfs_lseek(fd, offset, whence);
 }
 

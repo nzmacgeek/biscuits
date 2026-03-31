@@ -16,6 +16,7 @@
 #include "../fs/vfs.h"
 #include "syslog.h"
 #include <stdarg.h>
+#include "kheap.h"
 
 // ---------------------------------------------------------------------------
 // Ring buffer state
@@ -32,6 +33,16 @@ static uint32_t       syslog_count_val = 0;
 static uint32_t       syslog_seq   = 0;
 static int            syslog_ready = 0;
 
+/* Persistent flush history (records recent callers of syslog_flush_to_fs) */
+#define FLUSH_HIST_ENTRIES 64
+typedef struct {
+    uint32_t seq;    /* syslog sequence number at time of flush */
+    void    *caller; /* return address of caller */
+} flush_record_t;
+static flush_record_t syslog_flush_hist[FLUSH_HIST_ENTRIES];
+static uint32_t syslog_flush_hist_head = 0;
+static uint32_t syslog_flush_hist_count = 0;
+
 // Path where we write the kernel log on the mounted filesystem
 #define KERNEL_LOG_PATH  "/var/log/kernel.log"
 
@@ -45,6 +56,17 @@ static void syslog_itoa(uint32_t v, char *buf, int base, int pad) {
     static const char digits[] = "0123456789abcdef";
     char tmp[32];
     int  i = 0;
+    /* Defensive guard: avoid division-by-zero if caller passes base==0.
+     * Log caller to VGA (avoid calling syslog to prevent recursion) and
+     * fall back to base 10.
+     */
+    if (base == 0) {
+        void *caller = __builtin_return_address(0);
+        vga_set_color(VGA_LIGHT_BROWN, VGA_BLACK);
+        kprintf("[SYSLOG DBG] itoa called with base=0 from %p\n", caller);
+        vga_set_color(VGA_WHITE, VGA_BLACK);
+        base = 10;
+    }
     if (v == 0) { tmp[i++] = '0'; }
     while (v) { tmp[i++] = digits[v % (uint32_t)base]; v /= (uint32_t)base; }
     while (i < pad) tmp[i++] = '0';
@@ -203,11 +225,43 @@ void syslog_dmesg(void) {
     kprintf("-- end of kernel log --\n");
 }
 
+// Lightweight helper to let other subsystems record a caller address into
+// the persistent syslog flush history buffer. Kept tiny to avoid heavy
+// dependencies or recursion into syslog helpers.
+void syslog_record_caller(void *caller) {
+    uint32_t fh_idx = syslog_flush_hist_head % FLUSH_HIST_ENTRIES;
+    syslog_flush_hist[fh_idx].seq = syslog_seq;
+    syslog_flush_hist[fh_idx].caller = caller;
+    syslog_flush_hist_head++;
+    if (syslog_flush_hist_count < FLUSH_HIST_ENTRIES) syslog_flush_hist_count++;
+}
+
 // ---------------------------------------------------------------------------
 // syslog_flush_to_fs — write ring buffer to /var/log/kernel.log
 // ---------------------------------------------------------------------------
 
 void syslog_flush_to_fs(void) {
+    /* Debug: record the direct caller address to help track corruption sources.
+     * Avoid calling syslog_* helpers to prevent recursion; print to VGA instead.
+     */
+    void *caller = __builtin_return_address(0);
+    /* Record this flush invocation into the file-scope history */
+    uint32_t fh_idx = syslog_flush_hist_head % FLUSH_HIST_ENTRIES;
+    syslog_flush_hist[fh_idx].seq = syslog_seq;
+    syslog_flush_hist[fh_idx].caller = caller;
+    syslog_flush_hist_head++;
+    if (syslog_flush_hist_count < FLUSH_HIST_ENTRIES) syslog_flush_hist_count++;
+
+    /* Print the caller and a short history for immediate debugging */
+    vga_set_color(VGA_LIGHT_RED, VGA_BLACK);
+    kprintf("--- SYSLOG_FLUSH called by %p (seq=%u) ---\n", caller, (unsigned)syslog_flush_hist[fh_idx].seq);
+    kprintf("Recent flushes (most recent last):\n");
+    for (uint32_t i = (syslog_flush_hist_count ? (syslog_flush_hist_head - syslog_flush_hist_count) : 0);
+         i < syslog_flush_hist_head; i++) {
+        uint32_t j = i % FLUSH_HIST_ENTRIES;
+        kprintf("  [%u] caller=%p\n", (unsigned)syslog_flush_hist[j].seq, syslog_flush_hist[j].caller);
+    }
+    vga_set_color(VGA_WHITE, VGA_BLACK);
     // Ensure /var and /var/log directories exist (best-effort, ignore errors)
     vfs_mkdir("/var");
     vfs_mkdir("/var/log");
@@ -219,21 +273,72 @@ void syslog_flush_to_fs(void) {
         return;
     }
 
-    uint32_t n     = syslog_count_val;
+    uint32_t n = syslog_count_val;
+    if (n == 0) {
+        vfs_close(fd);
+        return;
+    }
+
     uint32_t start = (syslog_head - n) % SYSLOG_RING_ENTRIES;
-    char     line[SYSLOG_MSG_MAX + 64];
-    int len;
 
-    for (uint32_t i = 0; i < n; i++) {
-        syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
-        char lvlbuf[10];
-        strncpy(lvlbuf, level_str((int)e->level), sizeof(lvlbuf) - 1);
-        lvlbuf[sizeof(lvlbuf) - 1] = '\0';
+    /* Try to allocate a temporary buffer to snapshot entries to avoid
+     * concurrent writers corrupting reads. If allocation fails, fall back
+     * to a conservative direct-write approach. */
+    size_t entry_sz = sizeof(syslog_entry_t);
+    size_t buf_sz = (size_t)n * entry_sz;
+    syslog_entry_t *snapshot = kheap_alloc(buf_sz, 4);
+    if (snapshot) {
+        /* Copy each entry ensuring seq didn't change during the copy. */
+        for (uint32_t i = 0; i < n; i++) {
+            syslog_entry_t *src = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
+            for (;;) {
+                uint32_t before = src->seq;
+                memcpy(&snapshot[i], src, entry_sz);
+                uint32_t after = src->seq;
+                if (before == after) break; /* stable copy */
+            }
+        }
 
-        len = syslog_snprintf(line, sizeof(line), "[%u] %s [%s] %s\n",
-                              e->seq, lvlbuf, e->tag, e->msg);
+        /* Now write out the snapshot without holding locks or disabling IRQs. */
+        char line[SYSLOG_MSG_MAX + 64];
+        for (uint32_t i = 0; i < n; i++) {
+            syslog_entry_t *e = &snapshot[i];
+            char lvlbuf[16];
+            strncpy(lvlbuf, level_str((int)e->level), sizeof(lvlbuf) - 1);
+            lvlbuf[sizeof(lvlbuf) - 1] = '\0';
 
-        vfs_write(fd, (const uint8_t *)line, (size_t)len);
+            int len = syslog_snprintf(line, sizeof(line), "[%u] %s [%s] %s\n",
+                                      e->seq, lvlbuf, e->tag, e->msg);
+
+            /* Handle partial writes */
+            size_t written = 0;
+            while (written < (size_t)len) {
+                int r = vfs_write(fd, (const uint8_t *)line + written, (size_t)len - written);
+                if (r < 0) break; /* give up on error */
+                written += (size_t)r;
+            }
+        }
+
+        kheap_free(snapshot);
+    } else {
+        /* Allocation failed: fall back to direct writes but be defensive. */
+        char line[SYSLOG_MSG_MAX + 64];
+        for (uint32_t i = 0; i < n; i++) {
+            syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
+            char lvlbuf[16];
+            strncpy(lvlbuf, level_str((int)e->level), sizeof(lvlbuf) - 1);
+            lvlbuf[sizeof(lvlbuf) - 1] = '\0';
+
+            int len = syslog_snprintf(line, sizeof(line), "[%u] %s [%s] %s\n",
+                                      e->seq, lvlbuf, e->tag, e->msg);
+
+            size_t written = 0;
+            while (written < (size_t)len) {
+                int r = vfs_write(fd, (const uint8_t *)line + written, (size_t)len - written);
+                if (r < 0) break;
+                written += (size_t)r;
+            }
+        }
     }
 
     vfs_close(fd);

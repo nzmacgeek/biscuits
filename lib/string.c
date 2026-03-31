@@ -81,6 +81,7 @@ int memcmp(const void *a, const void *b, size_t n) {
 }
 char *itoa(int val, char *buf, int base) {
     char tmp[32]; int i = 0, neg = 0;
+    if (!buf) return (char*)"";
     /* Validate base to avoid divide-by-zero or infinite loop */
     if (base < 2 || base > 16) { buf[0] = '0'; buf[1] = 0; return buf; }
     if (val == 0) { buf[0]='0'; buf[1]=0; return buf; }

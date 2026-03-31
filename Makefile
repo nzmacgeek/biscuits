@@ -63,6 +63,14 @@ BUILD_TIME   := $(shell date -u '+%H:%M:%S')
 BUILD_HOST   := $(shell hostname 2>/dev/null || echo unknown-host)
 BUILD_USER   := $(shell whoami  2>/dev/null || echo unknown-user)
 
+# Enable debug build: `make DEBUG=1` will add `-g -O0` and `-DDEBUG`.
+# Default is 0 (release-ish build with -O2). Use this when actively
+# developing and debugging the kernel.
+DEBUG ?= 0
+BUILD_DIR ?= build
+BUILD_TOOLS_DIR := $(BUILD_DIR)/tools
+BUILD_USER_DIR := $(BUILD_DIR)/user
+
 # ---------------------------------------------------------------------------
 # Architecture-specific compiler / assembler / linker flags
 # ---------------------------------------------------------------------------
@@ -118,7 +126,6 @@ else
       -m32 \
       -std=gnu11 \
       -ffreestanding \
-      -O2 \
       -Wall \
       -Wextra \
       -Wno-unused-parameter \
@@ -135,6 +142,16 @@ else
       -I .
   ASFLAGS = -f elf32
   LDFLAGS = -m elf_i386 -T linker.ld --no-warn-rwx-segments
+endif
+
+ifeq ($(DEBUG),1)
+  # For reliable debug builds that interact correctly with inline asm
+  # use -O0 (no optimization) and preserve the frame pointer to keep
+  # stack frames and asm operand locations stable. Also disable
+  # sibling-call optimization which can remove frames and confuse
+  # __builtin_return_address and inline-asm assumptions.
+  CFLAGS += -g -O0 -DDEBUG -fno-omit-frame-pointer -fno-optimize-sibling-calls 
+  LDFLAGS += -g
 endif
 
 # ---------------------------------------------------------------------------
@@ -252,20 +269,25 @@ PPC_ASM_SOURCES = \
 ifeq ($(ARCH),m68k)
   C_SOURCES   = $(M68K_C_SOURCES)
   ASM_SOURCES = $(M68K_ASM_SOURCES)
-  TARGET      = blueyos-m68k.elf
+  TARGET      = $(BUILD_DIR)/blueyos-m68k.elf
 else ifeq ($(ARCH),ppc)
   C_SOURCES   = $(PPC_C_SOURCES)
   ASM_SOURCES = $(PPC_ASM_SOURCES)
-  TARGET      = blueyos-ppc.elf
+  TARGET      = $(BUILD_DIR)/blueyos-ppc.elf
 else
   C_SOURCES   = $(I386_C_SOURCES)
   ASM_SOURCES = $(I386_ASM_SOURCES)
-  TARGET      = blueyos.elf
-  USER_TARGETS = user/init.elf
+  TARGET      = $(BUILD_DIR)/blueyos.elf
+  USER_TARGETS = $(BUILD_USER_DIR)/init.elf
 endif
 
-ISO    = blueyos.iso
-DISK_IMAGE = blueyos-disk.img
+ISO    = $(BUILD_DIR)/blueyos.iso
+DISK_IMAGE = $(BUILD_DIR)/blueyos-disk.img
+MKFS_BLUEYFS = $(BUILD_TOOLS_DIR)/mkfs_blueyfs
+MKSWAP_BLUEYFS = $(BUILD_TOOLS_DIR)/mkswap_blueyfs
+FSCK_BLUEYFS = $(BUILD_TOOLS_DIR)/fsck_blueyfs
+LIST_BLUEYFS = $(BUILD_TOOLS_DIR)/list_blueyfs
+ISO_STAGE_DIR = $(BUILD_DIR)/isodir
 
 C_OBJECTS   = $(C_SOURCES:.c=.o)
 ASM_OBJECTS_C = $(M68K_ASM_SOURCES:.S=.o) $(PPC_ASM_SOURCES:.S=.o)
@@ -284,9 +306,10 @@ M68K_GENERATED_HEADERS = arch/m68k/boot_font.h
 # Ensure object files are rebuilt when ARCH changes: maintain a small stamp
 # file `.arch_record` containing the last-built ARCH. When ARCH differs the
 # stamp is updated which forces object files to be rebuilt.
-ARCH_STAMP := .arch_record
+ARCH_STAMP := $(BUILD_DIR)/.arch_record
 
 $(ARCH_STAMP): FORCE
+	@mkdir -p $(dir $(ARCH_STAMP))
 	@printf "%s\n" "$(ARCH)" > $(ARCH_STAMP).tmp
 	@if [ -f $(ARCH_STAMP) ] && cmp -s $(ARCH_STAMP) $(ARCH_STAMP).tmp; then \
 		rm -f $(ARCH_STAMP).tmp; \
@@ -308,7 +331,7 @@ endif
 
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso disk run run-m68k version clean help tools-host toolinfo FORCE
+.PHONY: all iso disk run run-m68k version clean full-clean help tools-host toolinfo FORCE
 
 all: $(TARGET) $(USER_TARGETS)
 	@echo ""
@@ -319,6 +342,7 @@ all: $(TARGET) $(USER_TARGETS)
 	@echo ""
 
 $(TARGET): $(OBJECTS)
+	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) -o $@ $^
 	@echo "  [LD]  Linked $@"
 
@@ -335,22 +359,13 @@ $(TARGET): $(OBJECTS)
 	$(AS) $(ASFLAGS) -o $@ $<
 	@echo "  [AS]  $<"
 
-iso: $(TARGET)
-	@if [ "$(ARCH)" != "i386" ]; then \
-	    echo "  [ISO]  ISO build is only supported for ARCH=i386"; exit 1; fi
-	@bash tools/mkdisk.sh
+iso: $(TARGET) ; @if [ "$(ARCH)" != "i386" ]; then echo "  [ISO]  ISO build is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/mkdisk.sh
 
-disk: $(TARGET) $(USER_TARGETS) tools-host
-	@if [ "$(ARCH)" != "i386" ]; then \
-	    echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi
-	@$(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE)
+disk: $(TARGET) $(USER_TARGETS) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(BUILD_USER_DIR)/init.elf --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
 
-run: disk
-	@if [ "$(ARCH)" != "i386" ]; then \
-	    echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi
-	@bash tools/qemu-run.sh
+run: disk ; @if [ "$(ARCH)" != "i386" ]; then echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/qemu-run.sh
 
-run-m68k: blueyos-m68k.elf
+run-m68k: $(BUILD_DIR)/blueyos-m68k.elf
 	@bash tools/qemu-run-m68k.sh
 
 version:
@@ -359,32 +374,21 @@ version:
 	@echo "Built by: $(BUILD_USER)@$(BUILD_HOST)"
 	@echo "Architecture: $(ARCH)"
 
-clean:
-	@find . \( -name '*.o' -o -name '*.d' \) -not -path './.git/*' -delete
-	@rm -f blueyos.elf blueyos-m68k.elf blueyos-ppc.elf $(ISO) $(DISK_IMAGE)
-	@rm -f tools/mkfs_blueyfs tools/mkswap_blueyfs tools/fsck_blueyfs
-	@rm -f $(M68K_GENERATED_HEADERS)
-	@rm -rf isodir/
-	@echo "  Clean! Bluey would be proud."
+clean: ; @find . \( -name '*.o' -o -name '*.d' \) -not -path './.git/*' -delete; rm -rf $(BUILD_DIR); rm -f $(M68K_GENERATED_HEADERS); echo "  Clean! Build outputs removed from $(BUILD_DIR)."
 
-tools-host: tools/mkfs_blueyfs tools/mkswap_blueyfs tools/fsck_blueyfs
-	@echo "  Host tools built!"
+full-clean: clean ; @echo "  Full clean! All build artifacts removed."
 
-tools/mkfs_blueyfs: tools/mkfs_blueyfs.c
-	gcc -O2 -Wall -Wextra -o $@ $<
-	@echo "  [CC]  $< (host)"
+tools-host: $(MKFS_BLUEYFS) $(MKSWAP_BLUEYFS) $(FSCK_BLUEYFS) $(LIST_BLUEYFS) ; @echo "  Host tools built!"
 
-tools/mkswap_blueyfs: tools/mkswap_blueyfs.c
-	gcc -O2 -Wall -Wextra -o $@ $<
-	@echo "  [CC]  $< (host)"
+$(MKFS_BLUEYFS): tools/mkfs_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
 
-tools/fsck_blueyfs: tools/fsck_blueyfs.c
-	gcc -O2 -Wall -Wextra -o $@ $<
-	@echo "  [CC]  $< (host)"
+$(MKSWAP_BLUEYFS): tools/mkswap_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
 
-user/init.elf: user/init.c
-	gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<
-	@echo "  [LD]  $@"
+$(FSCK_BLUEYFS): tools/fsck_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
+
+$(LIST_BLUEYFS): tools/list_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
+
+$(BUILD_USER_DIR)/init.elf: user/init.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
 
 toolinfo:
 	@echo "BlueyOS Build Tool Versions (ARCH=$(ARCH))"

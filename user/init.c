@@ -2,6 +2,7 @@ typedef unsigned int uint32_t;
 typedef signed int int32_t;
 typedef unsigned int size_t;
 
+#define SYS_READ    0
 #define SYS_WRITE   1
 #define SYS_EXIT    60
 #define SYS_FORK    57
@@ -10,8 +11,15 @@ typedef unsigned int size_t;
 #define SYS_MMAP    90
 #define SYS_OPEN    2
 #define SYS_CLOSE   3
+#define SYS_UNLINK  10
+#define SYS_MKDIR   39
 #define SYS_MUNMAP  91
 #define SYS_MPROTECT 92
+
+#define VFS_O_RDONLY 0
+#define VFS_O_WRONLY 1
+#define VFS_O_CREAT  0x0040
+#define VFS_O_TRUNC  0x0200
 
 #define PROT_READ   0x1
 #define PROT_WRITE  0x2
@@ -73,6 +81,121 @@ static void write_hex(uint32_t value) {
     }
     buf[10] = '\0';
     write_str(buf);
+}
+
+static void fill_pattern(unsigned char *buf, size_t len, uint32_t seed) {
+    size_t i;
+
+    for (i = 0; i < len; i++) {
+        buf[i] = (unsigned char)((seed + (uint32_t)(i * 17u)) & 0xffu);
+    }
+}
+
+static void test_blueyfs_file_case(const char *path, size_t total_size, uint32_t seed) {
+    unsigned char write_buf[257];
+    unsigned char read_buf[257];
+    size_t offset = 0;
+    long fd;
+
+    syscall3(SYS_MKDIR, (long)"/var", 0755, 0);
+    syscall1(SYS_UNLINK, (long)path);
+
+    fd = syscall3(SYS_OPEN, (long)path, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
+    if (fd < 0) {
+        write_str("[init] blueyfs open-for-write failed: ");
+        write_str(path);
+        write_str(" ret=");
+        write_hex((uint32_t)fd);
+        write_str("\n");
+        exit_now(51);
+    }
+
+    while (offset < total_size) {
+        size_t chunk = total_size - offset;
+        long written;
+
+        if (chunk > sizeof(write_buf)) chunk = sizeof(write_buf);
+        fill_pattern(write_buf, chunk, seed + (uint32_t)offset);
+        written = syscall3(SYS_WRITE, fd, (long)write_buf, (long)chunk);
+        if (written != (long)chunk) {
+            write_str("[init] blueyfs short write: ");
+            write_str(path);
+            write_str(" ret=");
+            write_hex((uint32_t)written);
+            write_str("\n");
+            exit_now(52);
+        }
+        offset += chunk;
+    }
+
+    syscall1(SYS_CLOSE, fd);
+
+    fd = syscall3(SYS_OPEN, (long)path, VFS_O_RDONLY, 0);
+    if (fd < 0) {
+        write_str("[init] blueyfs open-for-read failed: ");
+        write_str(path);
+        write_str(" ret=");
+        write_hex((uint32_t)fd);
+        write_str("\n");
+        exit_now(53);
+    }
+
+    offset = 0;
+    while (offset < total_size) {
+        size_t chunk = total_size - offset;
+        long rd;
+
+        if (chunk > sizeof(read_buf)) chunk = sizeof(read_buf);
+        fill_pattern(write_buf, chunk, seed + (uint32_t)offset);
+        rd = syscall3(SYS_READ, fd, (long)read_buf, (long)chunk);
+        if (rd != (long)chunk) {
+            write_str("[init] blueyfs short read: ");
+            write_str(path);
+            write_str(" ret=");
+            write_hex((uint32_t)rd);
+            write_str("\n");
+            exit_now(54);
+        }
+
+        for (size_t i = 0; i < chunk; i++) {
+            if (read_buf[i] != write_buf[i]) {
+                write_str("[init] blueyfs data mismatch: ");
+                write_str(path);
+                write_str(" offset=");
+                write_hex((uint32_t)(offset + i));
+                write_str("\n");
+                exit_now(55);
+            }
+        }
+
+        offset += chunk;
+    }
+
+    syscall1(SYS_CLOSE, fd);
+    if (syscall1(SYS_UNLINK, (long)path) < 0) {
+        write_str("[init] blueyfs unlink failed: ");
+        write_str(path);
+        write_str("\n");
+        exit_now(56);
+    }
+}
+
+static void test_blueyfs_file_sizes(void) {
+    static const char *paths[] = {
+        "/var/blueyfs-001.bin",
+        "/var/blueyfs-127.bin",
+        "/var/blueyfs-4k.bin",
+        "/var/blueyfs-5k.bin",
+        "/var/blueyfs-16k.bin",
+    };
+    static const size_t sizes[] = { 1u, 127u, 4096u, 5000u, 16384u };
+    size_t i;
+
+    write_str("[init] blueyfs size tests\n");
+    for (i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        test_blueyfs_file_case(paths[i], sizes[i], 0x40u + (uint32_t)i * 29u);
+    }
+    write_str("[init] blueyfs size tests ok\n");
 }
 
 static void test_heap_and_mmap(void) {
@@ -142,6 +265,7 @@ static void test_fork_wait(void) {
 static void test_file_mmap(void) {
     long fd;
     long fmap;
+    const unsigned char *hdr;
 
     write_str("[init] file-backed mmap test\n");
     fd = syscall3(SYS_OPEN, (long)"/bin/init", 0, 0);
@@ -157,8 +281,14 @@ static void test_file_mmap(void) {
         return;
     }
 
-    /* print first 64 bytes of mapped file */
-    syscall3(SYS_WRITE, 1, (long)fmap, 64);
+    hdr = (const unsigned char *)fmap;
+    if (hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F') {
+        write_str("[init] file mmap header check failed\n");
+        syscall3(SYS_MUNMAP, fmap, 4096, 0);
+        syscall1(SYS_CLOSE, fd);
+        exit_now(41);
+    }
+    write_str("[init] file mmap header ok\n");
 
     /* protect read-only (no-op if already) and then unmap */
     syscall3(SYS_MPROTECT, fmap, 4096, PROT_READ);
@@ -171,6 +301,7 @@ int main(void) {
     test_heap_and_mmap();
     test_fork_wait();
     test_file_mmap();
+    test_blueyfs_file_sizes();
     write_str("[init] all tests passed\n");
     exit_now(0);
     return 0;
