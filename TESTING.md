@@ -99,14 +99,14 @@ Expected outcomes:
 - `/etc/fstab` contains at least:
 
 ```text
-/dev/hda1 / blueyfs defaults 0 1
-/dev/hda2 none swap defaults 0 0
+/dev/hda2 / blueyfs defaults 0 1
+/dev/hda3 none swap defaults 0 0
 ```
 
 Sanity-check the root partition with the host fsck tool:
 
 ```bash
-./tools/fsck_blueyfs -o 2048 blueyos-disk.img
+./tools/fsck_blueyfs -o 67584 blueyos-disk.img   # 67584 = default BlueyFS root partition LBA
 ```
 
 ---
@@ -122,8 +122,8 @@ make run
 
 ```bash
 qemu-system-i386 \
-    -cdrom blueyos.iso \
-  -drive file=blueyos-disk.img,format=raw,if=ide,index=0 \
+    -drive file=blueyos-disk.img,format=raw,if=ide,index=0 \
+    -boot c \
     -m 256M \
     -serial stdio \
     -no-reboot \

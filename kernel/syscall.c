@@ -272,16 +272,15 @@ static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
 static int32_t sys_fstat(int fd, void *buf) {
     if (fd < 0) return -BLUEY_EINVAL;
     if (!buf) return -BLUEY_EFAULT;
-    uint16_t mode = 0;
-    if (vfs_fstat(fd, &mode) != 0) return -BLUEY_EINVAL;
+    vfs_stat_t st;
+    if (vfs_fstat(fd, &st) != 0) return -BLUEY_EINVAL;
 
-    // Minimal stat: write st_mode (32-bit) at start and zero the rest of a small struct
-    uint32_t st_mode = (uint32_t)mode;
+    // Minimal stat: write st_mode (32-bit) at start, then st_ino and st_size
     uint32_t *u = (uint32_t*)buf;
-    u[0] = st_mode; // st_mode
-    u[1] = 0; // st_ino / padding
-    u[2] = 0; // st_size low
-    u[3] = 0; // st_size high / padding
+    u[0] = (uint32_t)st.mode; // st_mode
+    u[1] = 0;                 // st_ino / padding
+    u[2] = st.size;           // st_size low
+    u[3] = 0;                 // st_size high / padding
     return 0;
 }
 

@@ -103,6 +103,7 @@ int  vfs_readdir(const char *path, vfs_dirent_t *out, int max);
 int  vfs_mkdir(const char *path);
 int  vfs_unlink(const char *path);
 int  vfs_stat(const char *path, vfs_stat_t *out);
+int  vfs_fstat(int fd, vfs_stat_t *out);
 int  vfs_access(const char *path, uint8_t access);
 int  vfs_access_cred(const char *path, uint8_t access, const vfs_cred_t *cred);
 void vfs_print_mounts(void);

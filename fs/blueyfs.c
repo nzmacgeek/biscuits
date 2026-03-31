@@ -1005,20 +1005,6 @@ static int biscuitfs_stat_cb(const char *path, vfs_stat_t *out) {
     return 0;
 }
 
-/*
- * Minimal stat implementation to return inode.mode for callers that need
- * POSIX-like permission bits (mode). Returns 0 on success, -1 on failure.
- */
-static int biscuitfs_stat_cb(const char *path, uint16_t *mode_out) {
-    if (!path || !mode_out) return -1;
-    uint32_t ino = path_to_inode(path);
-    if (!ino) return -1;
-    biscuitfs_inode_t inode;
-    if (read_inode(ino, &inode) != 0) return -1;
-    *mode_out = inode.mode;
-    return 0;
-}
-
 // ---------------------------------------------------------------------------
 // VFS registration
 // ---------------------------------------------------------------------------
@@ -1033,7 +1019,6 @@ static filesystem_t biscuitfs_driver = {
     .readdir = biscuitfs_readdir_cb,
     .mkdir   = biscuitfs_mkdir_cb,
     .unlink  = biscuitfs_unlink_cb,
-    .stat    = biscuitfs_stat_cb,
     .stat    = biscuitfs_stat_cb,
 };
 

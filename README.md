@@ -123,15 +123,16 @@ Host-side filesystem tools:
 
 ```bash
 make tools-host
-./tools/fsck_blueyfs -o 2048 blueyos-disk.img
+./tools/fsck_blueyfs -o 67584 blueyos-disk.img   # 67584 = default BlueyFS root partition LBA
 ```
 
 The default disk layout is:
 
-- `LBA 2048`: BlueyFS root partition (`/dev/hda1`)
-- `LBA 133120`: swap partition (`/dev/hda2`)
+- `LBA 2048`: ext2 boot partition (`/dev/hda1`) — GRUB bootloader files
+- `LBA 67584`: BlueyFS root partition (`/dev/hda2`) — `BOOT_START_LBA + boot_sectors` (32 MB boot)
+- `LBA 198656`: swap partition (`/dev/hda3`)
 
-GRUB now boots with `root=/dev/hda1 rootfstype=blueyfs`, and the kernel reads `/etc/fstab`
+GRUB now boots with `root=/dev/hda2 rootfstype=blueyfs`, and the kernel reads `/etc/fstab`
 after mounting root to enable swap and any additional simple mounts.
 
 See [TESTING.md](TESTING.md) for detailed testing instructions and expected output.

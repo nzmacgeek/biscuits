@@ -64,7 +64,10 @@ int ip_send(uint8_t proto, uint32_t dst_ip,
     // Ethernet header
     eth_hdr_t *eth = (eth_hdr_t *)frame;
     memcpy(eth->dst, dst_mac, 6);
-    memcpy(eth->src, cfg->mac, 6);
+    if (use_loopback)
+        memset(eth->src, 0, 6);
+    else
+        memcpy(eth->src, cfg->mac, 6);
     eth->ethertype = htons(ETHERTYPE_IPV4);
 
     // IP header

@@ -210,7 +210,7 @@ int rootfs_apply_fstab(void) {
     fd = vfs_open("/etc/fstab", VFS_O_RDONLY);
     if (fd < 0) {
         kprintf("[FSTAB] /etc/fstab not found - leaving extra mounts alone\n");
-        return -1;
+        return 0;
     }
 
     while ((nread = vfs_read(fd, (uint8_t *)chunk, sizeof(chunk))) > 0) {

@@ -313,6 +313,13 @@ int vfs_stat(const char *path, vfs_stat_t *out) {
     return m->fs->stat(path, out);
 }
 
+int vfs_fstat(int fd, vfs_stat_t *out) {
+    if (fd < 0 || fd >= VFS_MAX_OPEN) return -1;
+    if (!fd_table[fd].used) return -1;
+    if (!out) return -1;
+    return vfs_stat(fd_table[fd].path, out);
+}
+
 int vfs_access(const char *path, uint8_t access) {
     vfs_cred_t cred;
     vfs_fill_cred_from_process(&cred);
