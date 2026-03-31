@@ -51,11 +51,11 @@ def write_partition_region(image: Path, offset_lba: int, partition_image: Path) 
         shutil.copyfileobj(part_fp, disk_fp)
 
 
-def build_boot_partition(repo: Path, image: Path, boot_mb: int, root_device: str, root_fstype: str) -> None:
+def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: int, root_device: str, root_fstype: str) -> None:
     boot_sectors = sectors_from_mb(boot_mb)
     boot_size_bytes = boot_sectors * SECTOR_SIZE
     boot_img = image.with_suffix(".boot.tmp")
-    boot_stage = repo / ".boot-stage"
+    boot_stage = image.parent / ".boot-stage"
     core_img = image.with_suffix(".core.tmp")
     early_cfg = image.with_suffix(".early.cfg.tmp")
     boot_img_src = Path("/usr/lib/grub/i386-pc/boot.img")
@@ -75,7 +75,7 @@ def build_boot_partition(repo: Path, image: Path, boot_mb: int, root_device: str
     if boot_stage.exists():
         shutil.rmtree(boot_stage)
     (boot_stage / "boot" / "grub").mkdir(parents=True)
-    shutil.copy2(repo / "blueyos.elf", boot_stage / "boot" / "blueyos.elf")
+    shutil.copy2(kernel_path, boot_stage / "boot" / "blueyos.elf")
 
     disk_grub_cfg = (
         "serial --unit=0 --speed=115200\n"
@@ -156,19 +156,25 @@ def run(cmd, cwd: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build a GRUB-bootable BlueyOS disk image with boot, root, and swap partitions")
-    parser.add_argument("--image", default="blueyos-disk.img")
+    parser.add_argument("--image", default="build/blueyos-disk.img")
     parser.add_argument("--boot-mb", type=int, default=BOOT_MB)
     parser.add_argument("--root-mb", type=int, default=64)
     parser.add_argument("--swap-mb", type=int, default=16)
     parser.add_argument("--slack-mb", type=int, default=16)
-    parser.add_argument("--init", default="user/init.elf")
+    parser.add_argument("--kernel", default="build/blueyos.elf")
+    parser.add_argument("--init", default="build/user/init.elf")
+    parser.add_argument("--mkfs-tool", default="build/tools/mkfs_blueyfs")
+    parser.add_argument("--mkswap-tool", default="build/tools/mkswap_blueyfs")
     parser.add_argument("--root-label", default="BlueyRoot")
     parser.add_argument("--swap-label", default="ChatterSwap")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
     image = repo / args.image
+    kernel_path = repo / args.kernel
     init_path = repo / args.init
+    mkfs_tool = repo / args.mkfs_tool
+    mkswap_tool = repo / args.mkswap_tool
     boot_sectors = sectors_from_mb(args.boot_mb)
     root_sectors = sectors_from_mb(args.root_mb)
     swap_sectors = sectors_from_mb(args.swap_mb)
@@ -178,8 +184,16 @@ def main() -> int:
     total_sectors = swap_start + swap_sectors + slack_sectors
     total_bytes = total_sectors * SECTOR_SIZE
 
+    image.parent.mkdir(parents=True, exist_ok=True)
+
     if not init_path.exists():
         raise SystemExit(f"missing init payload: {init_path}")
+    if not kernel_path.exists():
+        raise SystemExit(f"missing kernel image: {kernel_path}")
+    if not mkfs_tool.exists():
+        raise SystemExit(f"missing mkfs tool: {mkfs_tool}")
+    if not mkswap_tool.exists():
+        raise SystemExit(f"missing mkswap tool: {mkswap_tool}")
 
     with image.open("wb") as fp:
         fp.truncate(total_bytes)
@@ -193,10 +207,10 @@ def main() -> int:
         fstab_name = fstab_fp.name
 
     try:
-        build_boot_partition(repo, image, args.boot_mb, "/dev/hda2", "blueyfs")
+        build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/hda2", "blueyfs")
 
         run([
-            str(repo / "tools" / "mkfs_blueyfs"),
+            str(mkfs_tool),
             "-F",
             "-L", args.root_label,
             "-o", str(root_start),
@@ -207,7 +221,7 @@ def main() -> int:
         ], repo)
 
         run([
-            str(repo / "tools" / "mkswap_blueyfs"),
+            str(mkswap_tool),
             "-L", args.swap_label,
             "-o", str(swap_start),
             "-n", str(swap_sectors),

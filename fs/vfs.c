@@ -9,6 +9,7 @@
 #include "../lib/string.h"
 #include "../kernel/devev.h"
 #include "vfs.h"
+#include "../kernel/syslog.h"
 #include "../kernel/process.h"
 
 #define BLUEY_EAGAIN 11
@@ -18,6 +19,12 @@ static int           fs_count = 0;
 
 static vfs_mount_t   mounts[VFS_MAX_MOUNTS];
 static int           mount_count = 0;
+
+static int vfs_dbg_log_limited(int *counter, int limit) {
+    if (*counter >= limit) return 0;
+    (*counter)++;
+    return 1;
+}
 
 // Open file descriptor table
 typedef struct {
@@ -139,7 +146,15 @@ void vfs_register_fs(filesystem_t *fs) {
 }
 
 int vfs_mount(const char *path, const char *fs_name, uint32_t start_lba) {
+    static int dbg_calls;
     if (mount_count >= VFS_MAX_MOUNTS) return -1;
+
+    if (vfs_dbg_log_limited(&dbg_calls, 32)) {
+        kprintf("[VFS DBG] mount enter path_ptr=%p fs_name_ptr=%p start_lba=%u caller=%p\n",
+                path, fs_name, start_lba, __builtin_return_address(0));
+        if (path) kprintf("[VFS DBG] mount path='%s'\n", path);
+        if (fs_name) kprintf("[VFS DBG] mount fs='%s'\n", fs_name);
+    }
 
     // Find registered filesystem by name
     filesystem_t *fs = NULL;
@@ -150,9 +165,19 @@ int vfs_mount(const char *path, const char *fs_name, uint32_t start_lba) {
     }
     if (!fs) { kprintf("[VFS]  Unknown filesystem: %s\n", fs_name); return -1; }
 
+    if (vfs_dbg_log_limited(&dbg_calls, 32)) {
+        kprintf("[VFS DBG] mount dispatch fs=%p mount_cb=%p path_ptr=%p start_lba=%u\n",
+                (void *)fs, (void *)fs->mount, path, start_lba);
+    }
+
     if (fs->mount && fs->mount(path, start_lba) != 0) {
         kprintf("[VFS]  Mount failed for %s at %s\n", fs_name, path);
         return -1;
+    }
+
+    if (vfs_dbg_log_limited(&dbg_calls, 32)) {
+        kprintf("[VFS DBG] mount return fs='%s' path='%s' start_lba=%u\n",
+                fs_name, path, start_lba);
     }
 
     vfs_mount_t *m = &mounts[mount_count++];
@@ -368,6 +393,15 @@ int vfs_write(int fd, const uint8_t *buf, size_t len) {
     if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
     vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
     if (!m->fs->write) return -1;
+#ifdef DEBUG
+    /* Lightweight instrumentation: record the caller of vfs_write so we can
+     * correlate which subsystems are invoking writes (helps find memory
+     * corruption sources). Pass the return address from the caller. */
+    void *caller = __builtin_return_address(0);
+    syslog_record_caller(caller);
+    kprintf("[VFS DBG] vfs_write caller=%p fd=%d len=%u\n", caller, fd, (unsigned)len);
+#endif
+
     int r = m->fs->write(fd_table[fd].fs_fd, buf, len);
     if (r > 0) fd_table[fd].offset += (uint32_t)r;
     return r;

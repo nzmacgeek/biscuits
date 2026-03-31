@@ -5,6 +5,12 @@
 #include "../lib/string.h"
 #include "swap.h"
 
+static int rootfs_dbg_log_limited(int *counter, int limit) {
+    if (*counter >= limit) return 0;
+    (*counter)++;
+    return 1;
+}
+
 static const char *rootfs_canonical_fs_name(const char *fs_name) {
     if (!fs_name || !fs_name[0]) return fs_name;
     if (strcmp(fs_name, "blueyfs") == 0) return "biscuitfs";
@@ -91,12 +97,24 @@ int rootfs_apply_boot_args(rootfs_config_t *cfg, const boot_args_t *args) {
 }
 
 int rootfs_mount_config(const rootfs_config_t *cfg) {
+    static int dbg_calls;
     uint32_t fallback_lba;
 
     if (!cfg) return -1;
     if (cfg->diskless) return 0;
 
+    if (rootfs_dbg_log_limited(&dbg_calls, 16)) {
+        kprintf("[ROOT DBG] mount_config cfg=%p device='%s' fs='%s' start_lba=%u auto_probe=%u diskless=%u caller=%p\n",
+                (const void *)cfg, cfg->device, cfg->fs_name, cfg->start_lba,
+                cfg->auto_probe ? 1u : 0u, cfg->diskless ? 1u : 0u,
+                __builtin_return_address(0));
+    }
+
     if (!cfg->auto_probe) {
+        if (rootfs_dbg_log_limited(&dbg_calls, 16)) {
+            kprintf("[ROOT DBG] explicit mount path='/' fs='%s' lba=%u\n",
+                    rootfs_canonical_fs_name(cfg->fs_name), cfg->start_lba);
+        }
         if (vfs_mount("/", rootfs_canonical_fs_name(cfg->fs_name), cfg->start_lba) == 0) {
             kprintf("[ROOT] Mounted %s on %s\n", cfg->device, rootfs_canonical_fs_name(cfg->fs_name));
             return 0;

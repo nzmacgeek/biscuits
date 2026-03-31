@@ -8,6 +8,7 @@
 #include "../lib/string.h"
 #include "fat.h"
 #include "vfs.h"
+#include "../kernel/syslog.h"
 #include "../drivers/ata.h"
 #include "../kernel/kheap.h"
 
@@ -234,6 +235,8 @@ static int fat_vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
 static int fat_vfs_write(int fd, const uint8_t *buf, size_t len) {
     // Write support is beyond scope for a basic research OS - Bingo is working on it!
     (void)fd; (void)buf; (void)len;
+    /* Record the caller so we can see which code paths attempted FAT writes. */
+    syslog_record_caller(__builtin_return_address(0));
     kprintf("[FAT]  Write not yet implemented - Bingo's backpack is read-only!\n");
     return -1;
 }

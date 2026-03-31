@@ -75,14 +75,14 @@ make iso
 ```
 BlueyOS: Building ISO image...
   (This is the best day EVER! - Bluey)
-Done! blueyos.iso created (~4.0M)
+Done! build/blueyos.iso created (~4.0M)
 Run with: bash tools/qemu-run.sh
 ```
 
 **Verify the ISO:**
 
 ```bash
-file blueyos.iso
+file build/blueyos.iso
 # Expected: ISO 9660 CD-ROM filesystem data
 ```
 
@@ -94,7 +94,7 @@ make disk
 
 Expected outcomes:
 
-- `blueyos-disk.img` is created in the repo root
+- `build/blueyos-disk.img` is created under `build/`
 - the root BlueyFS partition contains `/bin/init`
 - `/etc/fstab` contains at least:
 
@@ -106,7 +106,7 @@ Expected outcomes:
 Sanity-check the root partition with the host fsck tool:
 
 ```bash
-./tools/fsck_blueyfs -o 67584 blueyos-disk.img   # 67584 = default BlueyFS root partition LBA
+./build/tools/fsck_blueyfs -o 67584 build/blueyos-disk.img   # 67584 = default BlueyFS root partition LBA
 ```
 
 ---
@@ -122,7 +122,7 @@ make run
 
 ```bash
 qemu-system-i386 \
-    -drive file=blueyos-disk.img,format=raw,if=ide,index=0 \
+    -drive file=build/blueyos-disk.img,format=raw,if=ide,index=0 \
     -boot c \
     -m 256M \
     -serial stdio \
