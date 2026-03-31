@@ -393,12 +393,14 @@ int vfs_write(int fd, const uint8_t *buf, size_t len) {
     if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
     vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
     if (!m->fs->write) return -1;
+#ifdef DEBUG
     /* Lightweight instrumentation: record the caller of vfs_write so we can
      * correlate which subsystems are invoking writes (helps find memory
      * corruption sources). Pass the return address from the caller. */
     void *caller = __builtin_return_address(0);
     syslog_record_caller(caller);
     kprintf("[VFS DBG] vfs_write caller=%p fd=%d len=%u\n", caller, fd, (unsigned)len);
+#endif
 
     int r = m->fs->write(fd_table[fd].fs_fd, buf, len);
     if (r > 0) fd_table[fd].offset += (uint32_t)r;

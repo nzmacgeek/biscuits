@@ -878,6 +878,7 @@ static int biscuitfs_open_cb(const char *path, int flags) {
                 /* Would free data blocks and reset size; omitted for brevity */
                 fd_table[i].size = 0;
             }
+            biscuitfs_dbg_check_canary("biscuitfs_open_cb", parent_guard.head, parent_guard.tail);
             return i;
         }
     }
@@ -1003,6 +1004,7 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
     if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
     biscuitfs_fd_t *f = &fd_table[fd];
 
+#ifdef DEBUG
     /* Instrumentation: record which caller invoked BiscuitFS write. This
      * helps correlate write attempts with syslog flush activity when
      * tracking memory corruption sources. */
@@ -1010,11 +1012,18 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
     syslog_record_caller(caller);
     kprintf("[BISCUITFS DBG] write caller=%p fd=%d len=%u ino=%u\n",
             caller, fd, (unsigned)len, f->inode_no);
+#endif
 
     uint32_t done = 0;
     uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
 
     if (!blkbuf) return -1;
+
+    if (fs_block_size == 0) {
+        kprintf("[BISCUITFS] write: fs_block_size is 0, aborting\n");
+        biscuitfs_free_block_buf(blkbuf);
+        return -1;
+    }
 
     biscuitfs_inode_t inode;
     read_inode(f->inode_no, &inode);

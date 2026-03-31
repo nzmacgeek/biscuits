@@ -152,6 +152,9 @@ ifeq ($(DEBUG),1)
   # __builtin_return_address and inline-asm assumptions.
   CFLAGS += -g -O0 -DDEBUG -fno-omit-frame-pointer -fno-optimize-sibling-calls 
   LDFLAGS += -g
+else
+  # Release build: optimize for speed.
+  CFLAGS += -O2
 endif
 
 # ---------------------------------------------------------------------------

@@ -252,6 +252,7 @@ void syslog_flush_to_fs(void) {
     syslog_flush_hist_head++;
     if (syslog_flush_hist_count < FLUSH_HIST_ENTRIES) syslog_flush_hist_count++;
 
+#ifdef DEBUG
     /* Print the caller and a short history for immediate debugging */
     vga_set_color(VGA_LIGHT_RED, VGA_BLACK);
     kprintf("--- SYSLOG_FLUSH called by %p (seq=%u) ---\n", caller, (unsigned)syslog_flush_hist[fh_idx].seq);
@@ -262,6 +263,7 @@ void syslog_flush_to_fs(void) {
         kprintf("  [%u] caller=%p\n", (unsigned)syslog_flush_hist[j].seq, syslog_flush_hist[j].caller);
     }
     vga_set_color(VGA_WHITE, VGA_BLACK);
+#endif
     // Ensure /var and /var/log directories exist (best-effort, ignore errors)
     vfs_mkdir("/var");
     vfs_mkdir("/var/log");
