@@ -23,7 +23,7 @@ done
 
 # Run GDB batch to collect backtrace, registers, and memory near fault address
 GDB_CMD=(
-  gdb -batch -q build/blueyos.elf
+  gdb -batch -q build/kernel/bkernel
   -ex "target remote :${GDB_PORT}"
   -ex "set pagination off"
   -ex "break isr_handler"

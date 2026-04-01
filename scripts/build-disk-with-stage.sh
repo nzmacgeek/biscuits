@@ -12,8 +12,8 @@ echo "Stage dir: $STAGE_DIR"
 echo "Image: $IMAGE"
 
 if [ ! -d "$STAGE_DIR" ]; then
-  echo "Stage dir '$STAGE_DIR' does not exist. Create and populate it with files to install under /"
+  echo "Stage dir '$STAGE_DIR' does not exist. Create and populate it with files to copy into the boot partition under /boot."
   exit 1
 fi
 
-python3 tools/mkbluey_disk.py --image "$IMAGE" --init tools/init-installer.sh --boot-extra-dir "$STAGE_DIR"
+python3 tools/mkbluey_disk.py --image "$IMAGE" --kernel build/kernel/bkernel --init tools/init-installer.sh --boot-extra-dir "$STAGE_DIR"

@@ -44,6 +44,7 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <limits.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -692,7 +693,6 @@ static uint32_t dir_lookup_host(uint32_t dir_ino, const char *name) {
 
     while (offset < size) {
         uint32_t blk_n = offset / g_block_size;
-        uint32_t blk_off = offset % g_block_size;
         uint32_t phys = 0;
         /* get physical block number from inode.block[] or indirects */
         if (blk_n < BISCUITFS_N_DIRECT) {
@@ -803,7 +803,6 @@ static int create_file_host(uint32_t parent_ino, const char *name,
 
     /* Helper: set the n-th block pointer in the inode, allocating indirect
      * blocks on demand. Returns 0 on success, -1 on failure. */
-    auto_set_block: ;
 
     while (remaining > 0) {
         uint32_t blk = alloc_block_host();
@@ -987,7 +986,12 @@ static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base
             } else {
                 /* dirname(fullchild) + '/' + tbuf */
                 char dironly[PATH_MAX];
-                strncpy(dironly, fullchild, sizeof(dironly));
+                if (strlen(fullchild) >= sizeof(dironly)) {
+                    fprintf(stderr, "mkfs: path too long, skipping symlink '%s'\n", fullchild);
+                    continue;
+                }
+                strncpy(dironly, fullchild, sizeof(dironly) - 1);
+                dironly[sizeof(dironly) - 1] = '\0';
                 char *p = strrchr(dironly, '/');
                 if (p) *p = '\0'; else dironly[0] = '.'; 
                 snprintf(resolved, sizeof(resolved), "%s/%s", dironly, tbuf);

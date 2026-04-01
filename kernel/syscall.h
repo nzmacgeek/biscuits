@@ -53,6 +53,7 @@
 #define SYS_RMDIR         40
 #define SYS_DUP           41
 #define SYS_SYMLINK       83
+#define SYS_READLINK      84
 #define SYS_ACCESS        85
 #define SYS_FCHMOD        94
 #define SYS_FCHOWN        95

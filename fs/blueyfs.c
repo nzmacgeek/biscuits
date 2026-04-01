@@ -1323,12 +1323,22 @@ static int biscuitfs_link_cb(const char *oldpath, const char *newpath) {
     /* newpath must not already exist */
     if (path_to_inode(newpath)) return -1;
 
+    /* Derive directory entry file type from source inode mode */
+    uint8_t ftype;
+    switch (src_inode.mode & BISCUITFS_IFMT) {
+        case BISCUITFS_IFLNK:  ftype = BISCUITFS_FT_SYMLINK;  break;
+        case BISCUITFS_IFCHR:  ftype = BISCUITFS_FT_CHRDEV;   break;
+        case BISCUITFS_IFBLK:  ftype = BISCUITFS_FT_BLKDEV;   break;
+        case BISCUITFS_IFIFO:  ftype = BISCUITFS_FT_FIFO;     break;
+        default:               ftype = BISCUITFS_FT_REG_FILE;  break;
+    }
+
     biscuitfs_journal_begin();
 
     src_inode.links_count++;
     write_inode(src_ino, &src_inode);
 
-    if (dir_add_entry(dir_ino, name, src_ino, BISCUITFS_FT_REG_FILE) != 0) {
+    if (dir_add_entry(dir_ino, name, src_ino, ftype) != 0) {
         /* Roll back the link count increment */
         src_inode.links_count--;
         write_inode(src_ino, &src_inode);
@@ -1470,7 +1480,7 @@ static int biscuitfs_chown_cb(const char *path, uint32_t uid, uint32_t gid) {
     if (uid != (uint32_t)-1) inode.uid = (uint16_t)uid;
     if (gid != (uint32_t)-1) inode.gid = (uint16_t)gid;
     /* Clear setuid/setgid bits on ownership change (POSIX requirement) */
-    if (uid != (uint32_t)-1)
+    if (uid != (uint32_t)-1 || gid != (uint32_t)-1)
         inode.mode &= (uint16_t)~(BISCUITFS_ISUID | BISCUITFS_ISGID);
     write_inode(ino, &inode);
     biscuitfs_journal_commit();

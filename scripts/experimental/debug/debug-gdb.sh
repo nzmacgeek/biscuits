@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 BUILD_DIR=${BUILD_DIR:-build}
-BLUE=${BLUE:-$BUILD_DIR/blueyos.elf}
+BLUE=${BLUE:-$BUILD_DIR/kernel/bkernel}
 QEMU_LOG=/tmp/blueyos-qemu-debug.log
 RUN_DIR="$BUILD_DIR/run"
 QEMU_PID_FILE="$RUN_DIR/qemu-debug.pid"

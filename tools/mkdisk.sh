@@ -12,7 +12,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 BUILD_DIR=${BUILD_DIR:-build}
-KERNEL_IMAGE=${KERNEL_IMAGE:-$BUILD_DIR/blueyos.elf}
+KERNEL_IMAGE=${KERNEL_IMAGE:-$BUILD_DIR/kernel/bkernel}
 ISO_IMAGE=${ISO_IMAGE:-$BUILD_DIR/blueyos.iso}
 ISO_STAGE_DIR=${ISO_STAGE_DIR:-$BUILD_DIR/isodir}
 

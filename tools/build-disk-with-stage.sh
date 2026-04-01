@@ -8,5 +8,5 @@ if [ -x "$ROOT_DIR/scripts/build-disk-with-stage.sh" ]; then
   exec "$ROOT_DIR/scripts/build-disk-with-stage.sh" "$@"
 else
   echo "scripts/build-disk-with-stage.sh missing; falling back to tools implementation"
-  python3 "$SCRIPT_DIR/build-disk-with-stage.sh" "$@"
+  python3 "$SCRIPT_DIR/mkbluey_disk.py" "$@"
 fi

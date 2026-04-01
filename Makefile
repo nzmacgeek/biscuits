@@ -386,9 +386,9 @@ sysroot: $(TARGET) $(MUSL_INIT_TARGET) | $(BUILD_SYSROOT)
 	@if [ -d $(MUSL_LIB_DIR) ]; then cp -a $(MUSL_LIB_DIR)/* $(BUILD_SYSROOT)/lib/ 2>/dev/null || true; fi
 	@echo "  [SYSROOT] ready"
 
-disk: $(TARGET) $(USER_TARGETS) tools-host sysroot ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(BUILD_SYSROOT)/bin/init --boot-extra-dir $(BUILD_SYSROOT)/boot --root-extra-dir $(BUILD_SYSROOT) --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+disk: $(TARGET) $(USER_TARGETS) tools-host sysroot ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(BUILD_SYSROOT) --boot-extra-dir $(BUILD_SYSROOT)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
 
-disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host sysroot ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(BUILD_SYSROOT)/bin/init --boot-extra-dir $(BUILD_SYSROOT)/boot --root-extra-dir $(BUILD_SYSROOT) --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host sysroot ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(BUILD_SYSROOT) --boot-extra-dir $(BUILD_SYSROOT)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
 
 run: disk ; @if [ "$(ARCH)" != "i386" ]; then echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/qemu-run.sh
 

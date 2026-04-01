@@ -4,7 +4,7 @@ cd "$(dirname "$0")/../.."
 
 ADDR=${1:-0x125330}
 BUILD_DIR=${BUILD_DIR:-build}
-BLUE=${BLUE:-$BUILD_DIR/blueyos.elf}
+BLUE=${BLUE:-$BUILD_DIR/kernel/bkernel}
 QEMU_LOG=/tmp/blueyos-break-qemu.log
 GDB_LOG=/tmp/blueyos-break-gdb.log
 RUN_DIR="$BUILD_DIR/run"
@@ -22,8 +22,7 @@ sleep 1
 echo "Starting QEMU (gdb server) in background... (log: $QEMU_LOG)"
 nohup bash tools/qemu-run.sh -S -gdb tcp::1234 > "$QEMU_LOG" 2>&1 &
 QEMU_PID=$!
-echo $QEMU_PID > "$QEMU_PID_FILE"
-echo $QEMU_PID > "$QEMU_PID_FILE"
+echo "$QEMU_PID" > "$QEMU_PID_FILE"
 echo "QEMU PID: $QEMU_PID"
 
 cleanup() {
@@ -112,7 +111,6 @@ commands
   continue
 end
 
-break blueyfs.c
 # fallback: break functions known to touch data
 break write_page
 commands
