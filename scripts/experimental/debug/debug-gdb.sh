@@ -1,24 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
 
 BUILD_DIR=${BUILD_DIR:-build}
-BLUE=${BLUE:-$BUILD_DIR/blueyos.elf}
+BLUE=${BLUE:-$BUILD_DIR/kernel/bkernel}
 QEMU_LOG=/tmp/blueyos-qemu-debug.log
 RUN_DIR="$BUILD_DIR/run"
 QEMU_PID_FILE="$RUN_DIR/qemu-debug.pid"
 
 mkdir -p "$RUN_DIR"
 
-echo "Refreshing kernel and disk image before debug session..."
-BUILD_DIR="$BUILD_DIR" bash tools/rebuild-debug-disk.sh
-
 echo "Stopping any stale QEMU instances..."
 pkill -f '^qemu-system-i386 ' 2>/dev/null || true
 sleep 1
 
 echo "Starting QEMU (gdb server) in background..."
-nohup bash tools/qemu-run.sh -S -gdb tcp::1234 > "$QEMU_LOG" 2>&1 &
+nohup bash "$PWD/tools/qemu-run.sh" -S -gdb tcp::1234 > "$QEMU_LOG" 2>&1 &
 QEMU_PID=$!
 echo $QEMU_PID > "$QEMU_PID_FILE"
 echo "QEMU PID: $QEMU_PID (log: $QEMU_LOG)"
