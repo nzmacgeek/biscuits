@@ -52,6 +52,15 @@ Quick build (i386)
 
 7. Run the image in QEMU:
 
+Default init choice
+-------------------
+- The build system now prefers the musl-backed test init as the default `/bin/init` when available.
+- To make the musl init the active init payload, build it first:
+
+   `make musl-init`
+
+   Then run `make sysroot` and `make disk` as usual. If the musl init is not present the repository will fall back to the built-in `user/init` payload.
+
    `make run`
 
    or (manual):

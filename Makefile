@@ -288,7 +288,9 @@ else
   C_SOURCES   = $(I386_C_SOURCES)
   ASM_SOURCES = $(I386_ASM_SOURCES)
   TARGET      = $(BUILD_KERNEL_DIR)/bkernel
-  USER_TARGETS = $(BUILD_USER_DIR)/init.elf
+  # Prefer musl-backed init when present (build userspace musl with `make musl-init`).
+  # This makes the musl-test init the default payload until the new `claw` init is ready.
+  USER_TARGETS = $(MUSL_INIT_TARGET) $(BUILD_USER_DIR)/init.elf
 endif
 
 ISO    = $(BUILD_DIR)/blueyos.iso
