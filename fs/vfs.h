@@ -76,6 +76,11 @@ typedef struct filesystem {
     int (*mkdir)(const char *path);
     int (*unlink)(const char *path);
     int (*stat)(const char *path, vfs_stat_t *out);
+    int (*link)(const char *oldpath, const char *newpath);
+    int (*symlink)(const char *target, const char *linkpath);
+    int (*readlink)(const char *path, char *buf, size_t bufsz);
+    int (*chmod)(const char *path, uint16_t mode);
+    int (*chown)(const char *path, uint32_t uid, uint32_t gid);
 } filesystem_t;
 
 // Mount point descriptor
@@ -121,4 +126,12 @@ int  vfs_stat(const char *path, vfs_stat_t *out);
 int  vfs_fstat(int fd, vfs_stat_t *out);
 int  vfs_access(const char *path, uint8_t access);
 int  vfs_access_cred(const char *path, uint8_t access, const vfs_cred_t *cred);
+int  vfs_link(const char *oldpath, const char *newpath);
+int  vfs_symlink(const char *target, const char *linkpath);
+int  vfs_readlink(const char *path, char *buf, size_t bufsz);
+int  vfs_chmod(const char *path, uint16_t mode);
+int  vfs_fchmod(int fd, uint16_t mode);
+int  vfs_chown(const char *path, uint32_t uid, uint32_t gid);
+int  vfs_lchown(const char *path, uint32_t uid, uint32_t gid);
+int  vfs_fchown(int fd, uint32_t uid, uint32_t gid);
 void vfs_print_mounts(void);

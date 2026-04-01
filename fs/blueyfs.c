@@ -1295,22 +1295,207 @@ static int biscuitfs_stat_cb(const char *path, vfs_stat_t *out) {
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// VFS registration
-// ---------------------------------------------------------------------------
+static int biscuitfs_link_cb(const char *oldpath, const char *newpath) {
+    if (!oldpath || !newpath) return -1;
+
+    /* Source inode must exist and must not be a directory */
+    uint32_t src_ino = path_to_inode(oldpath);
+    if (!src_ino) return -1;
+
+    biscuitfs_inode_t src_inode;
+    if (read_inode(src_ino, &src_inode) != 0) return -1;
+    if ((src_inode.mode & BISCUITFS_IFMT) == BISCUITFS_IFDIR) return -1;
+
+    /* Compute parent directory and basename of newpath */
+    char parent_path[VFS_PATH_LEN];
+    strncpy(parent_path, newpath, sizeof(parent_path) - 1);
+    parent_path[sizeof(parent_path) - 1] = '\0';
+    char *slash = strrchr(parent_path, '/');
+    if (!slash) return -1;
+    const char *name = slash + 1;
+    if (!*name) return -1;
+    if (slash == parent_path) slash[1] = '\0';
+    else *slash = '\0';
+
+    uint32_t dir_ino = path_to_inode(parent_path[0] ? parent_path : "/");
+    if (!dir_ino) return -1;
+
+    /* newpath must not already exist */
+    if (path_to_inode(newpath)) return -1;
+
+    biscuitfs_journal_begin();
+
+    src_inode.links_count++;
+    write_inode(src_ino, &src_inode);
+
+    if (dir_add_entry(dir_ino, name, src_ino, BISCUITFS_FT_REG_FILE) != 0) {
+        /* Roll back the link count increment */
+        src_inode.links_count--;
+        write_inode(src_ino, &src_inode);
+        biscuitfs_journal_abort();
+        return -1;
+    }
+
+    biscuitfs_journal_commit();
+    return 0;
+}
+
+static int biscuitfs_symlink_cb(const char *target, const char *linkpath) {
+    if (!target || !linkpath) return -1;
+
+    size_t target_len = strlen(target);
+    if (target_len == 0 || target_len >= VFS_PATH_LEN) return -1;
+
+    /* linkpath must not already exist */
+    if (path_to_inode(linkpath)) return -1;
+
+    /* Compute parent directory and basename of linkpath */
+    char parent_path[VFS_PATH_LEN];
+    strncpy(parent_path, linkpath, sizeof(parent_path) - 1);
+    parent_path[sizeof(parent_path) - 1] = '\0';
+    char *slash = strrchr(parent_path, '/');
+    if (!slash) return -1;
+    const char *name = slash + 1;
+    if (!*name) return -1;
+    if (slash == parent_path) slash[1] = '\0';
+    else *slash = '\0';
+
+    uint32_t dir_ino = path_to_inode(parent_path[0] ? parent_path : "/");
+    if (!dir_ino) return -1;
+
+    biscuitfs_journal_begin();
+
+    uint32_t ino = alloc_inode();
+    if (!ino) { biscuitfs_journal_abort(); return -1; }
+
+    biscuitfs_inode_t inode;
+    memset(&inode, 0, sizeof(inode));
+    inode.mode        = BISCUITFS_IFLNK | 0777;
+    inode.links_count = 1;
+    inode.size_lo     = (uint32_t)target_len;
+
+    uint32_t uid;
+    uint32_t gid;
+    biscuitfs_get_current_creds(&uid, &gid);
+    inode.uid = (uint16_t)uid;
+    inode.gid = (uint16_t)gid;
+
+    /* Store target in a data block */
+    uint32_t data_blk = alloc_block();
+    if (!data_blk) {
+        biscuitfs_journal_abort();
+        return -1;
+    }
+
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+    if (!blkbuf) {
+        biscuitfs_journal_abort();
+        return -1;
+    }
+    memset(blkbuf, 0, BISCUITFS_BLOCK_SIZE);
+    memcpy(blkbuf, target, target_len);
+    biscuitfs_journal_write_block(data_blk, blkbuf);
+    biscuitfs_free_block_buf(blkbuf);
+
+    inode.block[0]  = data_blk;
+    inode.blocks_lo = fs_sectors_per_block;
+    write_inode(ino, &inode);
+
+    if (dir_add_entry(dir_ino, name, ino, BISCUITFS_FT_SYMLINK) != 0) {
+        biscuitfs_journal_abort();
+        return -1;
+    }
+
+    biscuitfs_journal_commit();
+    return 0;
+}
+
+static int biscuitfs_readlink_cb(const char *path, char *buf, size_t bufsz) {
+    if (!path || !buf || bufsz == 0) return -1;
+
+    uint32_t ino = path_to_inode(path);
+    if (!ino) return -1;
+
+    biscuitfs_inode_t inode;
+    if (read_inode(ino, &inode) != 0) return -1;
+    if ((inode.mode & BISCUITFS_IFMT) != BISCUITFS_IFLNK) return -1;
+
+    uint32_t target_len = inode.size_lo;
+    if (target_len == 0) return 0;
+
+    uint32_t phys = inode_get_block(&inode, 0);
+    if (!phys) return -1;
+
+    uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
+    if (!blkbuf) return -1;
+
+    if (read_block(phys, blkbuf) != 0) {
+        biscuitfs_free_block_buf(blkbuf);
+        return -1;
+    }
+
+    size_t copy_len = target_len < bufsz ? target_len : bufsz;
+    memcpy(buf, blkbuf, copy_len);
+    biscuitfs_free_block_buf(blkbuf);
+    return (int)copy_len;
+}
+
+static int biscuitfs_chmod_cb(const char *path, uint16_t mode) {
+    if (!path) return -1;
+
+    uint32_t ino = path_to_inode(path);
+    if (!ino) return -1;
+
+    biscuitfs_inode_t inode;
+    if (read_inode(ino, &inode) != 0) return -1;
+
+    biscuitfs_journal_begin();
+    /* Preserve the file-type bits and replace the permission bits */
+    inode.mode = (uint16_t)((inode.mode & BISCUITFS_IFMT) | (mode & 07777u));
+    write_inode(ino, &inode);
+    biscuitfs_journal_commit();
+    return 0;
+}
+
+static int biscuitfs_chown_cb(const char *path, uint32_t uid, uint32_t gid) {
+    if (!path) return -1;
+
+    uint32_t ino = path_to_inode(path);
+    if (!ino) return -1;
+
+    biscuitfs_inode_t inode;
+    if (read_inode(ino, &inode) != 0) return -1;
+
+    biscuitfs_journal_begin();
+    if (uid != (uint32_t)-1) inode.uid = (uint16_t)uid;
+    if (gid != (uint32_t)-1) inode.gid = (uint16_t)gid;
+    /* Clear setuid/setgid bits on ownership change (POSIX requirement) */
+    if (uid != (uint32_t)-1)
+        inode.mode &= (uint16_t)~(BISCUITFS_ISUID | BISCUITFS_ISGID);
+    write_inode(ino, &inode);
+    biscuitfs_journal_commit();
+    return 0;
+}
+
+
 
 static filesystem_t biscuitfs_driver = {
-    .name    = "biscuitfs",
-    .mount   = biscuitfs_mount_cb,
-    .open    = biscuitfs_open_cb,
-    .read    = biscuitfs_read_cb,
-    .read_at = biscuitfs_read_at_cb,
-    .write   = biscuitfs_write_cb,
-    .close   = biscuitfs_close_cb,
-    .readdir = biscuitfs_readdir_cb,
-    .mkdir   = biscuitfs_mkdir_cb,
-    .unlink  = biscuitfs_unlink_cb,
-    .stat    = biscuitfs_stat_cb,
+    .name     = "biscuitfs",
+    .mount    = biscuitfs_mount_cb,
+    .open     = biscuitfs_open_cb,
+    .read     = biscuitfs_read_cb,
+    .read_at  = biscuitfs_read_at_cb,
+    .write    = biscuitfs_write_cb,
+    .close    = biscuitfs_close_cb,
+    .readdir  = biscuitfs_readdir_cb,
+    .mkdir    = biscuitfs_mkdir_cb,
+    .unlink   = biscuitfs_unlink_cb,
+    .stat     = biscuitfs_stat_cb,
+    .link     = biscuitfs_link_cb,
+    .symlink  = biscuitfs_symlink_cb,
+    .readlink = biscuitfs_readlink_cb,
+    .chmod    = biscuitfs_chmod_cb,
+    .chown    = biscuitfs_chown_cb,
 };
 
 filesystem_t *biscuitfs_get_filesystem(void) {

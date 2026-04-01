@@ -493,6 +493,54 @@ static int32_t sys_rmdir(const char *path) {
     return res;
 }
 
+/* ---- link / symlink / readlink ----------------------------------------- */
+
+static int32_t sys_link(const char *oldpath, const char *newpath) {
+    if (!oldpath || !newpath) return -BLUEY_EFAULT;
+    int r = vfs_link(oldpath, newpath);
+    return (r == 0) ? 0 : -BLUEY_EPERM;
+}
+
+static int32_t sys_symlink(const char *target, const char *linkpath) {
+    if (!target || !linkpath) return -BLUEY_EFAULT;
+    int r = vfs_symlink(target, linkpath);
+    return (r == 0) ? 0 : -BLUEY_EPERM;
+}
+
+/* ---- chmod / fchmod ----------------------------------------------------- */
+
+static int32_t sys_chmod(const char *path, uint32_t mode) {
+    if (!path) return -BLUEY_EFAULT;
+    int r = vfs_chmod(path, (uint16_t)mode);
+    return (r == 0) ? 0 : -BLUEY_EPERM;
+}
+
+static int32_t sys_fchmod(int fd, uint32_t mode) {
+    if (fd < 0) return -BLUEY_EBADF;
+    int r = vfs_fchmod(fd, (uint16_t)mode);
+    return (r == 0) ? 0 : -BLUEY_EBADF;
+}
+
+/* ---- chown / lchown / fchown ------------------------------------------- */
+
+static int32_t sys_chown(const char *path, uint32_t uid, uint32_t gid) {
+    if (!path) return -BLUEY_EFAULT;
+    int r = vfs_chown(path, uid, gid);
+    return (r == 0) ? 0 : -BLUEY_EPERM;
+}
+
+static int32_t sys_lchown(const char *path, uint32_t uid, uint32_t gid) {
+    if (!path) return -BLUEY_EFAULT;
+    int r = vfs_lchown(path, uid, gid);
+    return (r == 0) ? 0 : -BLUEY_EPERM;
+}
+
+static int32_t sys_fchown(int fd, uint32_t uid, uint32_t gid) {
+    if (fd < 0) return -BLUEY_EBADF;
+    int r = vfs_fchown(fd, uid, gid);
+    return (r == 0) ? 0 : -BLUEY_EBADF;
+}
+
 /* ---- lseek -------------------------------------------------------------- */
 
 static int32_t sys_lseek(int fd, int32_t offset, int whence) {
@@ -1147,6 +1195,30 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_RMDIR:
             ret = sys_rmdir((const char*)regs->ebx);
+            break;
+        case SYS_LINK:
+            ret = sys_link((const char*)regs->ebx, (const char*)regs->ecx);
+            break;
+        case SYS_SYMLINK:
+            ret = sys_symlink((const char*)regs->ebx, (const char*)regs->ecx);
+            break;
+        case SYS_CHMOD:
+            ret = sys_chmod((const char*)regs->ebx, regs->ecx);
+            break;
+        case SYS_FCHMOD:
+            ret = sys_fchmod((int)regs->ebx, regs->ecx);
+            break;
+        case SYS_CHOWN:
+        case SYS_CHOWN32:
+            ret = sys_chown((const char*)regs->ebx, regs->ecx, regs->edx);
+            break;
+        case SYS_LCHOWN:
+        case SYS_LCHOWN32:
+            ret = sys_lchown((const char*)regs->ebx, regs->ecx, regs->edx);
+            break;
+        case SYS_FCHOWN:
+        case SYS_FCHOWN32:
+            ret = sys_fchown((int)regs->ebx, regs->ecx, regs->edx);
             break;
         case SYS_DUP:
             ret = sys_dup((int)regs->ebx);

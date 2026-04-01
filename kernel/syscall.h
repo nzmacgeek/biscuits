@@ -14,8 +14,11 @@
 #define SYS_CLOSE         3
 #define SYS_STAT          4
 #define SYS_FSTAT         5
+#define SYS_LINK          9
 #define SYS_UNLINK        10
 #define SYS_EXECVE        11
+#define SYS_CHMOD         15
+#define SYS_LCHOWN        16  /* lchown (16-bit uid/gid variant) */
 #define SYS_LSEEK         19
 #define SYS_GETPID        20
 #define SYS_MOUNT         21
@@ -42,23 +45,31 @@
 #define SYS_SETTIMEOFDAY  79
 #define SYS_RT_SIGACTION  174
 #define SYS_RT_SIGPROCMASK 175
-#define SYS_SIGRETURN     15
+#define SYS_SIGRETURN     119
 #define SYS_GETHOSTNAME   125
 #define SYS_SETHOSTNAME   74
 #define SYS_GETDENTS      141
 #define SYS_MKDIR         39
 #define SYS_RMDIR         40
 #define SYS_DUP           41
+#define SYS_SYMLINK       83
 #define SYS_ACCESS        85
+#define SYS_FCHMOD        94
+#define SYS_FCHOWN        95
 #define SYS_LSTAT         107
 #define SYS_FCNTL         55
 #define SYS_GETPPID       64
 #define SYS_WAIT4         114
 #define SYS_SCHED_YIELD   158
 #define SYS_NANOSLEEP     162
+#define SYS_CHOWN         182
 #define SYS_EXIT_GROUP    252
 #define SYS_SET_TID_ADDRESS 258
 #define SYS_GETRANDOM     355
+// chown/fchown/lchown 32-bit uid variants (used by musl on i386)
+#define SYS_LCHOWN32      198
+#define SYS_FCHOWN32      207
+#define SYS_CHOWN32       212
 // Process groups
 #define SYS_SETPGID       200
 #define SYS_GETPGID       201
