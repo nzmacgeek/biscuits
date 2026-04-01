@@ -70,6 +70,10 @@ DEBUG ?= 0
 BUILD_DIR ?= build
 BUILD_TOOLS_DIR := $(BUILD_DIR)/tools
 BUILD_USER_DIR := $(BUILD_DIR)/user
+MUSL_PREFIX ?= /tmp/blueyos-musl
+MUSL_INCLUDE_DIR := $(MUSL_PREFIX)/include
+MUSL_LIB_DIR := $(MUSL_PREFIX)/lib
+MUSL_INIT_TARGET := $(BUILD_USER_DIR)/init-musl.elf
 
 # ---------------------------------------------------------------------------
 # Architecture-specific compiler / assembler / linker flags
@@ -334,7 +338,7 @@ endif
 
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso disk run run-m68k version clean full-clean help tools-host toolinfo FORCE
+.PHONY: all iso disk disk-musl musl-init run run-m68k version clean full-clean help tools-host toolinfo FORCE
 
 all: $(TARGET) $(USER_TARGETS)
 	@echo ""
@@ -366,6 +370,8 @@ iso: $(TARGET) ; @if [ "$(ARCH)" != "i386" ]; then echo "  [ISO]  ISO build is o
 
 disk: $(TARGET) $(USER_TARGETS) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(BUILD_USER_DIR)/init.elf --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
 
+disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(MUSL_INIT_TARGET) --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+
 run: disk ; @if [ "$(ARCH)" != "i386" ]; then echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/qemu-run.sh
 
 run-m68k: $(BUILD_DIR)/blueyos-m68k.elf
@@ -387,6 +393,13 @@ full-clean: clean ; @echo "  Full clean! All build artifacts removed."
 
 tools-host: $(MKFS_BLUEYFS) $(MKSWAP_BLUEYFS) $(FSCK_BLUEYFS) $(LIST_BLUEYFS) ; @echo "  Host tools built!"
 
+
+.PHONY: build-musl-blueyos
+build-musl-blueyos:
+	@echo "Building musl for BlueyOS under $(MUSL_PREFIX) (this may take a while)"
+	@mkdir -p $(MUSL_PREFIX)
+	@TARGET=i386-blueyos ./tools/build-musl.sh --prefix=$(MUSL_PREFIX)
+
 $(MKFS_BLUEYFS): tools/mkfs_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
 
 $(MKSWAP_BLUEYFS): tools/mkswap_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
@@ -396,6 +409,18 @@ $(FSCK_BLUEYFS): tools/fsck_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wext
 $(LIST_BLUEYFS): tools/list_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
 
 $(BUILD_USER_DIR)/init.elf: user/init.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
+
+musl-init: $(MUSL_INIT_TARGET)
+
+$(MUSL_INIT_TARGET): tests/musl/init/init.c tests/musl/init/syscalls.c ; @mkdir -p $(dir $@); \
+  if [ ! -d "$(MUSL_INCLUDE_DIR)" ] || [ ! -f "$(MUSL_LIB_DIR)/libc.a" ]; then \
+    echo "  [MUSL] Missing musl install under $(MUSL_PREFIX)"; \
+    echo "         expected $(MUSL_INCLUDE_DIR) and $(MUSL_LIB_DIR)/libc.a"; \
+    exit 1; \
+  fi; \
+  set -e; \
+  gcc -m32 -std=gnu11 -O2 -Wall -Wextra -fno-stack-protector -fno-builtin -fno-pic -static -no-pie -isystem $(MUSL_INCLUDE_DIR) -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -L$(MUSL_LIB_DIR) -o $@ $^ -lc; \
+  echo "  [LD]  $@ (musl static)"
 
 toolinfo:
 	@echo "BlueyOS Build Tool Versions (ARCH=$(ARCH))"
@@ -418,11 +443,14 @@ help:
 	@echo "  make ARCH=ppc         - build PowerPC kernel (iMac G4 Sunflower)"
 	@echo "  make iso              - create bootable ISO (i386 only)"
 	@echo "  make disk             - create a partitioned BlueyOS disk image"
+	@echo "  make musl-init        - build static musl test init at $(MUSL_INIT_TARGET)"
+	@echo "  make disk-musl        - create a disk image using the musl test init"
 	@echo "  make run              - build ISO and launch in QEMU (i386 only)"
 	@echo "  make run-m68k         - launch M68K QEMU with detached serial capture"
 	@echo "  make tools-host       - build host-side mkfs/mkswap/fsck tools"
 	@echo "  make version          - print version information"
 	@echo "  make clean            - remove all build artifacts"
+	@echo "  make MUSL_PREFIX=... musl-init  - override the musl install prefix"
 	@echo "  make BUILD_NUMBER=N   - set build number (default: 1)"
 	@echo ""
 	@echo "Toolchain installers (Ubuntu/Debian):"
@@ -431,3 +459,7 @@ help:
 	@echo ""
 	@echo "i386 prerequisites: nasm, gcc (multilib), ld (binutils),"
 	@echo "                    qemu-system-i386, grub-pc-bin, grub-common, xorriso"
+
+.PHONY: test-boot
+test-boot:
+  @bash tools/boot-test.sh

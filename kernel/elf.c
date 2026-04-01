@@ -14,7 +14,7 @@
 #define ELF_READ_CHUNK_SIZE   512u
 #define ELF_MAX_IMAGE_SIZE    (1024u * 1024u)
 #define ELF_USER_STACK_BASE   0x70000000u
-#define ELF_USER_STACK_SIZE   (PAGE_SIZE * 4u)
+#define ELF_USER_STACK_SIZE   (PAGE_SIZE * 5u)
 #define ELF_USER_STACK_STRIDE 0x00010000u
 
 static uint32_t elf_next_stack_base = ELF_USER_STACK_BASE;
