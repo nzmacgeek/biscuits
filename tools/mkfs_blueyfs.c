@@ -44,6 +44,9 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define HOST_SECTOR_SIZE 512u
 
@@ -679,6 +682,49 @@ static int dir_add_entry_host(uint32_t dir_ino, const char *name, uint32_t ino, 
     return -1;
 }
 
+static uint32_t dir_lookup_host(uint32_t dir_ino, const char *name) {
+    biscuitfs_inode_t dir_inode;
+    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
+
+    if (read_inode_host(dir_ino, &dir_inode) != 0) return 0;
+    uint32_t size = dir_inode.size_lo;
+    uint32_t offset = 0;
+
+    while (offset < size) {
+        uint32_t blk_n = offset / g_block_size;
+        uint32_t blk_off = offset % g_block_size;
+        uint32_t phys = 0;
+        /* get physical block number from inode.block[] or indirects */
+        if (blk_n < BISCUITFS_N_DIRECT) {
+            phys = dir_inode.block[blk_n];
+        } else {
+            uint32_t n = blk_n - BISCUITFS_N_DIRECT;
+            uint32_t ptrs_per_block = g_block_size / sizeof(uint32_t);
+            if (!dir_inode.block[12]) return 0;
+            read_block(dir_inode.block[12], blkbuf);
+            if (n >= ptrs_per_block) return 0;
+            phys = ((uint32_t *)blkbuf)[n];
+        }
+        if (!phys) return 0;
+        read_block(phys, blkbuf);
+
+        uint32_t off = 0;
+        while (off < g_block_size) {
+            biscuitfs_dirent_t *de = (biscuitfs_dirent_t *)(blkbuf + off);
+            if (de->rec_len == 0) break;
+            if (de->inode && de->name_len == (uint8_t)strlen(name) &&
+                memcmp(de->name, name, de->name_len) == 0) {
+                return de->inode;
+            }
+            off += de->rec_len;
+        }
+
+        offset += g_block_size;
+    }
+
+    return 0;
+}
+
 static int create_dir_host(uint32_t parent_ino, const char *name, uint32_t now, uint32_t *ino_out) {
     uint32_t ino = alloc_inode_host();
     uint32_t data_blk = alloc_block_host();
@@ -755,7 +801,11 @@ static int create_file_host(uint32_t parent_ino, const char *name,
     inode.crtime = now;
     inode.size_lo = (uint32_t)len;
 
-    while (remaining > 0 && block_index < BISCUITFS_N_DIRECT) {
+    /* Helper: set the n-th block pointer in the inode, allocating indirect
+     * blocks on demand. Returns 0 on success, -1 on failure. */
+    auto_set_block: ;
+
+    while (remaining > 0) {
         uint32_t blk = alloc_block_host();
         uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
         size_t chunk;
@@ -766,13 +816,40 @@ static int create_file_host(uint32_t parent_ino, const char *name,
         chunk = remaining > sizeof(blkbuf) ? sizeof(blkbuf) : remaining;
         memcpy(blkbuf, data + offset, chunk);
         write_block(blk, blkbuf);
-        inode.block[block_index++] = blk;
+
+        /* Place the block number into the inode (direct or indirect) */
+        if (block_index < BISCUITFS_N_DIRECT) {
+            inode.block[block_index] = blk;
+        } else {
+            /* single indirect block handling */
+            uint32_t n = block_index - BISCUITFS_N_DIRECT;
+            uint32_t ptrs_per_block = g_block_size / sizeof(uint32_t);
+            if (n < ptrs_per_block) {
+                /* allocate indirect block if needed */
+                if (!inode.block[12]) {
+                    uint32_t ib = alloc_block_host();
+                    if (!ib) return -1;
+                    uint8_t empty[BISCUITFS_BLOCK_SIZE];
+                    memset(empty, 0, sizeof(empty));
+                    write_block(ib, empty);
+                    inode.block[12] = ib;
+                }
+                uint8_t ibuf[BISCUITFS_BLOCK_SIZE];
+                read_block(inode.block[12], ibuf);
+                ((uint32_t *)ibuf)[n] = blk;
+                write_block(inode.block[12], ibuf);
+            } else {
+                /* double indirect not implemented in host mkfs */
+                return -1;
+            }
+        }
+
         inode.blocks_lo += g_block_size / HOST_SECTOR_SIZE;
         offset += chunk;
         remaining -= chunk;
+        block_index++;
     }
 
-    if (remaining != 0) return -1;
     if (write_inode_host(ino, &inode) != 0) return -1;
     return dir_add_entry_host(parent_ino, name, ino, BISCUITFS_FT_REG_FILE);
 }
@@ -813,7 +890,9 @@ static int read_host_file(const char *path, uint8_t **data_out, size_t *size_out
     return 0;
 }
 
-static int populate_standard_layout(const char *init_path, const char *fstab_path) {
+static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base, const char *relpath, uint32_t now);
+
+static int populate_standard_layout(const char *init_path, const char *fstab_path, const char *install_dir) {
     biscuitfs_super_t sb;
     uint32_t now;
     uint32_t bin_ino = 0;
@@ -846,6 +925,117 @@ static int populate_standard_layout(const char *init_path, const char *fstab_pat
         free(data);
     }
 
+    /* If an install_dir is provided, recursively copy its contents into
+     * the new filesystem root preserving relative paths. */
+    if (install_dir && install_dir[0] != '\0') {
+        if (populate_from_dir_recursive(BISCUITFS_ROOT_INO, install_dir, "", now) != 0) return -1;
+    }
+
+    return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Recursively copy a host directory into the biscuitfs image.
+ * src_base: path to the host dir
+ * relpath: path within src_base for current recursion (empty for top-level)
+ * parent_ino: inode number of the directory in the image where entries are added
+ * -------------------------------------------------------------------------*/
+static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base, const char *relpath, uint32_t now) {
+    char path[PATH_MAX];
+    if (relpath && relpath[0])
+        snprintf(path, sizeof(path), "%s/%s", src_base, relpath);
+    else
+        snprintf(path, sizeof(path), "%s", src_base);
+
+    DIR *d = opendir(path);
+    if (!d) {
+        fprintf(stderr, "mkfs: opendir('%s') failed: %s\n", path, strerror(errno));
+        return -1;
+    }
+    struct dirent *de;
+
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        char relchild[PATH_MAX];
+        if (relpath && relpath[0]) snprintf(relchild, sizeof(relchild), "%s/%s", relpath, de->d_name);
+        else snprintf(relchild, sizeof(relchild), "%s", de->d_name);
+
+        char fullchild[PATH_MAX];
+        snprintf(fullchild, sizeof(fullchild), "%s/%s", src_base, relchild);
+
+        struct stat st;
+        /* Use lstat to detect symlinks without following them */
+        if (lstat(fullchild, &st) != 0) {
+            fprintf(stderr, "mkfs: lstat('%s') failed: %s\n", fullchild, strerror(errno));
+            closedir(d);
+            return -1;
+        }
+
+        /* If it's a symlink, try to resolve and copy the target if present; otherwise skip */
+        if (S_ISLNK(st.st_mode)) {
+            char tbuf[PATH_MAX];
+            ssize_t tl = readlink(fullchild, tbuf, sizeof(tbuf) - 1);
+            if (tl <= 0) {
+                fprintf(stderr, "mkfs: readlink('%s') failed or empty\n", fullchild);
+                continue;
+            }
+            tbuf[tl] = '\0';
+            char resolved[PATH_MAX];
+            /* If the link is absolute, use it; otherwise resolve relative to the symlink's dir */
+            if (tbuf[0] == '/') {
+                snprintf(resolved, sizeof(resolved), "%s", tbuf);
+            } else {
+                /* dirname(fullchild) + '/' + tbuf */
+                char dironly[PATH_MAX];
+                strncpy(dironly, fullchild, sizeof(dironly));
+                char *p = strrchr(dironly, '/');
+                if (p) *p = '\0'; else dironly[0] = '.'; 
+                snprintf(resolved, sizeof(resolved), "%s/%s", dironly, tbuf);
+            }
+            if (stat(resolved, &st) != 0) {
+                fprintf(stderr, "mkfs: symlink target not found '%s' -> '%s' (skipping)\n", fullchild, tbuf);
+                continue;
+            }
+            /* proceed using st for the resolved target */
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            uint32_t child_ino = 0;
+            /* Reuse existing directory if present */
+            child_ino = dir_lookup_host(parent_ino, de->d_name);
+            if (!child_ino) {
+                if (create_dir_host(parent_ino, de->d_name, now, &child_ino) != 0) {
+                    fprintf(stderr, "mkfs: create_dir_host failed for '%s' under parent ino %u\n", relchild, parent_ino);
+                    closedir(d);
+                    return -1;
+                }
+            }
+            if (populate_from_dir_recursive(child_ino, src_base, relchild, now) != 0) {
+                fprintf(stderr, "mkfs: recursion failed for '%s'\n", relchild);
+                closedir(d);
+                return -1;
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            uint8_t *data = NULL;
+            size_t size = 0;
+            if (read_host_file(fullchild, &data, &size) != 0) {
+                fprintf(stderr, "mkfs: read_host_file failed for '%s'\n", fullchild);
+                closedir(d);
+                return -1;
+            }
+            if (create_file_host(parent_ino, de->d_name, data, size, now) != 0) {
+                fprintf(stderr, "mkfs: create_file_host failed for '%s' under parent ino %u\n", relchild, parent_ino);
+                free(data);
+                closedir(d);
+                return -1;
+            }
+            free(data);
+        } else {
+            /* ignore sockets, devices, links for now */
+        }
+    }
+
+    closedir(d);
     return 0;
 }
 
@@ -864,6 +1054,7 @@ static void usage(const char *prog) {
         "  -n <sectors>  size of the filesystem region in sectors\n"
         "  -I <file>     install a host file as /bin/init\n"
         "  -T <file>     install a host file as /etc/fstab\n"
+        "  -A <dir>      recursively copy host dir into image root (/ )\n"
         "  -j <blocks>   journal size in blocks (default: 2048 = 8 MB)\n"
         "  -F            force: do not prompt\n"
         "  -q            quiet output\n"
@@ -886,6 +1077,7 @@ int main(int argc, char *argv[]) {
     const char *target      = NULL;
     const char *install_init = NULL;
     const char *install_fstab = NULL;
+    const char *install_dir = NULL;
     uint32_t offset_sectors = 0;
     uint32_t region_sectors = 0;
 
@@ -904,6 +1096,8 @@ int main(int argc, char *argv[]) {
             install_init = argv[++i];
         } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
             install_fstab = argv[++i];
+        } else if (strcmp(argv[i], "-A") == 0 && i + 1 < argc) {
+            install_dir = argv[++i];
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             offset_sectors = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
@@ -993,8 +1187,8 @@ int main(int argc, char *argv[]) {
 
     do_mkfs(label, journal_blocks);
 
-    if (install_init || install_fstab) {
-        if (populate_standard_layout(install_init, install_fstab) != 0) {
+    if (install_init || install_fstab || install_dir) {
+        if (populate_standard_layout(install_init, install_fstab, install_dir) != 0) {
             fprintf(stderr, "Error: failed to populate initial BlueyFS layout\n");
             fclose(g_fp);
             return 1;

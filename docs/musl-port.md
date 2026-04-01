@@ -40,6 +40,60 @@
   - Prefer iterative builds: build readline → build ncurses → build bash, linking against `/tmp/blueyos-musl`.
 
 This document is a short howto; if you want I can add step-by-step commands for building `ncurses`/`readline` and producing a static `bash` binary suitable for inclusion in the image.
+
+---
+
+**Building bash (step-by-step)**
+
+- **Overview:** `bash` depends on `readline` (or `libedit`) and optional `ncurses` for terminal handling. The recommended sequence is:
+  1. Build and install `readline` into the musl sysroot.
+  2. Build and install `ncurses` (if you want full tty capabilities).
+  3. Configure and build `bash` with static linking against musl and the installed libs.
+
+- **Example commands (manual):**
+
+  ```bash
+  # variables
+  MUSL_PREFIX=/tmp/blueyos-musl
+  WORKDIR=/tmp/blueyos-bld
+  mkdir -p $WORKDIR/src $WORKDIR/build
+  cd $WORKDIR/src
+
+  # readline
+  wget https://ftp.gnu.org/gnu/readline/readline-8.2.tar.gz
+  tar xzf readline-8.2.tar.gz
+  cd readline-8.2
+  CFLAGS='-m32 -static -isystem ${MUSL_PREFIX}/include' \
+    LDFLAGS='-L${MUSL_PREFIX}/lib' \
+    ./configure --host=i686-linux-gnu --prefix=${MUSL_PREFIX}
+  make -j$(nproc)
+  make install
+
+  # ncurses (optional)
+  cd $WORKDIR/src
+  wget https://invisible-mirror.net/archives/ncurses/ncurses-6.3.tar.gz
+  tar xzf ncurses-6.3.tar.gz
+  cd ncurses-6.3
+  CFLAGS='-m32 -static -isystem ${MUSL_PREFIX}/include' \
+    LDFLAGS='-L${MUSL_PREFIX}/lib' \
+    ./configure --host=i686-linux-gnu --prefix=${MUSL_PREFIX} --with-shared=no --with-normal --without-debug
+  make -j$(nproc)
+  make install
+
+  # bash
+  cd $WORKDIR/src
+  wget https://ftp.gnu.org/gnu/bash/bash-5.1.tar.gz
+  tar xzf bash-5.1.tar.gz
+  cd bash-5.1
+  CFLAGS='-m32 -static -isystem ${MUSL_PREFIX}/include' \
+    LDFLAGS='-L${MUSL_PREFIX}/lib' \
+    ./configure --host=i686-linux-gnu --prefix=/usr --without-bash-malloc --enable-static-link
+  make -j$(nproc)
+  # copy the resulting 'bash' into your image; consider stripping: strip --strip-all bash
+  ```
+
+- **Automation:** see `tools/build-bash.sh` for an opinionated helper to automate downloads/configure/make steps.
+
 # Porting musl libc to BlueyOS
 
 ## Goal

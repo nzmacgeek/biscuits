@@ -287,6 +287,7 @@ int main(void) {
     test_file_mmap();
     test_blueyfs_file_sizes();
     write_str("[init] all tests passed\n");
+    execl("/bin/bash", "bash", NULL);
     exit_now(0);
     return 0;
 }
