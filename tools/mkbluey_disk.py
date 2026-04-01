@@ -51,7 +51,7 @@ def write_partition_region(image: Path, offset_lba: int, partition_image: Path) 
         shutil.copyfileobj(part_fp, disk_fp)
 
 
-def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: int, root_device: str, root_fstype: str) -> None:
+def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: int, root_device: str, root_fstype: str, boot_extra_dir: str = None) -> None:
     boot_sectors = sectors_from_mb(boot_mb)
     boot_size_bytes = boot_sectors * SECTOR_SIZE
     boot_img = image.with_suffix(".boot.tmp")
@@ -76,6 +76,39 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: in
         shutil.rmtree(boot_stage)
     (boot_stage / "boot" / "grub").mkdir(parents=True)
     shutil.copy2(kernel_path, boot_stage / "boot" / "blueyos.elf")
+
+    # If an extra boot directory was provided, copy its contents into the
+    # boot staging directory so they appear under /boot in the created ext2.
+    if boot_extra_dir:
+        extra_path = Path(boot_extra_dir)
+        if not extra_path.exists() or not extra_path.is_dir():
+            raise SystemExit(f"--boot-extra-dir not found or not a dir: {boot_extra_dir}")
+        for item in extra_path.iterdir():
+            dest = boot_stage / "boot" / item.name
+            if item.is_dir():
+                try:
+                    shutil.copytree(item, dest, symlinks=True, dirs_exist_ok=True)
+                except TypeError:
+                    # Older Python versions may not support dirs_exist_ok
+                    try:
+                        shutil.copytree(item, dest, symlinks=True)
+                    except Exception:
+                        # Fallback: create dest and copy children
+                        dest.mkdir(parents=True, exist_ok=True)
+                        for root, dirs, files in os.walk(item):
+                            rel = Path(root).relative_to(item)
+                            for d in dirs:
+                                (dest / rel / d).mkdir(parents=True, exist_ok=True)
+                            for f in files:
+                                srcf = Path(root) / f
+                                dstf = dest / rel / f
+                                try:
+                                    shutil.copy2(srcf, dstf)
+                                except Exception:
+                                    # ignore problematic entries
+                                    pass
+            else:
+                shutil.copy2(item, dest)
 
     disk_grub_cfg = (
         "serial --unit=0 --speed=115200\n"
@@ -163,10 +196,14 @@ def main() -> int:
     parser.add_argument("--slack-mb", type=int, default=16)
     parser.add_argument("--kernel", default="build/blueyos.elf")
     parser.add_argument("--init", default="build/user/init.elf")
+    parser.add_argument("--boot-extra-dir", default=None,
+                        help="Copy contents of this host dir into the boot partition's /boot before building")
     parser.add_argument("--mkfs-tool", default="build/tools/mkfs_blueyfs")
     parser.add_argument("--mkswap-tool", default="build/tools/mkswap_blueyfs")
     parser.add_argument("--root-label", default="BlueyRoot")
     parser.add_argument("--swap-label", default="ChatterSwap")
+    parser.add_argument("--root-extra-dir", default=None,
+                        help="Recursively copy contents of this host dir into the root filesystem during mkfs (install into /)")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
@@ -207,18 +244,13 @@ def main() -> int:
         fstab_name = fstab_fp.name
 
     try:
-        build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/hda2", "blueyfs")
+        build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/hda2", "blueyfs", getattr(args, 'boot_extra_dir', None))
 
-        run([
-            str(mkfs_tool),
-            "-F",
-            "-L", args.root_label,
-            "-o", str(root_start),
-            "-n", str(root_sectors),
-            "-I", str(init_path),
-            "-T", fstab_name,
-            str(image),
-        ], repo)
+        mkfs_cmd = [str(mkfs_tool), "-F", "-L", args.root_label, "-o", str(root_start), "-n", str(root_sectors), "-I", str(init_path), "-T", fstab_name]
+        if args.root_extra_dir:
+            mkfs_cmd += ["-A", str(args.root_extra_dir)]
+        mkfs_cmd.append(str(image))
+        run(mkfs_cmd, repo)
 
         run([
             str(mkswap_tool),

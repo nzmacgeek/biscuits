@@ -68,12 +68,15 @@ BUILD_USER   := $(shell whoami  2>/dev/null || echo unknown-user)
 # developing and debugging the kernel.
 DEBUG ?= 0
 BUILD_DIR ?= build
+BUILD_KERNEL_DIR := $(BUILD_DIR)/kernel
 BUILD_TOOLS_DIR := $(BUILD_DIR)/tools
-BUILD_USER_DIR := $(BUILD_DIR)/user
-MUSL_PREFIX ?= /tmp/blueyos-musl
+BUILD_USERS_DIR := $(BUILD_DIR)/userspace
+BUILD_USER_DIR := $(BUILD_USERS_DIR)
+BUILD_SYSROOT := $(BUILD_DIR)/sysroot
+MUSL_PREFIX ?= $(BUILD_USERS_DIR)/musl
 MUSL_INCLUDE_DIR := $(MUSL_PREFIX)/include
 MUSL_LIB_DIR := $(MUSL_PREFIX)/lib
-MUSL_INIT_TARGET := $(BUILD_USER_DIR)/init-musl.elf
+MUSL_INIT_TARGET := $(BUILD_USERS_DIR)/init/init-musl.elf
 
 # ---------------------------------------------------------------------------
 # Architecture-specific compiler / assembler / linker flags
@@ -284,7 +287,7 @@ else ifeq ($(ARCH),ppc)
 else
   C_SOURCES   = $(I386_C_SOURCES)
   ASM_SOURCES = $(I386_ASM_SOURCES)
-  TARGET      = $(BUILD_DIR)/blueyos.elf
+  TARGET      = $(BUILD_KERNEL_DIR)/bkernel
   USER_TARGETS = $(BUILD_USER_DIR)/init.elf
 endif
 
@@ -295,6 +298,12 @@ MKSWAP_BLUEYFS = $(BUILD_TOOLS_DIR)/mkswap_blueyfs
 FSCK_BLUEYFS = $(BUILD_TOOLS_DIR)/fsck_blueyfs
 LIST_BLUEYFS = $(BUILD_TOOLS_DIR)/list_blueyfs
 ISO_STAGE_DIR = $(BUILD_DIR)/isodir
+
+# Convenience dirs
+$(BUILD_KERNEL_DIR): ; @mkdir -p $(BUILD_KERNEL_DIR)
+$(BUILD_TOOLS_DIR): ; @mkdir -p $(BUILD_TOOLS_DIR)
+$(BUILD_USERS_DIR): ; @mkdir -p $(BUILD_USERS_DIR)
+$(BUILD_SYSROOT): ; @mkdir -p $(BUILD_SYSROOT)
 
 C_OBJECTS   = $(C_SOURCES:.c=.o)
 ASM_OBJECTS_C = $(M68K_ASM_SOURCES:.S=.o) $(PPC_ASM_SOURCES:.S=.o)
@@ -368,9 +377,18 @@ $(TARGET): $(OBJECTS)
 
 iso: $(TARGET) ; @if [ "$(ARCH)" != "i386" ]; then echo "  [ISO]  ISO build is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/mkdisk.sh
 
-disk: $(TARGET) $(USER_TARGETS) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(BUILD_USER_DIR)/init.elf --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+sysroot: $(TARGET) $(MUSL_INIT_TARGET) | $(BUILD_SYSROOT)
+	@echo "  [SYSROOT] Assembling $(BUILD_SYSROOT)"
+	@mkdir -p $(BUILD_SYSROOT)/boot $(BUILD_SYSROOT)/bin $(BUILD_SYSROOT)/lib $(BUILD_SYSROOT)/etc
+	@cp -f $(TARGET) $(BUILD_SYSROOT)/boot/bkernel
+	@if [ -f $(MUSL_INIT_TARGET) ]; then cp -f $(MUSL_INIT_TARGET) $(BUILD_SYSROOT)/bin/init; fi
+	@if [ -d $(BUILD_USERS_DIR)/bash/bin ]; then cp -a $(BUILD_USERS_DIR)/bash/bin/* $(BUILD_SYSROOT)/bin/ 2>/dev/null || true; fi
+	@if [ -d $(MUSL_LIB_DIR) ]; then cp -a $(MUSL_LIB_DIR)/* $(BUILD_SYSROOT)/lib/ 2>/dev/null || true; fi
+	@echo "  [SYSROOT] ready"
 
-disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(MUSL_INIT_TARGET) --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+disk: $(TARGET) $(USER_TARGETS) tools-host sysroot ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(BUILD_SYSROOT) --boot-extra-dir $(BUILD_SYSROOT)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+
+disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host sysroot ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(BUILD_SYSROOT) --boot-extra-dir $(BUILD_SYSROOT)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
 
 run: disk ; @if [ "$(ARCH)" != "i386" ]; then echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/qemu-run.sh
 
@@ -462,4 +480,4 @@ help:
 
 .PHONY: test-boot
 test-boot:
-  @bash tools/boot-test.sh
+	@bash tools/boot-test.sh

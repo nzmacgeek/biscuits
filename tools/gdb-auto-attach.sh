@@ -16,39 +16,14 @@ nohup bash tools/qemu-run.sh -S -gdb tcp::${GDB_PORT} > "$QEMU_LOG" 2>&1 &
 QEMU_PID=$!
 echo $QEMU_PID > "$OUT_DIR/qemu-paused.pid"
 
-# Wait for gdb port
-for i in {1..40}; do
-  ss -ltn | grep -q ":${GDB_PORT} " && break || sleep 0.25
-done
-
-# Run GDB batch to collect backtrace, registers, and memory near fault address
-GDB_CMD=(
-  gdb -batch -q build/blueyos.elf
-  -ex "target remote :${GDB_PORT}"
-  -ex "set pagination off"
+#!/usr/bin/env bash
+# Wrapper to the relocated script at scripts/experimental/debug/gdb-auto-attach.sh
+set -euo pipefail
+ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
+if [ -x "$ROOT_DIR/scripts/experimental/debug/gdb-auto-attach.sh" ]; then
+  exec "$ROOT_DIR/scripts/experimental/debug/gdb-auto-attach.sh" "$@"
+else
+  echo "scripts/experimental/debug/gdb-auto-attach.sh not found" >&2
+  exit 1
+fi
   -ex "break isr_handler"
-  -ex "continue"
-  -ex "bt full"
-  -ex "info registers"
-  -ex "x/64wx ${FAULT_ADDR}"
-  -ex "quit"
-)
-
-# Execute and capture output (don't let failures stop subsequent cleanup)
-{
-  "${GDB_CMD[@]}"
-} > "$GDB_OUT" 2>&1 || true
-
-# Give QEMU a moment to produce final serial output
-sleep 0.5
-
-# Try to stop QEMU
-kill $QEMU_PID || true
-
-# Report paths
-echo "GDB output saved to: $GDB_OUT"
-echo "QEMU serial log: $QEMU_LOG (tail below)"
-
-tail -n 200 "$QEMU_LOG" || true
-
-exit 0

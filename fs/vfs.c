@@ -629,6 +629,90 @@ int vfs_access_cred(const char *path, uint8_t access, const vfs_cred_t *cred) {
     return vfs_check_mode(&stat, access, cred) ? 0 : -1;
 }
 
+int vfs_link(const char *oldpath, const char *newpath) {
+    if (!oldpath || !newpath) return -1;
+    vfs_mount_t *m = vfs_find_mount(oldpath);
+    if (!m || !m->fs->link) return -1;
+    /* newpath must live on the same filesystem */
+    vfs_mount_t *mn = vfs_find_mount(newpath);
+    if (mn != m) return -1;
+    /* caller needs write + exec permission on the parent of newpath */
+    char parent[VFS_PATH_LEN];
+    vfs_stat_t parent_stat;
+    if (vfs_parent_path(newpath, parent, sizeof(parent)) != 0) return -1;
+    if (vfs_stat(parent, &parent_stat) != 0 || !parent_stat.is_dir) return -1;
+    if (vfs_access(parent, VFS_ACCESS_WRITE | VFS_ACCESS_EXEC) != 0) return -1;
+    return m->fs->link(oldpath, newpath);
+}
+
+int vfs_symlink(const char *target, const char *linkpath) {
+    if (!target || !linkpath) return -1;
+    vfs_mount_t *m = vfs_find_mount(linkpath);
+    if (!m || !m->fs->symlink) return -1;
+    /* caller needs write + exec permission on the parent directory */
+    char parent[VFS_PATH_LEN];
+    vfs_stat_t parent_stat;
+    if (vfs_parent_path(linkpath, parent, sizeof(parent)) != 0) return -1;
+    if (vfs_stat(parent, &parent_stat) != 0 || !parent_stat.is_dir) return -1;
+    if (vfs_access(parent, VFS_ACCESS_WRITE | VFS_ACCESS_EXEC) != 0) return -1;
+    return m->fs->symlink(target, linkpath);
+}
+
+int vfs_readlink(const char *path, char *buf, size_t bufsz) {
+    if (!path || !buf || bufsz == 0) return -1;
+    vfs_mount_t *m = vfs_find_mount(path);
+    if (!m || !m->fs->readlink) return -1;
+    return m->fs->readlink(path, buf, bufsz);
+}
+
+int vfs_chmod(const char *path, uint16_t mode) {
+    if (!path) return -1;
+    vfs_mount_t *m = vfs_find_mount(path);
+    if (!m || !m->fs->chmod) return -1;
+    /* only owner or root may change mode */
+    vfs_stat_t st;
+    vfs_cred_t cred;
+    vfs_fill_cred_from_process(&cred);
+    if (vfs_stat(path, &st) != 0) return -1;
+    if (cred.uid != 0 && cred.uid != st.uid) return -1;
+    return m->fs->chmod(path, mode & 07777u);
+}
+
+int vfs_fchmod(int fd, uint16_t mode) {
+    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    const char *path = fd_table[fd].path;
+    if (!path || !path[0]) return -1;
+    return vfs_chmod(path, mode);
+}
+
+int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
+    if (!path) return -1;
+    vfs_mount_t *m = vfs_find_mount(path);
+    if (!m || !m->fs->chown) return -1;
+    /* only root may change owner; owner may change group to own group */
+    vfs_stat_t st;
+    vfs_cred_t cred;
+    vfs_fill_cred_from_process(&cred);
+    if (vfs_stat(path, &st) != 0) return -1;
+    if (cred.uid != 0) {
+        if (uid != (uint32_t)-1 && uid != st.uid) return -1;
+        if (gid != (uint32_t)-1 && !vfs_cred_in_group(&cred, gid)) return -1;
+    }
+    return m->fs->chown(path, uid, gid);
+}
+
+int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
+    /* Without symlink traversal, lchown and chown behave identically */
+    return vfs_chown(path, uid, gid);
+}
+
+int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
+    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    const char *path = fd_table[fd].path;
+    if (!path || !path[0]) return -1;
+    return vfs_chown(path, uid, gid);
+}
+
 void vfs_print_mounts(void) {
     kprintf("[VFS]  Mount table:\n");
     for (int i = 0; i < mount_count; i++) {

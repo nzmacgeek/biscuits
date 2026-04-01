@@ -287,6 +287,10 @@ int main(void) {
     test_file_mmap();
     test_blueyfs_file_sizes();
     write_str("[init] all tests passed\n");
+    if (getenv("BLUEYOS_EXEC_BASH")) {
+        execl("/bin/bash", "bash", NULL);
+        write_str("[init] WARNING: execl /bin/bash failed\n");
+    }
     exit_now(0);
     return 0;
 }
