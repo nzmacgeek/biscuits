@@ -51,7 +51,7 @@ def write_partition_region(image: Path, offset_lba: int, partition_image: Path) 
         shutil.copyfileobj(part_fp, disk_fp)
 
 
-def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: int, root_device: str, root_fstype: str, boot_extra_dir: str = None) -> None:
+def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: int, root_device: str, root_fstype: str, boot_extra_dir: str = None, init_kernel_path: str = "/sbin/claw") -> None:
     boot_sectors = sectors_from_mb(boot_mb)
     boot_size_bytes = boot_sectors * SECTOR_SIZE
     boot_img = image.with_suffix(".boot.tmp")
@@ -110,13 +110,15 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: in
             else:
                 shutil.copy2(item, dest)
 
+    # Include the requested init path in the kernel commandline so the kernel
+    # runs the intended userspace `claw` program by default.
     disk_grub_cfg = (
         "serial --unit=0 --speed=115200\n"
         "terminal_output --append serial\n"
         "set timeout=1\n"
         "set default=0\n"
         "menuentry \"BlueyOS - Hard Disk Boot\" {\n"
-        f"    multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype}\n"
+        f"    multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
         "    boot\n"
         "}\n"
     )
@@ -126,7 +128,7 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: in
         "serial --unit=0 --speed=115200\n"
         "terminal_output --append serial\n"
         "set root=(hd0,msdos1)\n"
-        f"multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype}\n"
+        f"multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
         "boot\n"
     )
     early_cfg.write_text(early_grub_cfg, encoding="ascii")
@@ -204,6 +206,8 @@ def main() -> int:
     parser.add_argument("--swap-label", default="ChatterSwap")
     parser.add_argument("--root-extra-dir", default=None,
                         help="Recursively copy contents of this host dir into the root filesystem during mkfs (install into /)")
+    parser.add_argument("--init-kernel-path", default="/sbin/claw",
+                        help="Kernel commandline init= path to embed in grub.cfg (default: /sbin/claw)")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
@@ -252,7 +256,7 @@ def main() -> int:
         fstab_name = fstab_fp.name
 
     try:
-        build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/hda2", "blueyfs", getattr(args, 'boot_extra_dir', None))
+        build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/hda2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'))
 
         mkfs_cmd = [str(mkfs_tool), "-F", "-L", args.root_label, "-o", str(root_start), "-n", str(root_sectors), "-I", str(init_path), "-T", fstab_name]
         if args.root_extra_dir:
