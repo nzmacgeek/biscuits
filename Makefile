@@ -57,7 +57,11 @@ PYTHON ?= python3
 # Increment BUILD_NUMBER with each release: make BUILD_NUMBER=2
 # BUILD_HOST and BUILD_USER are captured automatically from the build machine.
 # ---------------------------------------------------------------------------
-BUILD_NUMBER ?= 1
+# Derive BUILD_NUMBER from git commit count when available. This can be
+# overridden by passing `BUILD_NUMBER=` on the make command line.
+# Also capture a short commit id for traceability.
+BUILD_NUMBER ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 1)
+BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE   := $(shell date -u '+%Y-%m-%d')
 BUILD_TIME   := $(shell date -u '+%H:%M:%S')
 BUILD_HOST   := $(shell hostname 2>/dev/null || echo unknown-host)
@@ -77,6 +81,15 @@ MUSL_PREFIX ?= $(BUILD_USERS_DIR)/musl
 MUSL_INCLUDE_DIR := $(MUSL_PREFIX)/include
 MUSL_LIB_DIR := $(MUSL_PREFIX)/lib
 MUSL_INIT_TARGET := $(BUILD_USERS_DIR)/init/init-musl.elf
+# Optional external sysroot to assemble disk images from (preferred when present)
+# If this directory exists, disk builds will use it instead of the locally
+# assembled $(BUILD_SYSROOT).
+SYSROOT_SRC ?= /opt/blueyos-sysroot
+ifeq ($(shell [ -d $(SYSROOT_SRC) ] && echo yes),yes)
+  ROOT_EXTRA_DIR := $(SYSROOT_SRC)
+else
+  ROOT_EXTRA_DIR := $(BUILD_SYSROOT)
+endif
 
 # ---------------------------------------------------------------------------
 # Architecture-specific compiler / assembler / linker flags
@@ -351,7 +364,7 @@ endif
 # ---------------------------------------------------------------------------
 .PHONY: all iso disk disk-musl musl-init run run-m68k version clean full-clean help tools-host toolinfo FORCE
 
-all: $(TARGET) $(USER_TARGETS)
+all: $(TARGET)
 	@echo ""
 	@echo "  G'day! BlueyOS Build \#$(BUILD_NUMBER) complete!"
 	@echo "  Built by $(BUILD_USER)@$(BUILD_HOST) on $(BUILD_DATE) $(BUILD_TIME)"
@@ -388,9 +401,10 @@ sysroot: $(TARGET) $(MUSL_INIT_TARGET) | $(BUILD_SYSROOT)
 	@if [ -d $(MUSL_LIB_DIR) ]; then cp -a $(MUSL_LIB_DIR)/* $(BUILD_SYSROOT)/lib/ 2>/dev/null || true; fi
 	@echo "  [SYSROOT] ready"
 
-disk: $(TARGET) $(USER_TARGETS) tools-host sysroot ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(BUILD_SYSROOT) --boot-extra-dir $(BUILD_SYSROOT)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
 
-disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host sysroot ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(BUILD_SYSROOT) --boot-extra-dir $(BUILD_SYSROOT)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+disk: $(TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(ROOT_EXTRA_DIR) --boot-extra-dir $(ROOT_EXTRA_DIR)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+
+disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(ROOT_EXTRA_DIR) --boot-extra-dir $(ROOT_EXTRA_DIR)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
 
 run: disk ; @if [ "$(ARCH)" != "i386" ]; then echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/qemu-run.sh
 

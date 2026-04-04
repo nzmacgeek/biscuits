@@ -195,7 +195,7 @@ def main() -> int:
     parser.add_argument("--swap-mb", type=int, default=16)
     parser.add_argument("--slack-mb", type=int, default=16)
     parser.add_argument("--kernel", default="build/blueyos.elf")
-    parser.add_argument("--init", default="build/user/init.elf")
+    parser.add_argument("--init", default="build/userspace/init/init-musl.elf")
     parser.add_argument("--boot-extra-dir", default=None,
                         help="Copy contents of this host dir into the boot partition's /boot before building")
     parser.add_argument("--mkfs-tool", default="build/tools/mkfs_blueyfs")
@@ -210,6 +210,14 @@ def main() -> int:
     image = repo / args.image
     kernel_path = repo / args.kernel
     init_path = repo / args.init
+    # If a root-extra-dir is provided and it contains a `bin/init`, prefer
+    # that init payload over the local default. This allows using an
+    # external sysroot like /opt/blueyos-sysroot as the source of the init.
+    if getattr(args, 'root_extra_dir', None):
+        root_extra_init = Path(args.root_extra_dir) / "bin" / "init"
+        if root_extra_init.exists():
+            init_path = root_extra_init
+            print(f"[DISK] Using init from root-extra-dir: {init_path}")
     mkfs_tool = repo / args.mkfs_tool
     mkswap_tool = repo / args.mkswap_tool
     boot_sectors = sectors_from_mb(args.boot_mb)
