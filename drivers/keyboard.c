@@ -9,6 +9,7 @@
 #include "../lib/stdio.h"
 #include "keyboard.h"
 #include "../kernel/irq.h"
+#include "../kernel/tty.h"
 
 #define KB_DATA_PORT  0x60
 #define KB_BUF_SIZE   256  // must be power of 2
@@ -76,6 +77,7 @@ static void kb_irq_handler(registers_t *regs) {
         kb_buf[kb_head] = c;
         kb_head = next_head;
     }
+    tty_input_char(c);
     // If buffer is full, key is silently dropped - "Bingo, slow down!" - Bandit
 }
 

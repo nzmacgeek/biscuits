@@ -8,6 +8,7 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../kernel/devev.h"
+#include "../kernel/tty.h"
 #include "vfs.h"
 #include "../kernel/syslog.h"
 #include "../kernel/process.h"
@@ -260,7 +261,32 @@ int vfs_fd_is_devev(int fd) {
     return fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV;
 }
 
+int vfs_fd_is_tty(int fd) {
+    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return 0;
+    return fd_table[fd].fd_type == VFS_FD_TYPE_TTY;
+}
+
 int vfs_open(const char *path, int flags) {
+    int tty_kind;
+    int fd;
+
+    if (!path) return -1;
+
+    tty_kind = tty_device_path_kind(path);
+    if (tty_kind != TTY_PATH_NONE) {
+        fd = vfs_alloc_fd();
+        if (fd < 0) return -1;
+        fd_table[fd].used = 1;
+        fd_table[fd].fd_type = VFS_FD_TYPE_TTY;
+        fd_table[fd].pipe_is_write = 0;
+        fd_table[fd].fs_idx = -1;
+        fd_table[fd].fs_fd = tty_kind;
+        fd_table[fd].offset = 0;
+        strncpy(fd_table[fd].path, path, VFS_PATH_LEN - 1);
+        fd_table[fd].path[VFS_PATH_LEN - 1] = '\0';
+        return fd;
+    }
+
     vfs_mount_t *m = vfs_find_mount(path);
     if (!m) {
         if (path) kprintf("[VFS] Open miss path=%s mount=0\n", path);
@@ -310,7 +336,7 @@ int vfs_open(const char *path, int flags) {
         return -1;
     }
 
-    int fd = vfs_alloc_fd();
+    fd = vfs_alloc_fd();
     if (fd < 0) {
         kprintf("[VFS]  Out of file descriptors for %s!\n", path);
         return -1;
@@ -332,6 +358,8 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
     if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV)
         return devev_read_bytes(buf, len);
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY)
+        return tty_read((char*)buf, len);
     if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) {
         int pipe_idx = fd_table[fd].fs_fd;
         if (pipe_idx < 0 || pipe_idx >= VFS_MAX_PIPES) return -1;
@@ -365,6 +393,7 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
 int vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
     if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) return -1;
     vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
     if (!m->fs->read_at) {
@@ -377,6 +406,11 @@ int vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
 
 int vfs_write(int fd, const uint8_t *buf, size_t len) {
     if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) {
+        tty_write((const char*)buf, len);
+        tty_flush();
+        return (int)len;
+    }
     if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) {
         int pipe_idx = fd_table[fd].fs_fd;
         if (pipe_idx < 0 || pipe_idx >= VFS_MAX_PIPES) return -1;
@@ -614,6 +648,16 @@ int vfs_fstat(int fd, vfs_stat_t *out) {
     if (fd < 0 || fd >= VFS_MAX_OPEN) return -1;
     if (!fd_table[fd].used) return -1;
     if (!out) return -1;
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) {
+        out->mode = VFS_S_IFCHR | VFS_S_IRUSR | VFS_S_IWUSR |
+                    VFS_S_IRGRP | VFS_S_IWGRP |
+                    VFS_S_IROTH | VFS_S_IWOTH;
+        out->uid = 0;
+        out->gid = 0;
+        out->size = 0;
+        out->is_dir = 0;
+        return 0;
+    }
     return vfs_stat(fd_table[fd].path, out);
 }
 

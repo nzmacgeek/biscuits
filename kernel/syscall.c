@@ -885,7 +885,16 @@ typedef struct { uint16_t ws_row; uint16_t ws_col;
                  uint16_t ws_xpixel; uint16_t ws_ypixel; } k_winsize_t;
 
 static int32_t sys_ioctl(int fd, uint32_t request, void *arg) {
-    (void)fd;
+    if (fd == 0 || fd == 1 || fd == 2 || vfs_fd_is_tty(fd)) {
+        if ((request == IOCTL_TIOCGWINSZ || request == IOCTL_TCGETS ||
+             request == IOCTL_TCSETS || request == IOCTL_TCSETSW ||
+             request == IOCTL_TCSETSF || request == IOCTL_TIOCGPGRP ||
+             request == IOCTL_TIOCSPGRP) && !arg) {
+            return -BLUEY_EFAULT;
+        }
+        return tty_ioctl(request, arg) == 0 ? 0 : -BLUEY_EINVAL;
+    }
+
     switch (request) {
         case IOCTL_TIOCGWINSZ: {
             if (!arg) return -BLUEY_EFAULT;
@@ -1204,6 +1213,12 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
         tty_flush();
         return (int32_t)len;
     }
+    if (fd < VFS_MAX_OPEN && vfs_fd_is_tty((int)fd)) {
+        if (!buf) return -BLUEY_EFAULT;
+        if (len == 0) return 0;
+        if (len > 4096) len = 4096;
+        return vfs_write((int)fd, (const uint8_t *)buf, len);
+    }
     if (fd >= 3) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
@@ -1315,6 +1330,11 @@ static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
         return tty_read(buf, len);
+    }
+    if (fd < VFS_MAX_OPEN && vfs_fd_is_tty((int)fd)) {
+        if (!buf) return -BLUEY_EFAULT;
+        if (len == 0) return 0;
+        return vfs_read((int)fd, (uint8_t *)buf, len);
     }
     if (fd >= 3) {
         if (!buf) return -BLUEY_EFAULT;

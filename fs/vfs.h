@@ -23,6 +23,7 @@
 #define VFS_S_IFMT   0xF000
 #define VFS_S_IFREG  0x8000
 #define VFS_S_IFDIR  0x4000
+#define VFS_S_IFCHR  0x2000
 #define VFS_S_ISUID  04000
 #define VFS_S_ISGID  02000
 #define VFS_S_IRUSR  0400
@@ -95,6 +96,7 @@ typedef struct {
 #define VFS_FD_TYPE_FILE  0   // regular file on a mounted filesystem
 #define VFS_FD_TYPE_DEVEV 1   // device event channel (kernel ring buffer)
 #define VFS_FD_TYPE_PIPE  2   // pipe (in-kernel ring buffer)
+#define VFS_FD_TYPE_TTY   3   // kernel console/tty device
 
 // lseek whence values (POSIX-compatible)
 #define VFS_SEEK_SET 0
@@ -108,6 +110,7 @@ int  vfs_umount(const char *path);
 int  vfs_open(const char *path, int flags);
 int  vfs_devev_open(void);           // open a device event channel fd
 int  vfs_fd_is_devev(int fd);        // 1 if the fd is a device event channel
+int  vfs_fd_is_tty(int fd);          // 1 if the fd is a tty/console device
 int  vfs_read(int fd, uint8_t *buf, size_t len);
 int  vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset);
 int  vfs_write(int fd, const uint8_t *buf, size_t len);
