@@ -17,23 +17,25 @@ extern syscall_saved_gs
 ; Calling convention: EAX=syscall number, EBX=arg1, ECX=arg2, EDX=arg3
 ; Returns result in EAX.
 ;
-; NOTE: es, fs, gs are saved to per-entry globals (interrupts disabled) and
-; restored individually, preserving any values the user had set.  If SMP
-; support is added, these globals must become per-CPU storage.
+; NOTE: ES and FS are saved to per-entry globals (interrupts disabled) and
+; restored individually.  GS is now saved and restored via the registers_t
+; frame so that syscall handlers (e.g. set_thread_area) can update it by
+; writing to regs->gs or setting syscall_saved_gs.  If SMP support is added,
+; these globals must become per-CPU storage.
 syscall_stub:
     cli
     push dword 0
     push dword 0x80
     pushad
-    ; Save es/fs/gs explicitly before overwriting them with the kernel selector.
+    ; Save es/fs explicitly before overwriting them with the kernel selector.
     mov  ax, es
     mov  [syscall_saved_es], eax
     mov  ax, fs
     mov  [syscall_saved_fs], eax
-    mov  ax, gs
-    mov  [syscall_saved_gs], eax
     mov  ax, ds
-    push eax
+    push eax            ; registers_t.ds
+    mov  ax, gs
+    push eax            ; registers_t.gs  (top of frame; may be modified by handler)
     mov  ax, 0x10       ; kernel data segment
     mov  ds, ax
     mov  es, ax
@@ -46,13 +48,16 @@ syscall_stub:
     ; Do NOT write eax here: if the scheduler switched context, regs no longer
     ; refers to the current process's frame and the write would corrupt it.
     pop  eax
+    mov  gs, ax         ; restore GS from registers_t.gs (handler may have changed it)
+    mov  [syscall_saved_gs], eax
+    pop  eax
     mov  ds, ax
     mov  eax, [syscall_saved_es]
     mov  es, ax
     mov  eax, [syscall_saved_fs]
     mov  fs, ax
     mov  eax, [syscall_saved_gs]
-    mov  gs, ax
+    mov  gs, ax         ; ensure GS is correct after es/fs restore path
     popad
     add  esp, 8
     sti

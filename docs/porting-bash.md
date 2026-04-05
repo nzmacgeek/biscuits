@@ -35,6 +35,419 @@ BlueyOS is now moving toward a Linux-like root filesystem model as well:
 
 ---
 
+## 0. Building BlueyOS and the musl sysroot
+
+This section covers building the kernel, assembling an out-of-tree sysroot, and
+building musl-blueyos into that sysroot so userspace programs can be linked
+against it independently of this source tree.
+
+### 0.1 Host prerequisites
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install \
+    build-essential gcc-multilib nasm \
+    gcc-i686-linux-gnu g++-i686-linux-gnu \
+    binutils-i686-linux-gnu \
+    xorriso grub-pc-bin \
+    qemu-system-x86 \
+    python3 curl git
+```
+
+`gcc-multilib` provides `-m32` support used by the i386 kernel build.
+`gcc-i686-linux-gnu` is the Debian multiarch cross-compiler used to build userspace
+binaries (bash, claw, dimsim). No separate §0.8 cross-compiler build is required when
+this package is available.
+`xorriso` and `grub-pc-bin` are only needed for `make iso` / `make disk`.
+
+### 0.2 Building the kernel
+
+```bash
+git clone https://github.com/nzmacgeek/biscuits.git
+cd biscuits
+
+# Release build (default)
+make -j$(nproc)
+
+# Debug build (adds -g -O0 -DDEBUG)
+make DEBUG=1 -j$(nproc)
+```
+
+The kernel ELF lands at `build/kernel/bkernel`.
+
+To produce a bootable ISO or raw disk image:
+
+```bash
+make tools-host   # compile mkfs / mkswap / fsck host utilities
+make iso          # grub + kernel ISO  → build/blueyos.iso
+make disk         # BiscuitFS disk image → build/blueyos.raw
+```
+
+### 0.3 Sysroot layout (out-of-tree)
+
+Pick a location outside the biscuits repository so it can be shared across
+builds and toolchain upgrades:
+
+```
+/opt/blueyos-sysroot/
+├── bin/          # userspace binaries (init, bash, …)
+├── boot/         # kernel image copied here for disk assembly
+├── etc/          # runtime config (passwd, shells, environment)
+├── lib/          # musl libc.a and, later, shared objects
+└── usr/
+    ├── include/  # musl public headers
+    └── lib/      # additional static archives
+```
+
+```bash
+export BLUEYOS_SYSROOT=/opt/blueyos-sysroot
+sudo mkdir -p \
+    ${BLUEYOS_SYSROOT}/{bin,boot,etc,lib,sbin} \
+    ${BLUEYOS_SYSROOT}/usr/{include,lib}
+sudo chown -R $(id -u):$(id -g) ${BLUEYOS_SYSROOT}
+```
+
+The kernel supports an `init=` boot argument (default `/sbin/init`), so place
+your init binary at `${BLUEYOS_SYSROOT}/sbin/init`.
+
+### 0.4 Building musl-blueyos
+
+The `musl-blueyos` repository is a fork of musl with BlueyOS-specific syscall
+mappings pre-applied.
+
+```bash
+git clone https://github.com/nzmacgeek/musl-blueyos.git
+cd musl-blueyos
+
+# Clean any previous failed configure attempt
+make distclean 2>/dev/null || true
+
+# --target=i386-linux-musl forces ARCH=i386 (matches i?86* in configure's
+# case statement).  CC is set explicitly so the cross-tool trycc probes are
+# skipped.  AR and RANLIB must be set explicitly; otherwise configure
+# derives them as $(CROSS_COMPILE)ar which won't exist on the host.
+# --arch is NOT a real option in this configure script -- it is silently
+# ignored; only --target controls ARCH.
+CC="gcc -m32" \
+CFLAGS="-m32" \
+AR=ar \
+RANLIB=ranlib \
+./configure \
+    --target=i386-linux-musl \
+    --prefix=${BLUEYOS_SYSROOT}/usr \
+    --syslibdir=${BLUEYOS_SYSROOT}/lib \
+    --disable-shared
+
+# Sanity-check before building
+grep -E '^(ARCH|AR|RANLIB|CC) ' config.mak
+# Expected:
+#   ARCH = i386
+#   AR = ar
+#   RANLIB = ranlib
+#   CC = gcc -m32
+
+make -j$(nproc)
+make install
+```
+
+After installation the sysroot will contain:
+
+- `${BLUEYOS_SYSROOT}/usr/include/` — public C headers
+- `${BLUEYOS_SYSROOT}/usr/lib/libc.a` — static libc archive
+- `${BLUEYOS_SYSROOT}/usr/lib/crt1.o`, `crti.o`, `crtn.o` — CRT objects
+- `${BLUEYOS_SYSROOT}/lib/libc.so` — dynamic loader stub (unused in static builds)
+
+### 0.5 Linking a userspace program against the sysroot
+
+```bash
+# Compile a C file into a static i386 ELF suitable for BlueyOS
+gcc -m32 -static -nostdlib -no-pie \
+    -isystem ${BLUEYOS_SYSROOT}/usr/include \
+    -L${BLUEYOS_SYSROOT}/usr/lib \
+    -Wl,-m,elf_i386 \
+    -Wl,-Ttext,0x00400000 \
+    -o ${BLUEYOS_SYSROOT}/sbin/init \
+    your_init.c \
+    ${BLUEYOS_SYSROOT}/usr/lib/crt1.o \
+    ${BLUEYOS_SYSROOT}/usr/lib/crti.o \
+    -lc \
+    ${BLUEYOS_SYSROOT}/usr/lib/crtn.o
+```
+
+The link address `0x00400000` matches the ELF load address expected by the
+BlueyOS ELF loader.  Use `-Ttext,0x3ff000` only if you need the interpreter
+stub segment at the very beginning of address space (musl's own layout does
+this).
+
+### 0.6 Packaging the sysroot into a disk image
+
+Copy the kernel into the sysroot's boot directory, then use the biscuits
+build system to wrap everything into a BiscuitFS image:
+
+```bash
+cd /path/to/biscuits
+
+# Copy the kernel
+cp build/kernel/bkernel ${BLUEYOS_SYSROOT}/boot/bkernel
+
+# Build the disk image using the external sysroot
+python3 tools/mkbluey_disk.py \
+    --image build/blueyos.raw \
+    --kernel build/kernel/bkernel \
+    --root-extra-dir ${BLUEYOS_SYSROOT} \
+    --boot-extra-dir ${BLUEYOS_SYSROOT}/boot \
+    --mkfs-tool  build/tools/mkfs_blueyfs \
+    --mkswap-tool build/tools/mkswap_blueyfs
+```
+
+Or, point the Makefile at the external sysroot directly:
+
+```bash
+make tools-host
+make disk MUSL_PREFIX=${BLUEYOS_SYSROOT}/usr BUILD_SYSROOT=${BLUEYOS_SYSROOT}
+```
+
+### 0.7 Running in QEMU
+
+```bash
+BUILD_DIR=build bash tools/qemu-run.sh
+```
+
+The boot argument `init=/sbin/init` is the default.  Override it in
+`grub.cfg` or by editing the QEMU command line:
+
+```bash
+qemu-system-i386 \
+    -cdrom build/blueyos.iso \
+    -hda build/blueyos.raw \
+    -serial stdio \
+    -append "root=/dev/hda1 rootfstype=biscuitfs init=/sbin/init"
+```
+
+### 0.8 Building the i686-elf cross-compiler
+
+A cross-compiler that runs on the host but produces i386/i686 ELFs is needed
+before any userspace can be built.  The target triplet used throughout is
+`i686-elf`.
+
+> **Triplet note:** `i686-elf` is a 2-part `cpu-os` triplet.  `elf` is
+> recognised by autoconf's `config.sub` as a bare-metal system type with no
+> kernel, so no patching is needed.  The `i686` CPU level is appropriate
+> for QEMU's default x86 machine (Pentium Pro+).
+
+**binutils**
+
+```bash
+export BLUEYOS_CROSS=/opt/blueyos-cross
+export PATH="${BLUEYOS_CROSS}/bin:${PATH}"
+
+wget https://ftp.gnu.org/gnu/binutils/binutils-2.41.tar.xz
+tar xf binutils-2.41.tar.xz
+mkdir build-binutils && cd build-binutils
+../binutils-2.41/configure \
+    --target=i686-elf \
+    --prefix=${BLUEYOS_CROSS} \
+    --with-sysroot=${BLUEYOS_SYSROOT} \
+    --disable-nls \
+    --disable-werror
+make -j$(nproc)
+sudo make install
+cd ..
+```
+
+**GCC (C and C++, cross stage)**
+
+```bash
+wget https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz
+tar xf gcc-13.2.0.tar.xz
+cd gcc-13.2.0 && contrib/download_prerequisites && cd ..
+mkdir build-gcc-cross && cd build-gcc-cross
+../gcc-13.2.0/configure \
+    --target=i686-elf \
+    --prefix=${BLUEYOS_CROSS} \
+    --with-sysroot=${BLUEYOS_SYSROOT} \
+    --disable-nls \
+    --enable-languages=c,c++ \
+    --without-headers \
+    --disable-libstdcxx \
+    --disable-shared \
+    --disable-multilib
+make -j$(nproc) all-gcc all-target-libgcc
+sudo make install-gcc install-target-libgcc
+cd ..
+```
+
+After this step, `i686-elf-gcc` and `i686-elf-g++` are available.  The musl
+headers installed in §0.4 are visible via `--with-sysroot`, so you can drop
+`-nostdinc` for normal userspace builds.
+
+### 0.9 Building bash for the sysroot
+
+Build bash 5.x as a statically-linked i386 ELF using the cross-compiler.
+
+```bash
+wget https://ftp.gnu.org/gnu/bash/bash-5.2.21.tar.gz
+tar xf bash-5.2.21.tar.gz
+cd bash-5.2.21
+
+cat > config/blueyos.cache << 'EOF'
+ac_cv_func_getpgrp_void=yes
+ac_cv_func_setpgrp_void=yes
+ac_cv_func_getcwd_malloc=no
+ac_cv_have_decl_alarm=no
+ac_cv_func_lstat=yes
+ac_cv_func_readlink=no
+ac_cv_sys_restartable_syscalls=yes
+bash_cv_job_control_missing=missing
+bash_cv_sys_named_pipes=missing
+bash_cv_func_sigsetjmp=yes
+bash_cv_have_posix_sigsetjmp=yes
+bash_cv_must_reinstall_sighandlers=no
+bash_cv_func_ctype_nonascii=no
+bash_cv_wcontinued_broken=yes
+EOF
+# Note: bash_cv_sys_named_pipes=missing refers to FIFOs (mkfifo), not
+# anonymous pipes (pipe(2)) — anonymous pipes ARE implemented in BlueyOS.
+
+# i686-linux-gnu-gcc is a glibc cross-compiler. Even with --sysroot pointing
+# to musl, GCC still searches its own 'include-fixed/' directory which contains
+# processed glibc headers.  Those headers cause:
+#   open64/stat64/fcntl64  — glibc LFS64 redirects (_FILE_OFFSET_BITS tricks)
+#   __isoc23_strtol etc.   — glibc C23 renames injected by GCC 13+ stdlib.h
+#   __mbrlen               — glibc internal alias declared in wchar.h
+#   __printf_chk etc.      — FORTIFY_SOURCE from glibc stdio.h
+#
+# -nostdinc suppresses ALL built-in include paths (including include-fixed/).
+# We then add back only:
+#   GCC_INCDIR  — compiler-internal builtins (stddef.h, stdarg.h, float.h …)
+#   BLUEYOS_SYSROOT/usr/include — musl public headers (clean, no glibc)
+# --sysroot stays in LDFLAGS so the linker finds crt1.o and libc.a.
+GCC_INCDIR=$(i686-linux-gnu-gcc -print-file-name=include)
+
+CC=i686-linux-gnu-gcc \
+AR=i686-linux-gnu-ar \
+RANLIB=i686-linux-gnu-ranlib \
+CFLAGS="-O2 -fno-stack-protector -D_FORTIFY_SOURCE=0 -nostdinc -isystem ${GCC_INCDIR} -isystem ${BLUEYOS_SYSROOT}/usr/include" \
+LDFLAGS="-static --sysroot=${BLUEYOS_SYSROOT} -L${BLUEYOS_SYSROOT}/usr/lib" \
+./configure \
+    --build=$(gcc -dumpmachine) \
+    --host=i686-linux-gnu \
+    --without-bash-malloc \
+    --disable-nls \
+    --disable-readline \
+    --disable-history \
+    --cache-file=config/blueyos.cache \
+    --prefix=/usr
+
+make -j$(nproc)
+make install DESTDIR=${BLUEYOS_SYSROOT}
+
+# Provide /bin/sh and /bin/bash symlinks
+ln -sf /usr/bin/bash ${BLUEYOS_SYSROOT}/bin/bash
+ln -sf /usr/bin/bash ${BLUEYOS_SYSROOT}/bin/sh
+```
+
+At this point the sysroot has a working shell at `/bin/bash`.  The kernel will
+fall back to `/bin/bash` if `/sbin/init` is not found.
+
+### 0.10 Building claw and installing as /sbin/init
+
+`claw` is the BlueyOS init implementation.  Adapt the paths below to wherever
+the claw source tree lives.
+
+```bash
+cd /path/to/claw
+
+# Configure against the BlueyOS sysroot using the cross-compiler.
+# Use -nostdinc to prevent glibc header contamination from the cross-compiler
+# (same rationale as the bash section above).
+GCC_INCDIR=$(i686-linux-gnu-gcc -print-file-name=include)
+
+CC=i686-linux-gnu-gcc \
+CXX=i686-linux-gnu-g++ \
+CFLAGS="-O2 -fno-stack-protector -D_FORTIFY_SOURCE=0 -nostdinc -isystem ${GCC_INCDIR} -isystem ${BLUEYOS_SYSROOT}/usr/include" \
+LDFLAGS="-static --sysroot=${BLUEYOS_SYSROOT} -L${BLUEYOS_SYSROOT}/usr/lib" \
+./configure \
+    --build=$(gcc -dumpmachine) \
+    --host=i686-linux-gnu \
+    --prefix=/usr \
+    --sysconfdir=/etc
+
+make -j$(nproc)
+
+# Install into staging sysroot; the init binary ends up at /usr/sbin/init
+make install DESTDIR=${BLUEYOS_SYSROOT}
+
+# The kernel defaults to init=/sbin/init, so place it there as well
+install -Dm755 ${BLUEYOS_SYSROOT}/usr/sbin/init ${BLUEYOS_SYSROOT}/sbin/init
+```
+
+If claw uses a plain Makefile rather than autoconf, replace the `./configure`
+step with whatever variable-passing idiom its Makefile expects, for example:
+
+```bash
+make -j$(nproc) \
+    CC=i686-linux-gnu-gcc \
+    LDFLAGS="-static --sysroot=${BLUEYOS_SYSROOT} -L${BLUEYOS_SYSROOT}/usr/lib" \
+    PREFIX=/usr \
+    DESTDIR=${BLUEYOS_SYSROOT} \
+    install
+install -Dm755 ${BLUEYOS_SYSROOT}/usr/sbin/init ${BLUEYOS_SYSROOT}/sbin/init
+```
+
+### 0.11 Building dimsim for the sysroot
+
+`dimsim` follows the same cross-compile pattern.
+
+```bash
+cd /path/to/dimsim
+
+GCC_INCDIR=$(i686-linux-gnu-gcc -print-file-name=include)
+
+CC=i686-linux-gnu-gcc \
+CXX=i686-linux-gnu-g++ \
+CFLAGS="-O2 -fno-stack-protector -D_FORTIFY_SOURCE=0 -nostdinc -isystem ${GCC_INCDIR} -isystem ${BLUEYOS_SYSROOT}/usr/include" \
+LDFLAGS="-static --sysroot=${BLUEYOS_SYSROOT} -L${BLUEYOS_SYSROOT}/usr/lib" \
+./configure \
+    --build=$(gcc -dumpmachine) \
+    --host=i686-linux-gnu \
+    --prefix=/usr
+
+make -j$(nproc)
+make install DESTDIR=${BLUEYOS_SYSROOT}
+```
+
+Again substitute the plain-Makefile form if needed:
+
+```bash
+make -j$(nproc) \
+    CC=i686-linux-gnu-gcc \
+    LDFLAGS="-static --sysroot=${BLUEYOS_SYSROOT} -L${BLUEYOS_SYSROOT}/usr/lib" \
+    PREFIX=/usr \
+    DESTDIR=${BLUEYOS_SYSROOT} \
+    install
+```
+
+### 0.12 Self-hosted GCC in the sysroot (future / aspirational)
+
+A compiler that runs *on* BlueyOS requires a nearly complete POSIX surface
+(`fork`, `exec`, `waitpid`, `mmap`, full `signal` semantics, a working
+`/tmp`, and a writable file system).  BlueyOS does not yet meet all of these
+requirements, so this step is documented as forward-looking only.
+
+When the syscall surface is complete the build sequence will be:
+
+1. Use the cross-compiler from §0.8 to build a first-stage GCC targeted
+   at `i686-elf` with `--host=i686-elf` (canadian cross or native cross
+   depending on the build machine).
+2. Boot BlueyOS with the sysroot disk, run the first-stage compiler inside
+   QEMU to rebuild itself, producing a native `gcc` binary.
+3. Install the native `gcc` into `/usr/bin` on the live image.
+
+This is roughly the same three-stage bootstrap used by Linux From Scratch.
+
+---
+
 ## 1. Prerequisites
 
 ### 1.1 Cross-compiler toolchain

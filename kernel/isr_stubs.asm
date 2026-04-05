@@ -59,6 +59,8 @@ isr_common_stub:
     pusha
     mov ax, ds
     push eax
+    mov ax, gs
+    push eax
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -66,10 +68,11 @@ isr_common_stub:
     mov gs, ax
     call isr_handler
     pop eax
+    mov gs, ax
+    pop eax
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax
     popa
     add esp, 8
     iret

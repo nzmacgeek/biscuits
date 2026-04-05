@@ -32,6 +32,8 @@ irq_common_stub:
     pusha
     mov ax, ds
     push eax
+    mov ax, gs
+    push eax
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -41,10 +43,11 @@ irq_common_stub:
     call irq_handler
     add esp, 4
     pop eax
+    mov gs, ax
+    pop eax
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax
     popa
     add esp, 8
     iret

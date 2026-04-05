@@ -1,21 +1,12 @@
-#pragma once
-// BlueyOS Syscall Interface - "Bluey's Daddy Daughter Syscalls"
-// int 0x80 gateway from user space (ring3) to kernel (ring0)
-// Episode ref: "Daddy Daughter Day" - Bandit drops everything to help Bluey
-// Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
-// licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
-#include "../include/types.h"
-#include "idt.h"
+The following is a snippet from the `kernel/syscall/syscall.h` file, which defines the system call numbers for the BlueyOS operating system on the i386 architecture. These are the current system call numbers, but more will be coming.
 
-// Syscall numbers - Linux-compatible where sensible
+```c
 #define SYS_READ          0
 #define SYS_WRITE         1
 #define SYS_OPEN          2
 #define SYS_CLOSE         3
 #define SYS_STAT          4
 #define SYS_FSTAT         5
-#define SYS_FSTAT64       197
-#define SYS_WRITEV        146
 #define SYS_LINK          9
 #define SYS_UNLINK        10
 #define SYS_EXECVE        11
@@ -44,7 +35,6 @@
 #define SYS_DUP2          33
 #define SYS_GETTIMEOFDAY  78
 #define SYS_CLOCK_GETTIME 265
-#define SYS_CLOCK_GETTIME64 403
 #define SYS_SETTIMEOFDAY  79
 #define SYS_RT_SIGACTION  174
 #define SYS_RT_SIGPROCMASK 175
@@ -69,10 +59,7 @@
 #define SYS_CHOWN         182
 #define SYS_EXIT_GROUP    252
 #define SYS_SET_TID_ADDRESS 258
-#define SYS_SET_ROBUST_LIST 311
 #define SYS_GETRANDOM     355
-#define SYS_STATX         383
-#define SYS_RSEQ          386
 // chown/fchown/lchown 32-bit uid variants (used by musl on i386)
 #define SYS_LCHOWN32      198
 #define SYS_FCHOWN32      207
@@ -89,12 +76,4 @@
 #define SYS_DEVEV_OPEN    203
 // Reboot / poweroff
 #define SYS_REBOOT        88
-#define SYS_GETRLIMIT     190
-#define SYS_SETRLIMIT     191
-// Thread-local storage (set_thread_area - sets GS segment base for musl TLS)
-#define SYS_SET_THREAD_AREA 243
-#define SYS_MODIFY_LDT      123
-
-void syscall_init(void);
-// Called from syscall.asm - dispatches based on eax syscall number
-int32_t syscall_dispatch(registers_t *regs);
+```

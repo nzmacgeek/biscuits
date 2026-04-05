@@ -3,6 +3,7 @@
 typedef struct { uint16_t base_lo,sel; uint8_t zero,flags; uint16_t base_hi; } __attribute__((packed)) idt_entry_t;
 typedef struct { uint16_t limit; uint32_t base; } __attribute__((packed)) idt_ptr_t;
 typedef struct {
+    uint32_t gs;
     uint32_t ds;
     uint32_t edi,esi,ebp,esp,ebx,edx,ecx,eax;
     uint32_t int_no,err_code;

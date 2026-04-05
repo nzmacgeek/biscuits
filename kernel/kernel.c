@@ -98,16 +98,29 @@ static void idle_task(void) {
     }
 }
 
-static int kernel_bootstrap_first_user(void) {
-    static const char *bootstrap_paths[] = { "/bin/init", "/bin/bash", NULL };
+static int kernel_bootstrap_first_user(const char *init_path) {
+    /* Try the configured init path first, then fall back to common locations. */
+    const char *fallbacks[] = { "/bin/init", "/bin/bash", NULL };
 
-    for (size_t index = 0; bootstrap_paths[index]; index++) {
-        process_t *process = elf_exec(bootstrap_paths[index], 0);
+    process_t *process = elf_exec(init_path, 0);
+    if (process) {
+        scheduler_add(process);
+        kprintf("[KERN] Bootstrap launching %s as pid=%u\n",
+                init_path, process->pid);
+        process_enter_first_user(process);
+    } else {
+        kprintf("[KERN] init=%s failed, trying fallbacks\n", init_path);
+    }
+
+    for (size_t index = 0; fallbacks[index]; index++) {
+        /* Skip if it's the same path we already tried. */
+        if (strcmp(fallbacks[index], init_path) == 0) continue;
+        process = elf_exec(fallbacks[index], 0);
         if (!process) continue;
 
         scheduler_add(process);
         kprintf("[KERN] Bootstrap launching %s as pid=%u\n",
-                bootstrap_paths[index], process->pid);
+                fallbacks[index], process->pid);
         process_enter_first_user(process);
     }
 
@@ -307,7 +320,8 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Enable interrupts
     __asm__ volatile("sti");
 
-    if (kernel_bootstrap_first_user() == 0) {
+    kprintf("[KERN] init path: %s\n", boot_args.init_path);
+    if (kernel_bootstrap_first_user(boot_args.init_path) == 0) {
         for (;;) __asm__ volatile("hlt");
     }
 

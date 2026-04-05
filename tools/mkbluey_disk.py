@@ -189,6 +189,29 @@ def run(cmd, cwd: Path) -> None:
     subprocess.run(cmd, cwd=str(cwd), check=True)
 
 
+def prepare_root_extra_dir(root_extra_dir: str | None, timezone_file: str | None) -> str | None:
+    if not root_extra_dir:
+        return None
+
+    root_extra = Path(root_extra_dir)
+    if not root_extra.exists() or not root_extra.is_dir():
+        raise SystemExit(f"--root-extra-dir not found or not a dir: {root_extra_dir}")
+
+    localtime_path = root_extra / "etc" / "localtime"
+    if localtime_path.exists() or not timezone_file:
+        return str(root_extra)
+
+    tz_source = Path(timezone_file)
+    if not tz_source.exists() or not tz_source.is_file():
+        print(f"[DISK] Timezone source missing, skipping /etc/localtime provisioning: {tz_source}")
+        return str(root_extra)
+
+    localtime_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(tz_source, localtime_path)
+    print(f"[DISK] Provisioned /etc/localtime from {tz_source}")
+    return str(root_extra)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build a GRUB-bootable BlueyOS disk image with boot, root, and swap partitions")
     parser.add_argument("--image", default="build/blueyos-disk.img")
@@ -208,22 +231,34 @@ def main() -> int:
                         help="Recursively copy contents of this host dir into the root filesystem during mkfs (install into /)")
     parser.add_argument("--init-kernel-path", default="/sbin/claw",
                         help="Kernel commandline init= path to embed in grub.cfg (default: /sbin/claw)")
+    parser.add_argument("--timezone-file", default="/usr/share/zoneinfo/Australia/Brisbane",
+                        help="Host tzfile to install as /etc/localtime when root-extra-dir lacks one")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
     image = repo / args.image
     kernel_path = repo / args.kernel
     init_path = repo / args.init
-    # If a root-extra-dir is provided and it contains a `bin/init`, prefer
-    # that init payload over the local default. This allows using an
-    # external sysroot like /opt/blueyos-sysroot as the source of the init.
+    # If a root-extra-dir is provided, prefer /sbin/claw from that sysroot
+    # so the kernel sees init=/sbin/claw; fall back to bin/init if claw
+    # isn't present. This allows using an external sysroot like
+    # /opt/blueyos-sysroot as the source of the init payload.
     if getattr(args, 'root_extra_dir', None):
-        root_extra_init = Path(args.root_extra_dir) / "bin" / "init"
-        if root_extra_init.exists():
-            init_path = root_extra_init
-            print(f"[DISK] Using init from root-extra-dir: {init_path}")
+        root_extra = Path(args.root_extra_dir)
+        sbin_claw = root_extra / "sbin" / "claw"
+        root_bin_init = root_extra / "bin" / "init"
+        if sbin_claw.exists():
+            init_path = sbin_claw
+            print(f"[DISK] Using /sbin/claw from root-extra-dir: {init_path}")
+        elif root_bin_init.exists():
+            init_path = root_bin_init
+            print(f"[DISK] Using /bin/init from root-extra-dir: {init_path}")
     mkfs_tool = repo / args.mkfs_tool
     mkswap_tool = repo / args.mkswap_tool
+    effective_root_extra_dir = prepare_root_extra_dir(
+        getattr(args, 'root_extra_dir', None),
+        getattr(args, 'timezone_file', None),
+    )
     boot_sectors = sectors_from_mb(args.boot_mb)
     root_sectors = sectors_from_mb(args.root_mb)
     swap_sectors = sectors_from_mb(args.swap_mb)
@@ -259,8 +294,8 @@ def main() -> int:
         build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/hda2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'))
 
         mkfs_cmd = [str(mkfs_tool), "-F", "-L", args.root_label, "-o", str(root_start), "-n", str(root_sectors), "-I", str(init_path), "-T", fstab_name]
-        if args.root_extra_dir:
-            mkfs_cmd += ["-A", str(args.root_extra_dir)]
+        if effective_root_extra_dir:
+            mkfs_cmd += ["-A", effective_root_extra_dir]
         mkfs_cmd.append(str(image))
         run(mkfs_cmd, repo)
 

@@ -5,7 +5,7 @@
 #include "../lib/string.h"
 #include "gdt.h"
 
-#define GDT_ENTRIES 6
+#define GDT_ENTRIES 7
 static gdt_entry_t gdt[GDT_ENTRIES];
 static gdt_ptr_t   gdt_ptr;
 static tss_entry_t tss;
@@ -34,6 +34,10 @@ static void tss_init(uint32_t idx, uint16_t ss0, uint32_t esp0) {
 
 void tss_set_kernel_stack(uint32_t stack) { tss.esp0 = stack; }
 
+void gdt_set_tls_base(uint32_t base) {
+    gdt_set(6, base, 0xFFFFF, 0xF2, 0xCF);
+}
+
 void gdt_init(void) {
     gdt_set(0, 0, 0, 0, 0);                        // null
     gdt_set(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);         // ring0 code
@@ -41,6 +45,7 @@ void gdt_init(void) {
     gdt_set(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);         // ring3 code
     gdt_set(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);         // ring3 data
     tss_init(5, GDT_KERNEL_DATA, 0);
+    gdt_set(6, 0, 0xFFFFF, 0xF2, 0xCF);            // ring3 TLS (base updated per-process)
     gdt_ptr.limit = sizeof(gdt) - 1;
     gdt_ptr.base  = (uint32_t)&gdt;
     gdt_flush(&gdt_ptr);

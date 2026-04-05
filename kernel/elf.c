@@ -102,24 +102,27 @@ static uint32_t elf_alloc_stack_region(void) {
 }
 
 static int elf_map_stack_pages(uint32_t page_dir, uint32_t stack_base, uint32_t stack_size) {
-    kprintf("[ELF DBG] Mapping stack pages for page_dir=0x%08x base=0x%08x size=0x%08x\n",
-            page_dir, stack_base, stack_size);
-    for (uint32_t addr = stack_base; addr < stack_base + stack_size; addr += PAGE_SIZE) {
-        uint32_t phys = pmm_alloc_frame();
-        if (!phys) {
-            kprintf("[ELF DBG] pmm_alloc_frame failed while mapping stack\n");
-            return -1;
-        }
-        kprintf("[ELF DBG]  map stack va=0x%08x -> phys=0x%08x\n", addr, phys);
-        paging_map_in_directory(page_dir, addr, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    /* Reserve the stack region but only map the topmost page. A guard page
+     * remains unmapped at the very bottom to catch overflows. Deeper pages
+     * will be mapped on-demand by the page-fault handler. */
+    uint32_t top_page = (stack_base + stack_size) - PAGE_SIZE;
+    kprintf("[ELF DBG] Mapping initial stack page for page_dir=0x%08x top=0x%08x\n",
+            page_dir, top_page);
+    uint32_t phys = pmm_alloc_frame();
+    if (!phys) {
+        kprintf("[ELF DBG] pmm_alloc_frame failed while mapping initial stack page\n");
+        return -1;
     }
+    kprintf("[ELF DBG]  map stack va=0x%08x -> phys=0x%08x\n", top_page, phys);
+    paging_map_in_directory(page_dir, top_page, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     return 0;
 }
 
 static int elf_zero_stack_pages(uint32_t stack_base, uint32_t stack_size) {
-    for (uint32_t addr = stack_base; addr < stack_base + stack_size; addr += PAGE_SIZE) {
-        memset((void*)addr, 0, PAGE_SIZE);
-    }
+    /* Only zero the initial mapped (top) page. Other pages will be zeroed
+     * when they are allocated on-demand. */
+    uint32_t top_page = (stack_base + stack_size) - PAGE_SIZE;
+    memset((void*)top_page, 0, PAGE_SIZE);
     return 0;
 }
 
@@ -284,6 +287,17 @@ int elf_build_initial_stack(uint32_t page_dir,
 
     stack_ptr = (char*)((uint32_t)(uintptr_t)stack_ptr & ~0x3u);
 
+    /* Push a minimal Linux-ABI auxvec: {AT_PAGESZ, 4096} then {AT_NULL, 0}.
+     * musl's __init_libc scans the raw auxvec sequentially and stops at the
+     * first AT_NULL entry, then builds a local indexed table.  We push from
+     * high-addr to low-addr; the auxvec FIRST entry lands at the higher addr. */
+    /* AT_NULL terminator (innermost push = lowest addr = last read) */
+    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = 0; /* AT_NULL value */
+    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = 0; /* AT_NULL type  */
+    /* AT_PAGESZ = 6, value = 4096 */
+    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = PAGE_SIZE; /* AT_PAGESZ value */
+    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = 6u;        /* AT_PAGESZ type  */
+
     stack_ptr -= sizeof(uint32_t);
     *(uint32_t*)stack_ptr = 0;
     for (size_t index = envc; index > 0; index--) {
@@ -387,10 +401,127 @@ static int elf_load_into_address_space(uint32_t page_dir,
     return 0;
 }
 
+int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_len,
+                                       uint32_t *entry_out, uint32_t *image_end_out) {
+    uint32_t old_page_dir = paging_current_directory();
+    elf32_ehdr_t hdr;
+    elf32_phdr_t *phdrs = NULL;
+    uint32_t loaded = 0;
+    uint32_t image_end = 0;
+    size_t ph_size;
+
+    /* Read ELF header */
+    if (vfs_read_at(fd, (uint8_t*)&hdr, sizeof(hdr), 0) != (int)sizeof(hdr)) {
+        kprintf("[ELF] Failed to read ELF header\n");
+        return -1;
+    }
+
+    if (elf_validate((const uint8_t*)&hdr, sizeof(hdr)) != 0) return -1;
+
+    /* Read program headers */
+    ph_size = (size_t)hdr.e_phnum * hdr.e_phentsize;
+    if (ph_size == 0) {
+        kprintf("[ELF] No program headers\n");
+        return -1;
+    }
+
+    phdrs = (elf32_phdr_t*)kheap_alloc(ph_size, 0);
+    if (!phdrs) {
+        kprintf("[ELF] Failed to allocate program header buffer\n");
+        return -1;
+    }
+    if (vfs_read_at(fd, (uint8_t*)phdrs, ph_size, hdr.e_phoff) != (int)ph_size) {
+        kprintf("[ELF] Failed to read program headers\n");
+        kheap_free(phdrs);
+        return -1;
+    }
+
+    paging_switch_directory(page_dir);
+
+    for (uint16_t i = 0; i < hdr.e_phnum; i++) {
+        elf32_phdr_t *ph = &phdrs[i];
+        if (ph->p_type != PT_LOAD) continue;
+        if (ph->p_filesz == 0) continue;
+
+        if (ph->p_offset + ph->p_filesz > file_len) {
+            kprintf("[ELF] Segment %d extends beyond file!\n", i);
+            paging_switch_directory(old_page_dir);
+            kheap_free(phdrs);
+            return -1;
+        }
+
+        if (ph->p_vaddr < 0x1000) {
+            kprintf("[ELF] Segment %d tries to load at NULL page - denied!\n", i);
+            paging_switch_directory(old_page_dir);
+            kheap_free(phdrs);
+            return -1;
+        }
+
+        uint32_t flags = PAGE_PRESENT | PAGE_USER;
+        if (ph->p_flags & PF_W) flags |= PAGE_WRITABLE;
+
+        uint32_t vstart = ph->p_vaddr & ~0xFFFu;
+        uint32_t vend   = (ph->p_vaddr + ph->p_memsz + 0xFFFu) & ~0xFFFu;
+        if (vend > image_end) image_end = vend;
+        for (uint32_t va = vstart; va < vend; va += PAGE_SIZE) {
+            uint32_t phys = pmm_alloc_frame();
+            if (!phys) {
+                kprintf("[ELF] Out of physical frames!\n");
+                paging_switch_directory(old_page_dir);
+                kheap_free(phdrs);
+                return -1;
+            }
+            paging_map_in_directory(page_dir, va, phys, flags);
+        }
+
+        /* Stream file contents directly into mapped vaddrs to avoid large
+         * kernel heap allocations. Read by pages using vfs_read_at. */
+        uint32_t copied = 0;
+        while (copied < ph->p_filesz) {
+            uint32_t file_off = ph->p_offset + copied;
+            uint32_t dest_va = ph->p_vaddr + copied;
+            uint32_t to_read = (uint32_t)PAGE_SIZE - (dest_va & 0xFFFu);
+            if (to_read > ph->p_filesz - copied) to_read = (uint32_t)(ph->p_filesz - copied);
+
+            int r = vfs_read_at(fd, (uint8_t*)(uintptr_t)dest_va, to_read, file_off);
+            if (r < 0) {
+                kprintf("[ELF] Read failed for segment %d at off=%u\n", i, file_off);
+                paging_switch_directory(old_page_dir);
+                kheap_free(phdrs);
+                return -1;
+            }
+            copied += (uint32_t)r;
+        }
+
+        /* Zero-fill remaining memsz beyond filesz */
+        if (ph->p_memsz > ph->p_filesz) {
+            uint32_t zero_addr = ph->p_vaddr + ph->p_filesz;
+            uint32_t zero_len = ph->p_memsz - ph->p_filesz;
+            memset((void*)(uintptr_t)zero_addr, 0, zero_len);
+        }
+
+        loaded++;
+        kprintf("[ELF] Stream-loaded segment %d: vaddr=0x%x size=%d\n",
+                i, ph->p_vaddr, ph->p_filesz);
+    }
+
+    paging_switch_directory(old_page_dir);
+    kheap_free(phdrs);
+
+    if (loaded == 0) {
+        kprintf("[ELF] No loadable segments found!\n");
+        return -1;
+    }
+
+    *entry_out = hdr.e_entry;
+    if (image_end_out) *image_end_out = image_end;
+    kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", hdr.e_entry);
+    return 0;
+}
+
+
 int elf_load_image(const char *path, const char *const argv[], const char *const envp[],
                    elf_image_t *image_out) {
-    uint8_t *data = NULL;
-    size_t len = 0;
     uint32_t page_dir;
     const char *name;
 
@@ -401,30 +532,40 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
        If vfs_stat is not available for the filesystem, allow execution. */
     vfs_stat_t st;
     if (vfs_stat(path, &st) == 0) {
-        /* check any execute bit: owner/group/other
-           Mode bit masks: owner=0x40, group=0x8, other=0x1 (octal 0100/0010/0001)
-           Combined mask = 0x49 */
         if ((st.mode & 0x49) == 0) {
             kprintf("[ELF] Permission denied: %s not executable (mode=0%o)\n", path, st.mode);
             return -1;
         }
     }
 
-    if (elf_read_file(path, &data, &len) != 0) {
-        kprintf("[ELF] Failed to read %s\n", path);
+    /* Open the file and determine its length so we can stream segments
+     * directly into the new address space without buffering the whole
+     * image in the kernel heap. */
+    int fd = vfs_open(path, VFS_O_RDONLY);
+    if (fd < 0) {
+        kprintf("[ELF] Open failed for %s\n", path);
         return -1;
     }
+
+    int32_t file_len = vfs_lseek(fd, 0, VFS_SEEK_END);
+    if (file_len < 0) {
+        kprintf("[ELF] Failed to seek EOF for %s\n", path);
+        vfs_close(fd);
+        return -1;
+    }
+    /* Rewind to start (not strictly necessary for read_at) */
+    vfs_lseek(fd, 0, VFS_SEEK_SET);
 
     page_dir = paging_create_address_space();
     if (!page_dir) {
-        kheap_free(data);
+        vfs_close(fd);
         return -1;
     }
 
-    if (!data || elf_load_into_address_space(page_dir, data, len,
-                                             &image_out->entry,
-                                             &image_out->image_end) != 0) {
-        if (data) kheap_free(data);
+    if (elf_stream_load_into_address_space(page_dir, fd, (size_t)file_len,
+                                           &image_out->entry,
+                                           &image_out->image_end) != 0) {
+        vfs_close(fd);
         paging_destroy_address_space(page_dir);
         return -1;
     }
@@ -434,7 +575,7 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
                                 &image_out->stack_top,
                                 &image_out->stack_pointer) != 0) {
         kprintf("[ELF] Failed to build initial stack for %s\n", path);
-        kheap_free(data);
+        vfs_close(fd);
         paging_destroy_address_space(page_dir);
         return -1;
     }
@@ -445,7 +586,7 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
 
     strncpy(image_out->name, name, sizeof(image_out->name) - 1);
     image_out->page_dir = page_dir;
-    kheap_free(data);
+    vfs_close(fd);
     return 0;
 }
 

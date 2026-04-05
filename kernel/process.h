@@ -37,6 +37,15 @@ typedef struct process {
     uint32_t      stack_base;    // bottom of this process's kernel stack
     uint32_t      user_stack_base;
     uint32_t      user_stack_top;
+    uint32_t      user_stack_limit; // soft limit for stack growth (grow-on-demand)
+    uint32_t      rlimit_stack_cur;
+    uint32_t      rlimit_stack_max;
+    uint32_t      tls_base;          // thread-local storage base for GDT entry 6
+    uint32_t      robust_list_head;  // userspace head for set_robust_list(2)
+    uint32_t      robust_list_len;
+    uint32_t      rseq_area;
+    uint32_t      rseq_len;
+    uint32_t      rseq_sig;
     uint32_t      page_dir;      // physical address of page directory
     uint32_t      uid;           // user id
     uint32_t      gid;           // group id

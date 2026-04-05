@@ -5,6 +5,7 @@
 #define GDT_USER_CODE   0x1B
 #define GDT_USER_DATA   0x23
 #define GDT_TSS_SEL     0x28
+#define GDT_TLS_SEL     0x33   /* entry 6, RPL=3: per-thread TLS segment */
 typedef struct { uint16_t limit_low,base_low; uint8_t base_mid,access,gran,base_hi; } __attribute__((packed)) gdt_entry_t;
 typedef struct { uint16_t limit; uint32_t base; } __attribute__((packed)) gdt_ptr_t;
 typedef struct {
@@ -16,3 +17,4 @@ void gdt_init(void);
 void gdt_flush(gdt_ptr_t *p);
 void tss_flush(void);
 void tss_set_kernel_stack(uint32_t stack);
+void gdt_set_tls_base(uint32_t base);

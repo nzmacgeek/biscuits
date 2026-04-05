@@ -166,10 +166,16 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
         registers_t frame = next->saved_regs;
 
         paging_switch_directory(next->page_dir);
+        /* Update per-process TLS GDT entry before returning to user space. */
+        extern void gdt_set_tls_base(uint32_t);
+        gdt_set_tls_base(next->tls_base);
         if (signal_dispatch_pending(next, &frame) != 0) {
             next = scheduler_pick_next_user(next, 1);
             continue;
         }
+
+        /* Sanitize EFLAGS: clear TF (bit 8) and ensure IF (bit 9) is set. */
+        frame.eflags = (frame.eflags & ~0x100u) | 0x200u;
 
         next->saved_regs = frame;
         next->state = PROC_RUNNING;

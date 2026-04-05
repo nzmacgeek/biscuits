@@ -7,6 +7,7 @@ typedef struct {
     bool        safe_mode;
     char        root_device[32];
     char        root_fstype[16];
+    char        init_path[64];
 } boot_args_t;
 
 void boot_args_init(boot_args_t *out, const uint32_t *mboot_info);

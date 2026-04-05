@@ -79,4 +79,8 @@ void boot_args_init(boot_args_t *out, const uint32_t *mboot_info) {
     out->safe_mode = boot_args_has_flag(out->cmdline, "safe");
     boot_args_get_value(out->cmdline, "root", out->root_device, sizeof(out->root_device));
     boot_args_get_value(out->cmdline, "rootfstype", out->root_fstype, sizeof(out->root_fstype));
+    if (!boot_args_get_value(out->cmdline, "init", out->init_path, sizeof(out->init_path))) {
+        strncpy(out->init_path, "/sbin/init", sizeof(out->init_path) - 1);
+        out->init_path[sizeof(out->init_path) - 1] = '\0';
+    }
 }

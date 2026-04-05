@@ -59,6 +59,7 @@ static void process_init_kernel_frame(process_t *process, uint32_t entry) {
 
 static void process_init_user_frame(process_t *process, uint32_t entry, uint32_t user_esp) {
     memset(&process->saved_regs, 0, sizeof(process->saved_regs));
+    process->saved_regs.gs = GDT_USER_DATA;
     process->saved_regs.ds = GDT_USER_DATA;
     process->saved_regs.eip = entry;
     process->saved_regs.cs = GDT_USER_CODE;
@@ -253,6 +254,14 @@ process_t *process_create_image(const char *name, uint32_t entry, uint32_t user_
     process->flags |= PROC_FLAG_USER_MODE;
     process->user_stack_base = user_stack_base;
     process->user_stack_top = user_stack_top;
+    /* Default RLIMIT: usable stack = (stack_size - 1 page) (guard page at base). */
+    if (user_stack_top > user_stack_base + PAGE_SIZE) {
+        process->rlimit_stack_cur = (user_stack_top - user_stack_base) - PAGE_SIZE;
+    } else {
+        process->rlimit_stack_cur = 0;
+    }
+    process->rlimit_stack_max = process->rlimit_stack_cur;
+    process->tls_base = 0;
     process->page_dir = page_dir;
     process_init_user_frame(process, entry, user_esp);
 
@@ -294,6 +303,9 @@ process_t *process_fork_current(const registers_t *regs) {
     child->pgid = parent->pgid;
     child->user_stack_base = parent->user_stack_base;
     child->user_stack_top = parent->user_stack_top;
+    child->rlimit_stack_cur = parent->rlimit_stack_cur;
+    child->rlimit_stack_max = parent->rlimit_stack_max;
+    child->tls_base = parent->tls_base;
     child->page_dir = page_dir;
     child->brk_base = parent->brk_base;
     child->brk_current = parent->brk_current;
@@ -323,6 +335,13 @@ void process_exec_replace(process_t *process, const char *name,
     process->state = PROC_READY;
     process->user_stack_base = user_stack_base;
     process->user_stack_top = user_stack_top;
+    if (user_stack_top > user_stack_base + PAGE_SIZE) {
+        process->rlimit_stack_cur = (user_stack_top - user_stack_base) - PAGE_SIZE;
+    } else {
+        process->rlimit_stack_cur = 0;
+    }
+    process->rlimit_stack_max = process->rlimit_stack_cur;
+    process->tls_base = 0;
     process->page_dir = page_dir;
     process->exit_code = 0;
     process_init_user_frame(process, entry, user_esp);

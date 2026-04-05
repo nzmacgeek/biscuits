@@ -9,6 +9,8 @@
 #include "paging.h"
 #include "kheap.h"
 #include "isr.h"
+#include "process.h"
+#include "signal.h"
 
 // Physical memory manager: bitmap of frames (each bit = one 4KB page)
 // We support up to 128MB (32768 frames)
@@ -63,7 +65,6 @@ static uint32_t *paging_directory_ptr(uint32_t page_dir_phys) {
 
 static uint32_t *paging_ensure_page_table(uint32_t *page_dir, uint32_t pd_idx, uint32_t flags) {
     uint32_t *page_table;
-
     if (!(page_dir[pd_idx] & PAGE_PRESENT)) {
         page_table = (uint32_t*)kheap_alloc(PAGE_SIZE, 1);
         if (!page_table) {
@@ -75,7 +76,26 @@ static uint32_t *paging_ensure_page_table(uint32_t *page_dir, uint32_t pd_idx, u
         return page_table;
     }
 
-    return (uint32_t*)(uintptr_t)(page_dir[pd_idx] & ~0xFFFu);
+    /* If the PDE already exists it may point to a shared kernel page table
+     * (copied into a new address space via memcpy). In that case we must
+     * allocate a private page table for this address space before modifying
+     * entries or toggling the USER bit, to avoid changing the kernel's
+     * mappings. */
+    uint32_t existing_pt = page_dir[pd_idx] & ~0xFFFu;
+    uint32_t kernel_pt = kernel_page_dir[pd_idx] & ~0xFFFu;
+    if (existing_pt == kernel_pt) {
+        /* Duplicate kernel page table for this address space */
+        page_table = (uint32_t*)kheap_alloc(PAGE_SIZE, 1);
+        if (!page_table) {
+            kprintf("[PGE] ERROR: out of memory duplicating page table!\n");
+            return NULL;
+        }
+        memcpy(page_table, (void*)(uintptr_t)existing_pt, PAGE_SIZE);
+        page_dir[pd_idx] = (uint32_t)page_table | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER);
+        return page_table;
+    }
+
+    return (uint32_t*)(uintptr_t)existing_pt;
 }
 
 // Page fault handler - registered as ISR 14
@@ -90,6 +110,47 @@ void page_fault_handler(registers_t regs) {
     if (regs.err_code & 0x2) kprintf(", write");  else kprintf(", read");
     if (regs.err_code & 0x4) kprintf(", user");   else kprintf(", supervisor");
     kprintf(")\n[PGF]  EIP: 0x%x\n", regs.eip);
+
+    /* Attempt grow-on-demand for user stack faults. */
+    process_t *proc = process_current();
+    uint32_t page_aligned = faulting_addr & ~0xFFFu;
+
+    if (proc && (regs.err_code & 0x4) && proc->page_dir) {
+        /* Stack grows downward. Allow on-demand mapping for pages within the
+         * reserved stack region, but do not map the bottom-most guard page. */
+        uint32_t stack_base = proc->user_stack_base;
+        uint32_t stack_top = proc->user_stack_top;
+        if (faulting_addr >= stack_base + PAGE_SIZE && faulting_addr < stack_top) {
+            uint32_t offset_from_top = stack_top - page_aligned;
+            if (offset_from_top <= proc->rlimit_stack_cur) {
+                /* Map this page on behalf of the process. */
+                uint32_t phys = pmm_alloc_frame();
+                if (!phys) {
+                    kprintf("[PGF]  Out of physical frames while growing stack for pid=%u\n", proc->pid);
+                    signal_send_pid(proc->pid, SIGSEGV);
+                    return;
+                }
+                kprintf("[PGF]  Growing user stack: pid=%u va=0x%08x -> phys=0x%08x\n",
+                        proc->pid, page_aligned, phys);
+                paging_map_in_directory(proc->page_dir, page_aligned, phys,
+                                        PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+                /* Zero the newly mapped page in the process address space. */
+                uint32_t old_dir = paging_current_directory();
+                paging_switch_directory(proc->page_dir);
+                memset((void*)page_aligned, 0, PAGE_SIZE);
+                paging_switch_directory(old_dir);
+                return; /* return to userland; instruction will be retried */
+            }
+        }
+        /* Fault in user mode but outside allowed stack growth: send SIGSEGV */
+        kprintf("[PGF]  User fault outside stack growth region pid=%u addr=0x%08x usesp=0x%08x\n",
+                proc->pid, faulting_addr, regs.useresp);
+        process_mark_exited(proc, SIGSEGV);
+        /* Enable interrupts and halt; the timer IRQ will context-switch away. */
+        __asm__ volatile("sti");
+        for(;;) __asm__ volatile("hlt");
+    }
+
     kprintf("[PGF]  Bandit forgot to map that page! Halting.\n");
     __asm__ volatile("cli; hlt");
     for(;;);
@@ -133,11 +194,6 @@ void paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phy
 
     uint32_t old_entry = page_table[pt_idx];
     uint32_t new_entry = (phys & ~0xFFF) | flags | PAGE_PRESENT;
-
-    if (flags & PAGE_USER) {
-        kprintf("[PGE DBG] paging_map_in_directory page_dir=0x%08x va=0x%08x -> phys=0x%08x flags=0x%03x\n",
-                page_dir_phys, virt, phys, flags);
-    }
 
     /* If nothing changes, avoid both the write and any TLB activity. */
     if (old_entry == new_entry) {

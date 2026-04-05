@@ -68,6 +68,8 @@ static int syscall_is_kernel_mode(const registers_t *regs) {
     return regs && ((regs->cs & 0x3u) == 0);
 }
 
+static int32_t sys_write(uint32_t fd, const char *buf, size_t len);
+
 static int syscall_map_user_pages(process_t *process,
                                   uint32_t start,
                                   uint32_t end,
@@ -212,6 +214,54 @@ static int32_t sys_brk(uint32_t addr) {
 
     process->brk_current = addr;
     return (int32_t)process->brk_current;
+}
+
+/* getrlimit/setrlimit: use struct rlimit in user memory
+ * sys_setrlimit: regs->ebx = resource, regs->ecx = user pointer to rlimit
+ * sys_getrlimit: regs->ebx = resource, regs->ecx = user pointer to rlimit
+ */
+#include "../include/rlimit.h"
+
+static int32_t sys_setrlimit(uint32_t resource, uint32_t user_rlim_ptr) {
+    process_t *p = process_current();
+    rlimit_t rlim;
+    uint32_t old_dir;
+
+    if (!p) return -BLUEY_EPERM;
+    if (resource != RLIMIT_STACK) return -BLUEY_EINVAL;
+    if (!user_rlim_ptr) return -BLUEY_EFAULT;
+
+    /* Copy from user memory */
+    old_dir = paging_current_directory();
+    paging_switch_directory(p->page_dir);
+    rlimit_t *u = (rlimit_t*)(uintptr_t)user_rlim_ptr;
+    rlim.rlim_cur = u->rlim_cur;
+    rlim.rlim_max = u->rlim_max;
+    paging_switch_directory(old_dir);
+
+    /* Basic validation */
+    if (rlim.rlim_cur > rlim.rlim_max) return -BLUEY_EINVAL;
+
+    p->rlimit_stack_cur = rlim.rlim_cur;
+    p->rlimit_stack_max = rlim.rlim_max;
+    return 0;
+}
+
+static int32_t sys_getrlimit(uint32_t resource, uint32_t user_rlim_ptr) {
+    process_t *p = process_current();
+    uint32_t old_dir;
+
+    if (!p) return -BLUEY_EPERM;
+    if (resource != RLIMIT_STACK) return -BLUEY_EINVAL;
+    if (!user_rlim_ptr) return -BLUEY_EFAULT;
+
+    old_dir = paging_current_directory();
+    paging_switch_directory(p->page_dir);
+    rlimit_t *u = (rlimit_t*)(uintptr_t)user_rlim_ptr;
+    u->rlim_cur = p->rlimit_stack_cur;
+    u->rlim_max = p->rlimit_stack_max;
+    paging_switch_directory(old_dir);
+    return 0;
 }
 
 static int32_t sys_mmap(registers_t *regs) {
@@ -361,6 +411,79 @@ typedef struct {
     uint32_t tv_nsec;
 } k_timespec_t;
 
+typedef struct {
+    uint64_t tv_sec;
+    uint64_t tv_nsec;
+} k_timespec64_t;
+
+typedef struct {
+    uint32_t iov_base;
+    uint32_t iov_len;
+} k_iovec_t;
+
+typedef struct {
+    uint64_t st_dev;
+    uint32_t __st_dev_padding;
+    uint32_t __st_ino_truncated;
+    uint32_t st_mode;
+    uint32_t st_nlink;
+    uint32_t st_uid;
+    uint32_t st_gid;
+    uint64_t st_rdev;
+    uint32_t __st_rdev_padding;
+    uint32_t __pad0;
+    uint64_t st_size;
+    uint32_t st_blksize;
+    uint32_t __pad1;
+    uint64_t st_blocks;
+    int32_t st_atime_sec;
+    int32_t st_atime_nsec;
+    int32_t st_mtime_sec;
+    int32_t st_mtime_nsec;
+    int32_t st_ctime_sec;
+    int32_t st_ctime_nsec;
+    uint64_t st_ino;
+} k_stat64_t;
+
+typedef struct {
+    uint32_t stx_mask;
+    uint32_t stx_blksize;
+    uint64_t stx_attributes;
+    uint32_t stx_nlink;
+    uint32_t stx_uid;
+    uint32_t stx_gid;
+    uint16_t stx_mode;
+    uint16_t __pad0;
+    uint64_t stx_ino;
+    uint64_t stx_size;
+    uint64_t stx_blocks;
+    uint64_t stx_attributes_mask;
+    struct {
+        int64_t tv_sec;
+        uint32_t tv_nsec;
+        int32_t __pad;
+    } stx_atime, stx_btime, stx_ctime, stx_mtime;
+    uint32_t stx_rdev_major;
+    uint32_t stx_rdev_minor;
+    uint32_t stx_dev_major;
+    uint32_t stx_dev_minor;
+    uint64_t stx_mnt_id;
+    uint32_t stx_dio_mem_align;
+    uint32_t stx_dio_offset_align;
+    uint64_t stx_subvol;
+    uint32_t stx_atomic_write_unit_min;
+    uint32_t stx_atomic_write_unit_max;
+    uint32_t stx_atomic_write_segments_max;
+    uint32_t __pad1;
+    uint64_t __pad2[9];
+} k_statx_t;
+
+#define SYS_IOV_MAX 1024u
+#define STATX_BASIC_STATS 0x7ffu
+#define AT_FDCWD ((int32_t)-100)
+#define AT_EMPTY_PATH 0x1000
+#define AT_SYMLINK_NOFOLLOW 0x100
+
 static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
     (void)clk_id;
     if (!tp) return -BLUEY_EFAULT;
@@ -377,6 +500,110 @@ static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
     tp->tv_sec = sec;
     tp->tv_nsec = nsec;
     return 0;
+}
+
+static int32_t sys_clock_gettime64(int clk_id, k_timespec64_t *tp) {
+    k_timespec_t ts32;
+    int32_t ret;
+
+    if (!tp) return -BLUEY_EFAULT;
+    ret = sys_clock_gettime(clk_id, &ts32);
+    if (ret != 0) return ret;
+
+    tp->tv_sec = (uint64_t)ts32.tv_sec;
+    tp->tv_nsec = (uint64_t)ts32.tv_nsec;
+    return 0;
+}
+
+static void sys_fill_stat64(vfs_stat_t *st, k_stat64_t *out) {
+    uint32_t ticks = timer_get_ticks();
+
+    memset(out, 0, sizeof(*out));
+    out->st_dev = 1;
+    out->st_mode = st->mode;
+    out->st_nlink = st->is_dir ? 2u : 1u;
+    out->st_uid = st->uid;
+    out->st_gid = st->gid;
+    out->st_size = st->size;
+    out->st_blksize = 4096u;
+    out->st_blocks = ((uint64_t)st->size + 511u) / 512u;
+    out->st_atime_sec = (int32_t)ticks;
+    out->st_mtime_sec = (int32_t)ticks;
+    out->st_ctime_sec = (int32_t)ticks;
+}
+
+static int32_t sys_fstat64(int fd, k_stat64_t *buf) {
+    vfs_stat_t st;
+
+    if (fd < 0) return -BLUEY_EBADF;
+    if (!buf) return -BLUEY_EFAULT;
+    if (vfs_fstat(fd, &st) != 0) return -BLUEY_EBADF;
+
+    sys_fill_stat64(&st, buf);
+    return 0;
+}
+
+static int32_t sys_statx(int dirfd, const char *path, int flags, uint32_t mask, k_statx_t *buf) {
+    vfs_stat_t st;
+    int rc;
+
+    (void)mask;
+    if (!buf) return -BLUEY_EFAULT;
+
+    memset(buf, 0, sizeof(*buf));
+
+    if (flags & AT_EMPTY_PATH) {
+        if (!path || !path[0]) {
+            if (dirfd < 0) return -BLUEY_EBADF;
+            rc = vfs_fstat(dirfd, &st);
+            if (rc != 0) return -BLUEY_EBADF;
+        } else {
+            rc = vfs_stat(path, &st);
+            if (rc != 0) return -BLUEY_ENOENT;
+        }
+    } else {
+        if (!path) return -BLUEY_EFAULT;
+        if (path[0] != '/' && dirfd != AT_FDCWD) return -BLUEY_ENOSYS;
+        if ((flags & AT_SYMLINK_NOFOLLOW) != 0) {
+            /* BlueyFS has no distinct lstat path yet; report regular metadata. */
+        }
+        rc = vfs_stat(path, &st);
+        if (rc != 0) return -BLUEY_ENOENT;
+    }
+
+    buf->stx_mask = STATX_BASIC_STATS;
+    buf->stx_blksize = 4096u;
+    buf->stx_nlink = st.is_dir ? 2u : 1u;
+    buf->stx_uid = st.uid;
+    buf->stx_gid = st.gid;
+    buf->stx_mode = st.mode;
+    buf->stx_size = st.size;
+    buf->stx_blocks = ((uint64_t)st.size + 511u) / 512u;
+    return 0;
+}
+
+static int32_t sys_writev(int fd, const k_iovec_t *iov, uint32_t iovcnt) {
+    int32_t total = 0;
+
+    if (!iov) return -BLUEY_EFAULT;
+    if (iovcnt > SYS_IOV_MAX) return -BLUEY_EINVAL;
+
+    for (uint32_t index = 0; index < iovcnt; index++) {
+        const char *base = (const char *)(uintptr_t)iov[index].iov_base;
+        size_t len = (size_t)iov[index].iov_len;
+        int32_t written;
+
+        if (len == 0) continue;
+        written = sys_write((uint32_t)fd, base, len);
+        if (written < 0) {
+            if (total > 0) return total;
+            return written;
+        }
+        total += written;
+        if ((size_t)written < len) break;
+    }
+
+    return total;
 }
 
 static int32_t sys_fstat(int fd, void *buf) {
@@ -917,6 +1144,20 @@ static int32_t sys_set_tid_address(void *tidptr) {
     return (int32_t)process_getpid();
 }
 
+/* ---- set_robust_list --------------------------------------------------- */
+
+static int32_t sys_set_robust_list(void *head, size_t len) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EINVAL;
+    /* Linux i386 userspace passes sizeof(struct robust_list_head). We do not
+     * implement futex cleanup yet, but storing the registration makes musl and
+     * other modern runtimes happy and gives us the right ABI shape. */
+    process->robust_list_head = (uint32_t)(uintptr_t)head;
+    process->robust_list_len = (uint32_t)len;
+    return 0;
+}
+
 /* ---- getrandom ---------------------------------------------------------- */
 
 static int32_t sys_getrandom(void *buf, size_t buflen, uint32_t flags) {
@@ -926,6 +1167,23 @@ static int32_t sys_getrandom(void *buf, size_t buflen, uint32_t flags) {
     /* getrandom(2) is expected to provide cryptographically secure randomness.
      * Until a real entropy source and secure PRNG are available, report the
      * syscall as not implemented rather than returning weak, predictable data. */
+    return -BLUEY_ENOSYS;
+}
+
+/* ---- rseq --------------------------------------------------------------- */
+
+static int32_t sys_rseq(void *rseq, uint32_t rseq_len, int flags, uint32_t sig) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EINVAL;
+    /* Real rseq support needs scheduler/preemption integration so the kernel
+     * can keep cpu_id fields coherent and trigger abort handlers on migration.
+     * For now, record the registration for debugging/forward compatibility and
+     * report ENOSYS so libc falls back to non-rseq code paths. */
+    process->rseq_area = (uint32_t)(uintptr_t)rseq;
+    process->rseq_len = rseq_len;
+    process->rseq_sig = sig;
+    (void)flags;
     return -BLUEY_ENOSYS;
 }
 
@@ -1319,6 +1577,12 @@ int32_t syscall_dispatch(registers_t *regs) {
                              (const char *const*)regs->ecx,
                              (const char *const*)regs->edx);
             break;
+        case SYS_SETRLIMIT:
+            ret = sys_setrlimit((uint32_t)regs->ebx, (uint32_t)regs->ecx);
+            break;
+        case SYS_GETRLIMIT:
+            ret = sys_getrlimit((uint32_t)regs->ebx, (uint32_t)regs->ecx);
+            break;
         case SYS_WAITPID:
             ret = process_waitpid((int32_t)regs->ebx, (int*)regs->ecx, (int)regs->edx);
             break;
@@ -1362,11 +1626,30 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_FSTAT:
             ret = sys_fstat((int)regs->ebx, (void*)regs->ecx);
             break;
+        case SYS_FSTAT64:
+            ret = sys_fstat64((int)regs->ebx, (k_stat64_t*)regs->ecx);
+            break;
+        case SYS_WRITEV:
+            ret = sys_writev((int)regs->ebx, (const k_iovec_t*)regs->ecx, regs->edx);
+            break;
         case SYS_SET_TID_ADDRESS:
             ret = sys_set_tid_address((void*)regs->ebx);
             break;
+        case SYS_SET_ROBUST_LIST:
+            ret = sys_set_robust_list((void*)regs->ebx, (size_t)regs->ecx);
+            break;
         case SYS_GETRANDOM:
             ret = sys_getrandom((void*)regs->ebx, (size_t)regs->ecx, regs->edx);
+            break;
+        case SYS_CLOCK_GETTIME64:
+            ret = sys_clock_gettime64((int)regs->ebx, (k_timespec64_t*)regs->ecx);
+            break;
+        case SYS_STATX:
+            ret = sys_statx((int)regs->ebx, (const char*)regs->ecx, (int)regs->edx,
+                            regs->esi, (k_statx_t*)regs->edi);
+            break;
+        case SYS_RSEQ:
+            ret = sys_rseq((void*)regs->ebx, regs->ecx, (int)regs->edx, regs->esi);
             break;
         /* ---- Process groups -------------------------------------------- */
         case SYS_SETPGID:
@@ -1397,6 +1680,30 @@ int32_t syscall_dispatch(registers_t *regs) {
         /* ---- Reboot / poweroff ----------------------------------------- */
         case SYS_REBOOT:
             ret = sys_reboot(regs->ebx, regs->ecx, regs->edx);
+            break;
+        /* ---- Thread-local storage --------------------------------------- */
+        case SYS_SET_THREAD_AREA: {
+            /* struct user_desc { u32 entry_number, base_addr, limit, flags; } */
+            uint32_t *ud = (uint32_t *)(uintptr_t)regs->ebx;
+            if (!ud) { ret = -BLUEY_EINVAL; break; }
+            uint32_t base = ud[1];          /* base_addr is 2nd dword */
+            process_t *cur = process_current();
+            if (!cur) { ret = -BLUEY_EINVAL; break; }
+            cur->tls_base = base;
+            gdt_set_tls_base(base);
+            /* Update GS in syscall frame and saved context so the TLS selector
+             * survives scheduler context switches via the IRQ stub. */
+            regs->gs = GDT_TLS_SEL;
+            cur->saved_regs.gs = GDT_TLS_SEL;
+            syscall_saved_gs = GDT_TLS_SEL;
+            /* Write back the allocated entry number (6) so musl caches it */
+            ud[0] = 6;
+            ret = 0;
+            break;
+        }
+        case SYS_MODIFY_LDT:
+            /* Return success so musl falls through to the GS-load path. */
+            ret = 0;
             break;
         default:
             // Unknown syscall - don't crash, just return -1
