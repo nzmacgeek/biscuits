@@ -775,12 +775,12 @@ static int32_t sys_socket_open(int domain, int type, int protocol) {
     int socket_id;
     int fd;
 
+    if (domain != BLUEY_AF_UNIX) return -BLUEY_EAFNOSUPPORT;
+    if (type != BLUEY_SOCK_STREAM) return -BLUEY_EPROTONOSUPPORT;
+    if (protocol != 0) return -BLUEY_EPROTONOSUPPORT;
+
     socket_id = socket_create(domain, type, protocol);
-    if (socket_id < 0) {
-        if (domain != BLUEY_AF_UNIX) return -BLUEY_EAFNOSUPPORT;
-        if (type != BLUEY_SOCK_STREAM) return -BLUEY_EPROTONOSUPPORT;
-        return -BLUEY_EINVAL;
-    }
+    if (socket_id < 0) return -BLUEY_ENOMEM;
 
     fd = vfs_socket_open(socket_id);
     if (fd < 0) {
@@ -798,7 +798,11 @@ static int32_t sys_socket_bind(int fd, const void *addr, uint32_t addrlen) {
     if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
     rc = sys_socket_extract_path(addr, addrlen, path, sizeof(path));
     if (rc != 0) return rc;
-    return socket_bind(vfs_socket_id(fd), path) == 0 ? 0 : -BLUEY_EADDRINUSE;
+    rc = socket_bind(vfs_socket_id(fd), path);
+    if (rc == 0) return 0;
+    if (rc == -BLUEY_EADDRINUSE) return -BLUEY_EADDRINUSE;
+    if (rc < 0) return rc;
+    return -BLUEY_EINVAL;
 }
 
 static int32_t sys_socket_connect(int fd, const void *addr, uint32_t addrlen) {
@@ -808,7 +812,10 @@ static int32_t sys_socket_connect(int fd, const void *addr, uint32_t addrlen) {
     if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
     rc = sys_socket_extract_path(addr, addrlen, path, sizeof(path));
     if (rc != 0) return rc;
-    return socket_connect(vfs_socket_id(fd), path) == 0 ? 0 : -BLUEY_ECONNREFUSED;
+    rc = socket_connect(vfs_socket_id(fd), path);
+    if (rc == 0) return 0;
+    if (rc == -BLUEY_EINVAL || rc == -BLUEY_EAGAIN || rc == -BLUEY_ECONNREFUSED) return rc;
+    return -BLUEY_ECONNREFUSED;
 }
 
 static int32_t sys_socket_listen(int fd, int backlog) {
@@ -821,8 +828,9 @@ static int32_t sys_socket_accept4(int fd, void *addr, uint32_t *addrlen, int fla
     int newfd;
 
     (void)addr;
-    (void)addrlen;
     (void)flags;
+
+    if (addrlen) *addrlen = 0;
 
     if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
     socket_id = socket_accept(vfs_socket_id(fd));
@@ -903,6 +911,7 @@ static int32_t sys_select(int nfds,
         uint32_t word = (uint32_t)fd >> 5;
         int want_read = rfds && (rfds[word] & mask);
         int want_write = wfds && (wfds[word] & mask);
+        int fd_counted = 0;
 
         if (want_read) {
             int is_ready = 0;
@@ -914,7 +923,7 @@ static int32_t sys_select(int nfds,
 
             if (is_ready) {
                 ready_read[word] |= mask;
-                ready++;
+                if (!fd_counted) { ready++; fd_counted = 1; }
             }
         }
 
@@ -927,7 +936,7 @@ static int32_t sys_select(int nfds,
 
             if (is_ready) {
                 ready_write[word] |= mask;
-                ready++;
+                if (!fd_counted) { ready++; fd_counted = 1; }
             }
         }
     }

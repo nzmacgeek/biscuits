@@ -202,7 +202,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     multiuser_init();
 
     // Step 10: VFS, FAT16, and BiscuitFS
-        socket_init();
+    socket_init();
     vfs_init();
     vfs_register_fs(fat_get_filesystem());
     vfs_register_fs(biscuitfs_get_filesystem());

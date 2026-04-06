@@ -7,6 +7,11 @@
 #define SOCKET_BACKLOG_MAX     8
 #define SOCKET_BUFFER_SIZE     4096
 
+#define SOCKET_EINVAL        22
+#define SOCKET_EAGAIN        11
+#define SOCKET_EADDRINUSE    98
+#define SOCKET_ECONNREFUSED  111
+
 #define SOCKET_STATE_INIT            0
 #define SOCKET_STATE_BOUND           1
 #define SOCKET_STATE_LISTENING       2
@@ -79,6 +84,16 @@ static int socket_find_listener(const char *path) {
     return -1;
 }
 
+static int socket_path_in_use(const char *path) {
+    for (int i = 0; i < SOCKET_MAX_COUNT; i++) {
+        if (!socket_table[i].used) continue;
+        if (socket_table[i].state != SOCKET_STATE_BOUND &&
+            socket_table[i].state != SOCKET_STATE_LISTENING) continue;
+        if (strcmp(socket_table[i].path, path) == 0) return 1;
+    }
+    return 0;
+}
+
 void socket_init(void) {
     for (int i = 0; i < SOCKET_MAX_COUNT; i++) socket_reset(&socket_table[i]);
 }
@@ -110,14 +125,14 @@ int socket_bind(int socket_id, const char *path) {
     bluey_socket_t *sock;
     size_t path_len;
 
-    if (!socket_valid_id(socket_id) || !path || !path[0]) return -1;
-    if (socket_find_listener(path) >= 0) return -1;
+    if (!socket_valid_id(socket_id) || !path || !path[0]) return -SOCKET_EINVAL;
+    if (socket_path_in_use(path)) return -SOCKET_EADDRINUSE;
 
     path_len = strlen(path);
-    if (path_len >= SOCKET_PATH_LEN) return -1;
+    if (path_len >= SOCKET_PATH_LEN) return -SOCKET_EINVAL;
 
     sock = &socket_table[socket_id];
-    if (sock->state != SOCKET_STATE_INIT && sock->state != SOCKET_STATE_BOUND) return -1;
+    if (sock->state != SOCKET_STATE_INIT && sock->state != SOCKET_STATE_BOUND) return -SOCKET_EINVAL;
 
     strncpy(sock->path, path, sizeof(sock->path) - 1);
     sock->path[sizeof(sock->path) - 1] = '\0';
@@ -144,15 +159,15 @@ int socket_connect(int socket_id, const char *path) {
     bluey_socket_t *listener;
     int listener_id;
 
-    if (!socket_valid_id(socket_id) || !path) return -1;
+    if (!socket_valid_id(socket_id) || !path) return -SOCKET_EINVAL;
     sock = &socket_table[socket_id];
-    if (sock->state != SOCKET_STATE_INIT && sock->state != SOCKET_STATE_BOUND) return -1;
+    if (sock->state != SOCKET_STATE_INIT && sock->state != SOCKET_STATE_BOUND) return -SOCKET_EINVAL;
 
     listener_id = socket_find_listener(path);
-    if (listener_id < 0) return -1;
+    if (listener_id < 0) return -SOCKET_ECONNREFUSED;
 
     listener = &socket_table[listener_id];
-    if (listener->pending_count >= (uint32_t)listener->backlog) return -1;
+    if (listener->pending_count >= (uint32_t)listener->backlog) return -SOCKET_EAGAIN;
 
     listener->pending_ids[listener->pending_tail] = socket_id;
     listener->pending_tail = (listener->pending_tail + 1u) % SOCKET_BACKLOG_MAX;
@@ -204,7 +219,10 @@ int socket_close(int socket_id) {
 
     if (!socket_valid_id(socket_id)) return -1;
     sock = &socket_table[socket_id];
-    if (sock->refcount > 0) sock->refcount--;
+    if (sock->refcount > 0) {
+        sock->refcount--;
+        if (sock->refcount > 0) return 0;
+    }
 
     peer_id = sock->peer_id;
     if (peer_id >= 0 && socket_valid_id(peer_id)) {

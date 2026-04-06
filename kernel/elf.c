@@ -124,6 +124,11 @@ static int elf_map_stack_pages(uint32_t page_dir, uint32_t stack_base, uint32_t 
         uint32_t phys = pmm_alloc_frame();
         if (!phys) {
             kprintf("[ELF DBG] pmm_alloc_frame failed while mapping initial stack pages\n");
+            /* Unmap and free all pages already mapped in this loop. */
+            for (uint32_t j = 0; j < page; j++) {
+                uint32_t unmap_va = stack_top - ((j + 1u) * PAGE_SIZE);
+                paging_unmap_in_directory(page_dir, unmap_va);
+            }
             return -1;
         }
         kprintf("[ELF DBG]  map stack va=0x%08x -> phys=0x%08x\n", va, phys);

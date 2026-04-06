@@ -354,7 +354,6 @@ $(OBJECTS): $(ARCH_STAMP)
 
 FORCE:
 
-
 arch/m68k/boot_font.h: arch/m68k/boot_font.sbf tools/fonty_rg_to_c.py
 	$(PYTHON) tools/fonty_rg_to_c.py $< $@
 	@echo "  [GEN] $@"
