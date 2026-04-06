@@ -800,7 +800,6 @@ static int32_t sys_socket_bind(int fd, const void *addr, uint32_t addrlen) {
     if (rc != 0) return rc;
     rc = socket_bind(vfs_socket_id(fd), path);
     if (rc == 0) return 0;
-    if (rc == -BLUEY_EADDRINUSE) return -BLUEY_EADDRINUSE;
     if (rc < 0) return rc;
     return -BLUEY_EINVAL;
 }
