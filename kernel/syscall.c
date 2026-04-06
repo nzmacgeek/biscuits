@@ -8,6 +8,7 @@
 #include "../include/ports.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
+#include "../drivers/keyboard.h"
 #include "../drivers/vga.h"
 #include "tty.h"
 #include "idt.h"
@@ -24,6 +25,7 @@
 #include "gdt.h"
 #include "poll.h"
 #include "devev.h"
+#include "socket.h"
 #include "../fs/vfs.h"
 
 extern void syscall_stub(void);
@@ -48,6 +50,12 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_ERANGE 34
 #define BLUEY_EPIPE  32
 #define BLUEY_EMFILE 24
+#define BLUEY_ENOTSOCK 88
+#define BLUEY_EADDRINUSE 98
+#define BLUEY_EAFNOSUPPORT 97
+#define BLUEY_EPROTONOSUPPORT 93
+#define BLUEY_EOPNOTSUPP 95
+#define BLUEY_ECONNREFUSED 111
 
 #define BLUEY_ENOMEM 12
 
@@ -720,6 +728,252 @@ static int32_t sys_rmdir(const char *path) {
     return res;
 }
 
+typedef struct {
+    int32_t tv_sec;
+    int32_t tv_usec;
+} k_timeval_t;
+
+typedef struct {
+    uint16_t sa_family;
+    char     sa_data[14];
+} k_sockaddr_t;
+
+typedef struct {
+    uint16_t sun_family;
+    char     sun_path[108];
+} k_sockaddr_un_t;
+
+#define SOCKETCALL_SOCKET   1
+#define SOCKETCALL_BIND     2
+#define SOCKETCALL_CONNECT  3
+#define SOCKETCALL_LISTEN   4
+#define SOCKETCALL_ACCEPT   5
+
+static int sys_socket_extract_path(const void *addr, uint32_t addrlen,
+                                   char *path, size_t path_size) {
+    const k_sockaddr_un_t *un = (const k_sockaddr_un_t*)addr;
+    size_t max_path;
+    size_t path_len = 0;
+
+    if (!addr || !path || path_size == 0) return -BLUEY_EFAULT;
+    if (addrlen < sizeof(uint16_t)) return -BLUEY_EINVAL;
+    if (un->sun_family != BLUEY_AF_UNIX) return -BLUEY_EAFNOSUPPORT;
+
+    max_path = addrlen > sizeof(uint16_t) ? (size_t)(addrlen - sizeof(uint16_t)) : 0;
+    if (max_path > sizeof(un->sun_path)) max_path = sizeof(un->sun_path);
+    if (max_path == 0) return -BLUEY_EINVAL;
+
+    while (path_len < max_path && un->sun_path[path_len]) path_len++;
+    if (path_len == 0 || path_len >= path_size) return -BLUEY_EINVAL;
+
+    memcpy(path, un->sun_path, path_len);
+    path[path_len] = '\0';
+    return 0;
+}
+
+static int32_t sys_socket_open(int domain, int type, int protocol) {
+    int socket_id;
+    int fd;
+
+    socket_id = socket_create(domain, type, protocol);
+    if (socket_id < 0) {
+        if (domain != BLUEY_AF_UNIX) return -BLUEY_EAFNOSUPPORT;
+        if (type != BLUEY_SOCK_STREAM) return -BLUEY_EPROTONOSUPPORT;
+        return -BLUEY_EINVAL;
+    }
+
+    fd = vfs_socket_open(socket_id);
+    if (fd < 0) {
+        socket_close(socket_id);
+        return -BLUEY_EMFILE;
+    }
+
+    return fd;
+}
+
+static int32_t sys_socket_bind(int fd, const void *addr, uint32_t addrlen) {
+    char path[VFS_PATH_LEN];
+    int rc;
+
+    if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
+    rc = sys_socket_extract_path(addr, addrlen, path, sizeof(path));
+    if (rc != 0) return rc;
+    return socket_bind(vfs_socket_id(fd), path) == 0 ? 0 : -BLUEY_EADDRINUSE;
+}
+
+static int32_t sys_socket_connect(int fd, const void *addr, uint32_t addrlen) {
+    char path[VFS_PATH_LEN];
+    int rc;
+
+    if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
+    rc = sys_socket_extract_path(addr, addrlen, path, sizeof(path));
+    if (rc != 0) return rc;
+    return socket_connect(vfs_socket_id(fd), path) == 0 ? 0 : -BLUEY_ECONNREFUSED;
+}
+
+static int32_t sys_socket_listen(int fd, int backlog) {
+    if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
+    return socket_listen(vfs_socket_id(fd), backlog) == 0 ? 0 : -BLUEY_EOPNOTSUPP;
+}
+
+static int32_t sys_socket_accept4(int fd, void *addr, uint32_t *addrlen, int flags) {
+    int socket_id;
+    int newfd;
+
+    (void)addr;
+    (void)addrlen;
+    (void)flags;
+
+    if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
+    socket_id = socket_accept(vfs_socket_id(fd));
+    if (socket_id < 0) return -BLUEY_EAGAIN;
+
+    newfd = vfs_socket_open(socket_id);
+    if (newfd < 0) {
+        socket_close(socket_id);
+        return -BLUEY_EMFILE;
+    }
+    return newfd;
+}
+
+static int32_t sys_socketcall(int call, uint32_t *args) {
+    if (!args) return -BLUEY_EFAULT;
+
+    switch (call) {
+        case SOCKETCALL_SOCKET:
+            return sys_socket_open((int)args[0], (int)args[1], (int)args[2]);
+        case SOCKETCALL_BIND:
+            return sys_socket_bind((int)args[0], (const void*)(uintptr_t)args[1], args[2]);
+        case SOCKETCALL_CONNECT:
+            return sys_socket_connect((int)args[0], (const void*)(uintptr_t)args[1], args[2]);
+        case SOCKETCALL_LISTEN:
+            return sys_socket_listen((int)args[0], (int)args[1]);
+        case SOCKETCALL_ACCEPT:
+            return sys_socket_accept4((int)args[0], (void*)(uintptr_t)args[1],
+                                      (uint32_t*)(uintptr_t)args[2], 0);
+        default:
+            return -BLUEY_ENOSYS;
+    }
+}
+
+static int32_t sys_rename(const char *oldpath, const char *newpath) {
+    vfs_stat_t old_st;
+    vfs_stat_t new_st;
+
+    if (!oldpath || !newpath) return -BLUEY_EFAULT;
+    if (strcmp(oldpath, newpath) == 0) return 0;
+    if (vfs_stat(oldpath, &old_st) != 0) return -BLUEY_ENOENT;
+    if (old_st.is_dir) return -BLUEY_EPERM;
+
+    if (vfs_stat(newpath, &new_st) == 0) {
+        if (new_st.is_dir) return -BLUEY_EISDIR;
+        if (vfs_unlink(newpath) != 0) return -BLUEY_EPERM;
+    }
+
+    if (vfs_link(oldpath, newpath) != 0) return -BLUEY_EPERM;
+    if (vfs_unlink(oldpath) != 0) {
+        vfs_unlink(newpath);
+        return -BLUEY_EPERM;
+    }
+
+    return 0;
+}
+
+static int32_t sys_select(int nfds,
+                          void *readfds,
+                          void *writefds,
+                          void *exceptfds,
+                          const k_timeval_t *timeout) {
+    (void)exceptfds;
+    uint32_t ready = 0;
+    uint32_t *rfds = (uint32_t*)readfds;
+    uint32_t *wfds = (uint32_t*)writefds;
+    uint32_t ready_read[32];
+    uint32_t ready_write[32];
+
+    memset(ready_read, 0, sizeof(ready_read));
+    memset(ready_write, 0, sizeof(ready_write));
+
+    if (nfds < 0) return -BLUEY_EINVAL;
+
+    if (nfds > (int)(ARRAY_SIZE(ready_read) * 32u)) return -BLUEY_EINVAL;
+
+    for (int fd = 0; fd < nfds; fd++) {
+        uint32_t mask = 1u << (fd & 31);
+        uint32_t word = (uint32_t)fd >> 5;
+        int want_read = rfds && (rfds[word] & mask);
+        int want_write = wfds && (wfds[word] & mask);
+
+        if (want_read) {
+            int is_ready = 0;
+            if (fd == 0) is_ready = keyboard_available();
+            else if (vfs_fd_is_devev(fd)) is_ready = devev_pending();
+            else if (vfs_fd_is_tty(fd)) is_ready = 1;
+            else if (vfs_fd_is_socket(fd)) is_ready = socket_is_readable(vfs_socket_id(fd));
+            else if (fd >= 3 && fd < VFS_MAX_OPEN) is_ready = 1;
+
+            if (is_ready) {
+                ready_read[word] |= mask;
+                ready++;
+            }
+        }
+
+        if (want_write) {
+            int is_ready = 0;
+            if (fd == 1 || fd == 2) is_ready = 1;
+            else if (vfs_fd_is_tty(fd)) is_ready = 1;
+            else if (vfs_fd_is_socket(fd)) is_ready = socket_is_writable(vfs_socket_id(fd));
+            else if (fd >= 3 && fd < VFS_MAX_OPEN) is_ready = 1;
+
+            if (is_ready) {
+                ready_write[word] |= mask;
+                ready++;
+            }
+        }
+    }
+
+    if (rfds) memcpy(rfds, ready_read, sizeof(ready_read));
+    if (wfds) memcpy(wfds, ready_write, sizeof(ready_write));
+
+    if (ready > 0) return (int32_t)ready;
+
+    /* claw currently uses select(0, NULL, NULL, NULL, &tv) as a timed sleep. */
+    if (nfds == 0) {
+        if (!timeout) {
+            process_set_waiting(process_current());
+            return 0;
+        }
+
+        if (timeout->tv_sec < 0 || timeout->tv_usec < 0 || timeout->tv_usec >= 1000000) {
+            return -BLUEY_EINVAL;
+        }
+
+        uint32_t ms = (uint32_t)timeout->tv_sec * 1000u;
+        ms += (uint32_t)timeout->tv_usec / 1000u;
+        if (ms) process_sleep(ms);
+        return 0;
+    }
+
+    if (!timeout) {
+        process_set_waiting(process_current());
+        return 0;
+    }
+
+    if (timeout->tv_sec < 0 || timeout->tv_usec < 0 || timeout->tv_usec >= 1000000) {
+        return -BLUEY_EINVAL;
+    }
+
+    {
+        uint32_t ms = (uint32_t)timeout->tv_sec * 1000u;
+        ms += (uint32_t)timeout->tv_usec / 1000u;
+        if (ms) process_sleep(ms);
+    }
+
+    if (rfds) memset(rfds, 0, sizeof(ready_read));
+    if (wfds) memset(wfds, 0, sizeof(ready_write));
+    return 0;
+}
+
 /* ---- link / symlink / readlink ----------------------------------------- */
 
 static int32_t sys_link(const char *oldpath, const char *newpath) {
@@ -1229,8 +1483,26 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
 }
 
 static int32_t sys_open(const char *path, int flags) {
-    if (!path) return -1;
-    return vfs_open(path, flags);
+    vfs_stat_t stat;
+    int access_mode;
+    int vfs_flags;
+    int fd;
+
+    if (!path) return -BLUEY_EFAULT;
+
+    access_mode = flags & 0x3;
+    vfs_flags = access_mode | (flags & (VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND));
+
+    if (vfs_stat(path, &stat) != 0) {
+        if (!(vfs_flags & VFS_O_CREAT)) return -BLUEY_ENOENT;
+    }
+
+    fd = vfs_open(path, vfs_flags);
+    if (fd >= 0) return fd;
+
+    if (vfs_stat(path, &stat) != 0) return -BLUEY_ENOENT;
+    if (stat.is_dir) return -BLUEY_EISDIR;
+    return -BLUEY_EPERM;
 }
 
 static int32_t sys_close(int fd) {
@@ -1501,6 +1773,12 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_LINK:
             ret = sys_link((const char*)regs->ebx, (const char*)regs->ecx);
             break;
+        case SYS_SOCKETCALL:
+            ret = sys_socketcall((int)regs->ebx, (uint32_t*)(uintptr_t)regs->ecx);
+            break;
+        case SYS_RENAME:
+            ret = sys_rename((const char*)regs->ebx, (const char*)regs->ecx);
+            break;
         case SYS_SYMLINK:
             ret = sys_symlink((const char*)regs->ebx, (const char*)regs->ecx);
             break;
@@ -1535,6 +1813,7 @@ int32_t syscall_dispatch(registers_t *regs) {
             ret = sys_pipe_impl((int*)regs->ebx);
             break;
         case SYS_FCNTL:
+        case SYS_FCNTL64:
             ret = sys_fcntl((int)regs->ebx, (int)regs->ecx, (int)regs->edx);
             break;
         case SYS_IOCTL:
@@ -1692,6 +1971,29 @@ int32_t syscall_dispatch(registers_t *regs) {
         /* ---- Poll ------------------------------------------------------- */
         case SYS_POLL:
             ret = sys_poll((pollfd_t*)regs->ebx, regs->ecx, (int32_t)regs->edx);
+            break;
+        case SYS_SELECT:
+            ret = sys_select((int)regs->ebx,
+                             (void*)regs->ecx,
+                             (void*)regs->edx,
+                             (void*)regs->esi,
+                             (const k_timeval_t*)regs->edi);
+            break;
+        case SYS_SOCKET:
+            ret = sys_socket_open((int)regs->ebx, (int)regs->ecx, (int)regs->edx);
+            break;
+        case SYS_BIND:
+            ret = sys_socket_bind((int)regs->ebx, (const void*)regs->ecx, regs->edx);
+            break;
+        case SYS_CONNECT:
+            ret = sys_socket_connect((int)regs->ebx, (const void*)regs->ecx, regs->edx);
+            break;
+        case SYS_LISTEN:
+            ret = sys_socket_listen((int)regs->ebx, (int)regs->ecx);
+            break;
+        case SYS_ACCEPT4:
+            ret = sys_socket_accept4((int)regs->ebx, (void*)regs->ecx,
+                                     (uint32_t*)regs->edx, (int)regs->esi);
             break;
         /* ---- Device event channel --------------------------------------- */
         case SYS_DEVEV_OPEN:

@@ -733,6 +733,48 @@ static int dir_add_entry(uint32_t dir_ino, const char *name,
     return 0;
 }
 
+static int dir_remove_entry(uint32_t dir_ino, const char *name, uint32_t ino) {
+    biscuitfs_inode_t dir_inode;
+    uint32_t namelen = (uint32_t)strlen(name);
+    uint8_t *blkbuf;
+
+    if (read_inode(dir_ino, &dir_inode) != 0) return -1;
+    blkbuf = biscuitfs_alloc_block_buf(__func__);
+    if (!blkbuf) return -1;
+
+    for (uint32_t b = 0; b * fs_block_size < dir_inode.size_lo; b++) {
+        biscuitfs_dirent_t *prev = NULL;
+        uint32_t phys = inode_get_block(&dir_inode, b);
+        if (!phys || read_block(phys, blkbuf) != 0) continue;
+
+        uint32_t off = 0;
+        while (off < fs_block_size) {
+            biscuitfs_dirent_t *de = (biscuitfs_dirent_t *)(blkbuf + off);
+            if (de->rec_len == 0) break;
+
+            if (de->inode == ino && de->name_len == namelen &&
+                memcmp(de->name, name, namelen) == 0) {
+                if (prev) {
+                    prev->rec_len = (uint16_t)(prev->rec_len + de->rec_len);
+                } else {
+                    de->inode = 0;
+                    de->name_len = 0;
+                    de->file_type = BISCUITFS_FT_UNKNOWN;
+                }
+                biscuitfs_journal_write_block(phys, blkbuf);
+                biscuitfs_free_block_buf(blkbuf);
+                return 0;
+            }
+
+            prev = de;
+            off += de->rec_len;
+        }
+    }
+
+    biscuitfs_free_block_buf(blkbuf);
+    return -1;
+}
+
 // ---------------------------------------------------------------------------
 // VFS driver callbacks
 // ---------------------------------------------------------------------------
@@ -1211,23 +1253,43 @@ static int biscuitfs_mkdir_cb(const char *path) {
 }
 
 static int biscuitfs_unlink_cb(const char *path) {
-    // Minimal: locate the inode and decrement its link count
     uint32_t ino = path_to_inode(path);
+    char parent_path[256];
+    char *slash;
+    const char *name;
+    uint32_t dir_ino;
     if (!ino) return -1;
 
     biscuitfs_inode_t inode;
     if (read_inode(ino, &inode) != 0) return -1;
+    if ((inode.mode & BISCUITFS_IFMT) == BISCUITFS_IFDIR) return -1;
+
+    strncpy(parent_path, path, sizeof(parent_path) - 1);
+    parent_path[sizeof(parent_path) - 1] = '\0';
+    slash = strrchr(parent_path, '/');
+    name = slash ? slash + 1 : path;
+    if (slash) *slash = '\0';
+    dir_ino = path_to_inode(parent_path[0] ? parent_path : "/");
+    if (!dir_ino) return -1;
 
     biscuitfs_journal_begin();
 
-    inode.links_count--;
+    if (dir_remove_entry(dir_ino, name, ino) != 0) {
+        biscuitfs_journal_abort();
+        return -1;
+    }
+
+    if (inode.links_count > 0) inode.links_count--;
     if (inode.links_count == 0) {
-        // Free all data blocks
         for (int i = 0; i < BISCUITFS_N_DIRECT; i++) {
             if (inode.block[i]) { free_block(inode.block[i]); inode.block[i] = 0; }
         }
+        inode.mode = 0;
         inode.size_lo = 0;
-        // Mark inode as deleted in inode bitmap
+        inode.blocks_lo = 0;
+        inode.dtime = 1;
+        write_inode(ino, &inode);
+
         uint32_t group = (ino - 1) / BISCUITFS_INODES_PER_GRP;
         uint32_t local = (ino - 1) % BISCUITFS_INODES_PER_GRP;
         uint8_t  bitmap[BISCUITFS_BLOCK_SIZE];
@@ -1237,41 +1299,8 @@ static int biscuitfs_unlink_cb(const char *path) {
         bgd_table[group].free_inodes++;
         sb.free_inodes++;
         write_bgd(group);
-    }
-    write_inode(ino, &inode);
-
-    // Remove directory entry (simplified: mark entry inode as 0)
-    char parent_path[256];
-    strncpy(parent_path, path, sizeof(parent_path) - 1);
-    parent_path[sizeof(parent_path) - 1] = '\0';
-    char *slash = strrchr(parent_path, '/');
-    const char *name = slash ? slash + 1 : path;
-    if (slash) *slash = '\0';
-    uint32_t dir_ino = path_to_inode(parent_path[0] ? parent_path : "/");
-
-    if (dir_ino) {
-        biscuitfs_inode_t dir_inode;
-        read_inode(dir_ino, &dir_inode);
-        uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
-        uint32_t size = dir_inode.size_lo;
-        uint32_t namelen = (uint32_t)strlen(name);
-
-        for (uint32_t b = 0; b * fs_block_size < size; b++) {
-            uint32_t phys = inode_get_block(&dir_inode, b);
-            if (!phys || read_block(phys, blkbuf) != 0) continue;
-            uint32_t off = 0;
-            while (off < fs_block_size) {
-                biscuitfs_dirent_t *de = (biscuitfs_dirent_t *)(blkbuf + off);
-                if (de->rec_len == 0) break;
-                if (de->inode == ino && de->name_len == namelen &&
-                    memcmp(de->name, name, namelen) == 0) {
-                    de->inode = 0;
-                    biscuitfs_journal_write_block(phys, blkbuf);
-                    break;
-                }
-                off += de->rec_len;
-            }
-        }
+    } else {
+        write_inode(ino, &inode);
     }
 
     biscuitfs_journal_commit();

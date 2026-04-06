@@ -97,6 +97,7 @@ typedef struct {
 #define VFS_FD_TYPE_DEVEV 1   // device event channel (kernel ring buffer)
 #define VFS_FD_TYPE_PIPE  2   // pipe (in-kernel ring buffer)
 #define VFS_FD_TYPE_TTY   3   // kernel console/tty device
+#define VFS_FD_TYPE_SOCKET 4  // in-kernel local socket endpoint
 
 // lseek whence values (POSIX-compatible)
 #define VFS_SEEK_SET 0
@@ -109,8 +110,11 @@ int  vfs_mount(const char *path, const char *fs_name, uint32_t start_lba);
 int  vfs_umount(const char *path);
 int  vfs_open(const char *path, int flags);
 int  vfs_devev_open(void);           // open a device event channel fd
+int  vfs_socket_open(int socket_id); // attach a kernel socket to a VFS fd
 int  vfs_fd_is_devev(int fd);        // 1 if the fd is a device event channel
 int  vfs_fd_is_tty(int fd);          // 1 if the fd is a tty/console device
+int  vfs_fd_is_socket(int fd);       // 1 if the fd is a socket endpoint
+int  vfs_socket_id(int fd);          // backend socket id for a socket fd
 int  vfs_read(int fd, uint8_t *buf, size_t len);
 int  vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset);
 int  vfs_write(int fd, const uint8_t *buf, size_t len);

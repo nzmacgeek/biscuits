@@ -14,8 +14,9 @@
 #define ELF_READ_CHUNK_SIZE   512u
 #define ELF_MAX_IMAGE_SIZE    (1024u * 1024u)
 #define ELF_USER_STACK_BASE   0x70000000u
-#define ELF_USER_STACK_SIZE   (PAGE_SIZE * 5u)
-#define ELF_USER_STACK_STRIDE 0x00010000u
+#define ELF_USER_STACK_SIZE   (1024u * 1024u)
+#define ELF_USER_STACK_PREFAULT_PAGES 4u
+#define ELF_USER_STACK_STRIDE 0x00200000u
 
 static uint32_t elf_next_stack_base = ELF_USER_STACK_BASE;
 
@@ -102,27 +103,49 @@ static uint32_t elf_alloc_stack_region(void) {
 }
 
 static int elf_map_stack_pages(uint32_t page_dir, uint32_t stack_base, uint32_t stack_size) {
-    /* Reserve the stack region but only map the topmost page. A guard page
-     * remains unmapped at the very bottom to catch overflows. Deeper pages
-     * will be mapped on-demand by the page-fault handler. */
-    uint32_t top_page = (stack_base + stack_size) - PAGE_SIZE;
-    kprintf("[ELF DBG] Mapping initial stack page for page_dir=0x%08x top=0x%08x\n",
-            page_dir, top_page);
-    uint32_t phys = pmm_alloc_frame();
-    if (!phys) {
-        kprintf("[ELF DBG] pmm_alloc_frame failed while mapping initial stack page\n");
-        return -1;
+    /* Reserve a larger stack region with a guard page at the very bottom.
+     * Prefault a few top pages so libc startup and early userspace code do
+     * not immediately fault on ordinary stack frames, while still allowing
+     * deeper growth on demand. */
+    uint32_t stack_top = stack_base + stack_size;
+    uint32_t pages_to_map = ELF_USER_STACK_PREFAULT_PAGES;
+
+    if (stack_size <= PAGE_SIZE) return -1;
+    if (pages_to_map == 0) pages_to_map = 1;
+    if (pages_to_map > (stack_size / PAGE_SIZE) - 1u) {
+        pages_to_map = (stack_size / PAGE_SIZE) - 1u;
     }
-    kprintf("[ELF DBG]  map stack va=0x%08x -> phys=0x%08x\n", top_page, phys);
-    paging_map_in_directory(page_dir, top_page, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+
+    kprintf("[ELF DBG] Mapping %u initial stack pages for page_dir=0x%08x top=0x%08x\n",
+            pages_to_map, page_dir, stack_top - PAGE_SIZE);
+
+    for (uint32_t page = 0; page < pages_to_map; page++) {
+        uint32_t va = stack_top - ((page + 1u) * PAGE_SIZE);
+        uint32_t phys = pmm_alloc_frame();
+        if (!phys) {
+            kprintf("[ELF DBG] pmm_alloc_frame failed while mapping initial stack pages\n");
+            return -1;
+        }
+        kprintf("[ELF DBG]  map stack va=0x%08x -> phys=0x%08x\n", va, phys);
+        paging_map_in_directory(page_dir, va, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    }
     return 0;
 }
 
 static int elf_zero_stack_pages(uint32_t stack_base, uint32_t stack_size) {
-    /* Only zero the initial mapped (top) page. Other pages will be zeroed
-     * when they are allocated on-demand. */
-    uint32_t top_page = (stack_base + stack_size) - PAGE_SIZE;
-    memset((void*)top_page, 0, PAGE_SIZE);
+    uint32_t stack_top = stack_base + stack_size;
+    uint32_t pages_to_zero = ELF_USER_STACK_PREFAULT_PAGES;
+
+    if (stack_size <= PAGE_SIZE) return -1;
+    if (pages_to_zero == 0) pages_to_zero = 1;
+    if (pages_to_zero > (stack_size / PAGE_SIZE) - 1u) {
+        pages_to_zero = (stack_size / PAGE_SIZE) - 1u;
+    }
+
+    for (uint32_t page = 0; page < pages_to_zero; page++) {
+        uint32_t va = stack_top - ((page + 1u) * PAGE_SIZE);
+        memset((void*)va, 0, PAGE_SIZE);
+    }
     return 0;
 }
 

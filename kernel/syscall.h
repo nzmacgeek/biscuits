@@ -22,11 +22,13 @@
 #define SYS_CHMOD         15
 #define SYS_LCHOWN        16  /* lchown (16-bit uid/gid variant) */
 #define SYS_LSEEK         19
+#define SYS_SELECT        142
 #define SYS_GETPID        20
 #define SYS_MOUNT         21
 #define SYS_GETUID        24
 #define SYS_FORK          57
 #define SYS_CLONE         120
+#define SYS_SOCKETCALL    102
 #define SYS_GETGID        47
 #define SYS_MMAP          90
 #define SYS_MMAP2         192
@@ -58,10 +60,12 @@
 #define SYS_SYMLINK       83
 #define SYS_READLINK      84
 #define SYS_ACCESS        85
+#define SYS_RENAME        38
 #define SYS_FCHMOD        94
 #define SYS_FCHOWN        95
 #define SYS_LSTAT         107
 #define SYS_FCNTL         55
+#define SYS_FCNTL64       221
 #define SYS_GETPPID       64
 #define SYS_WAIT4         114
 #define SYS_SCHED_YIELD   158
@@ -73,6 +77,11 @@
 #define SYS_GETRANDOM     355
 #define SYS_STATX         383
 #define SYS_RSEQ          386
+#define SYS_SOCKET        359
+#define SYS_BIND          361
+#define SYS_CONNECT       362
+#define SYS_LISTEN        363
+#define SYS_ACCEPT4       364
 // chown/fchown/lchown 32-bit uid variants (used by musl on i386)
 #define SYS_LCHOWN32      198
 #define SYS_FCHOWN32      207

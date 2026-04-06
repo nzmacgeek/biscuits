@@ -542,6 +542,7 @@ void process_enter_first_user(process_t *process) {
      * frame and iret into user space. Using local temporaries ensures
      * GCC can generate valid memory/register operands for the asm. */
     uint16_t ds_val = (uint16_t)regs->ds;
+    uint16_t gs_val = (uint16_t)regs->gs;
     uint32_t ss_val = regs->ss;
     uint32_t esp_val = regs->useresp;
     uint32_t eflags_val = regs->eflags;
@@ -553,9 +554,16 @@ void process_enter_first_user(process_t *process) {
         "movw %%ax, %%ds\n\t"
         "movw %%ax, %%es\n\t"
         "movw %%ax, %%fs\n\t"
-        "movw %%ax, %%gs\n\t"
         : /* no outputs */
         : "m" (ds_val)
+        : "ax", "memory"
+    );
+
+    __asm__ volatile (
+        "movw %0, %%ax\n\t"
+        "movw %%ax, %%gs\n\t"
+        : /* no outputs */
+        : "m" (gs_val)
         : "ax", "memory"
     );
 

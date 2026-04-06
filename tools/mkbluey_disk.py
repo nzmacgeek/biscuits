@@ -197,6 +197,21 @@ def prepare_root_extra_dir(root_extra_dir: str | None, timezone_file: str | None
     if not root_extra.exists() or not root_extra.is_dir():
         raise SystemExit(f"--root-extra-dir not found or not a dir: {root_extra_dir}")
 
+    # Seed the runtime tree claw expects even when the external sysroot was
+    # installed without empty directories.
+    for relpath in (
+        "run",
+        "run/claw",
+        "run/lock",
+        "run/log",
+        "var",
+        "var/lib",
+        "var/lib/claw",
+        "var/log",
+        "var/log/claw",
+    ):
+        (root_extra / relpath).mkdir(parents=True, exist_ok=True)
+
     localtime_path = root_extra / "etc" / "localtime"
     if localtime_path.exists() or not timezone_file:
         return str(root_extra)

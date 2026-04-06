@@ -29,7 +29,7 @@ uint32_t pmm_total_frames(void);
 uint32_t pmm_used_frames(void);
 
 // Called from isr.c as page fault handler (ISR 14)
-void page_fault_handler(registers_t regs);
+void page_fault_handler(registers_t *regs);
 
 // ASM stub: load CR3 and set CR0 bit 31
 extern void paging_enable(uint32_t page_dir_phys);
