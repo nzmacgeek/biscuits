@@ -11,6 +11,7 @@
 #include "isr.h"
 #include "process.h"
 #include "signal.h"
+#include "gdt.h"
 
 // Physical memory manager: bitmap of frames (each bit = one 4KB page)
 // We support up to 128MB (32768 frames)
@@ -100,22 +101,24 @@ static uint32_t *paging_ensure_page_table(uint32_t *page_dir, uint32_t pd_idx, u
 
 // Page fault handler - registered as ISR 14
 // "Bandit forgot to map the page!" - from isr.c exception messages
-void page_fault_handler(registers_t regs) {
+void page_fault_handler(registers_t *regs) {
     uint32_t faulting_addr;
     __asm__ volatile("mov %%cr2, %0" : "=r"(faulting_addr));
 
+    if (!regs) return;
+
     kprintf("\n[PGF]  Page Fault! Faulting address: 0x%x\n", faulting_addr);
-    kprintf("[PGF]  Error code: 0x%x (", regs.err_code);
-    if (regs.err_code & 0x1) kprintf("protection violation"); else kprintf("not present");
-    if (regs.err_code & 0x2) kprintf(", write");  else kprintf(", read");
-    if (regs.err_code & 0x4) kprintf(", user");   else kprintf(", supervisor");
-    kprintf(")\n[PGF]  EIP: 0x%x\n", regs.eip);
+    kprintf("[PGF]  Error code: 0x%x (", regs->err_code);
+    if (regs->err_code & 0x1) kprintf("protection violation"); else kprintf("not present");
+    if (regs->err_code & 0x2) kprintf(", write");  else kprintf(", read");
+    if (regs->err_code & 0x4) kprintf(", user");   else kprintf(", supervisor");
+    kprintf(")\n[PGF]  EIP: 0x%x\n", regs->eip);
 
     /* Attempt grow-on-demand for user stack faults. */
     process_t *proc = process_current();
     uint32_t page_aligned = faulting_addr & ~0xFFFu;
 
-    if (proc && (regs.err_code & 0x4) && proc->page_dir) {
+    if (proc && (regs->err_code & 0x4) && proc->page_dir) {
         /* Stack grows downward. Allow on-demand mapping for pages within the
          * reserved stack region, but do not map the bottom-most guard page. */
         uint32_t stack_base = proc->user_stack_base;
@@ -139,12 +142,14 @@ void page_fault_handler(registers_t regs) {
                 paging_switch_directory(proc->page_dir);
                 memset((void*)page_aligned, 0, PAGE_SIZE);
                 paging_switch_directory(old_dir);
+                if (proc->tls_base) regs->gs = GDT_TLS_SEL;
+                else if (!regs->gs) regs->gs = GDT_USER_DATA;
                 return; /* return to userland; instruction will be retried */
             }
         }
         /* Fault in user mode but outside allowed stack growth: send SIGSEGV */
         kprintf("[PGF]  User fault outside stack growth region pid=%u addr=0x%08x usesp=0x%08x\n",
-                proc->pid, faulting_addr, regs.useresp);
+                proc->pid, faulting_addr, regs->useresp);
         process_mark_exited(proc, SIGSEGV);
         /* Enable interrupts and halt; the timer IRQ will context-switch away. */
         __asm__ volatile("sti");

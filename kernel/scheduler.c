@@ -169,6 +169,8 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
         /* Update per-process TLS GDT entry before returning to user space. */
         extern void gdt_set_tls_base(uint32_t);
         gdt_set_tls_base(next->tls_base);
+        if (next->tls_base) frame.gs = GDT_TLS_SEL;
+        else if (!frame.gs) frame.gs = GDT_USER_DATA;
         if (signal_dispatch_pending(next, &frame) != 0) {
             next = scheduler_pick_next_user(next, 1);
             continue;

@@ -1,7 +1,7 @@
 #pragma once
 #include "idt.h"
 void isr_init(void);
-void isr_handler(registers_t regs);
+void isr_handler(registers_t *regs);
 extern void isr0(void);  extern void isr1(void);  extern void isr2(void);
 extern void isr3(void);  extern void isr4(void);  extern void isr5(void);
 extern void isr6(void);  extern void isr7(void);  extern void isr8(void);

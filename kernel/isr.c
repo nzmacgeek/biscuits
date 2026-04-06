@@ -118,14 +118,20 @@ void isr_init(void) {
     idt_set_gate(31, (uint32_t)isr31, 0x08, 0x8E);
 }
 
-void isr_handler(registers_t regs) {
-    const char *fault_class = isr_fault_class(regs.int_no);
-    const char *fault_msg = (regs.int_no < 32) ? exception_msgs[regs.int_no] : "Unknown";
-    uint32_t cpl = regs.cs & 0x3u;
+void isr_handler(registers_t *regs) {
+    const char *fault_class;
+    const char *fault_msg;
+    uint32_t cpl;
+
+    if (!regs) return;
+
+    fault_class = isr_fault_class(regs->int_no);
+    fault_msg = (regs->int_no < 32) ? exception_msgs[regs->int_no] : "Unknown";
+    cpl = regs->cs & 0x3u;
 
     /* For user-mode page faults, try on-demand handling first. */
-    if (regs.int_no == 14 && (regs.err_code & 0x4u)) {
-        extern void page_fault_handler(registers_t regs);
+    if (regs->int_no == 14 && (regs->err_code & 0x4u)) {
+        extern void page_fault_handler(registers_t *regs);
         page_fault_handler(regs);
         /* If page_fault_handler returns, the page was mapped; iret retries
          * the faulting instruction.  If it does not return (sti+hlt path),
@@ -137,22 +143,22 @@ void isr_handler(registers_t regs) {
     vga_set_color(VGA_WHITE, strcmp(fault_class, "PANIC") == 0 ? VGA_RED : VGA_BLUE);
     kprintf("\n\n*** %s: %s ***\n", fault_class, isr_fault_phrase(fault_class));
     vga_set_color(VGA_WHITE, VGA_BLACK);
-    kprintf("Trap       : #%u %s\n", regs.int_no, fault_msg);
+    kprintf("Trap       : #%u %s\n", regs->int_no, fault_msg);
     kprintf("Privilege  : %s mode (CPL=%u)\n", cpl ? "user" : "kernel", cpl);
     isr_dump_process_context();
-    kprintf("EIP/CS     : 0x%x / 0x%x\n", regs.eip, regs.cs);
-    kprintf("EFLAGS     : 0x%x\n", regs.eflags);
-    kprintf("ESP/EBP    : 0x%x / 0x%x\n", regs.esp, regs.ebp);
-    if (cpl) kprintf("UserESP    : 0x%x\n", regs.useresp);
-    kprintf("EAX/EBX    : 0x%x / 0x%x\n", regs.eax, regs.ebx);
-    kprintf("ECX/EDX    : 0x%x / 0x%x\n", regs.ecx, regs.edx);
-    kprintf("ESI/EDI    : 0x%x / 0x%x\n", regs.esi, regs.edi);
-    kprintf("Error code : 0x%x\n", regs.err_code);
-    if (regs.int_no == 14) {
-        isr_dump_page_fault(regs.err_code);
+    kprintf("EIP/CS     : 0x%x / 0x%x\n", regs->eip, regs->cs);
+    kprintf("EFLAGS     : 0x%x\n", regs->eflags);
+    kprintf("ESP/EBP    : 0x%x / 0x%x\n", regs->esp, regs->ebp);
+    if (cpl) kprintf("UserESP    : 0x%x\n", regs->useresp);
+    kprintf("EAX/EBX    : 0x%x / 0x%x\n", regs->eax, regs->ebx);
+    kprintf("ECX/EDX    : 0x%x / 0x%x\n", regs->ecx, regs->edx);
+    kprintf("ESI/EDI    : 0x%x / 0x%x\n", regs->esi, regs->edi);
+    kprintf("Error code : 0x%x\n", regs->err_code);
+    if (regs->int_no == 14) {
+        isr_dump_page_fault(regs->err_code);
     }
     syslog_crit("TRAP", "%s #%u eip=0x%x err=0x%x proc=%u", fault_class,
-                regs.int_no, regs.eip, regs.err_code,
+                regs->int_no, regs->eip, regs->err_code,
                 process_current() ? process_current()->pid : 0);
     kprintf("System halting. Capture this screen and check dmesg after reboot.\n");
     __asm__ volatile ("cli; hlt");

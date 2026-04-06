@@ -206,6 +206,7 @@ I386_C_SOURCES = \
   kernel/multiuser.c \
   kernel/sysinfo.c \
   kernel/tty.c \
+  kernel/socket.c \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \
@@ -226,6 +227,7 @@ I386_C_SOURCES = \
     kernel/sysinfo.c \
     kernel/smp.c \
     kernel/tty.c \
+    kernel/socket.c \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \

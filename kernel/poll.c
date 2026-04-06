@@ -6,6 +6,7 @@
 #include "../include/bluey.h"
 #include "poll.h"
 #include "devev.h"
+#include "socket.h"
 #include "process.h"
 #include "timer.h"
 #include "../drivers/keyboard.h"
@@ -38,6 +39,13 @@ static int16_t poll_check_fd(int32_t fd, int16_t events) {
     /* VFS / device fds */
     if (vfs_fd_is_devev(fd)) {
         if ((events & POLLIN) && devev_pending()) ready |= POLLIN;
+        return ready;
+    }
+
+    if (vfs_fd_is_socket(fd)) {
+        int socket_id = vfs_socket_id(fd);
+        if ((events & POLLIN) && socket_is_readable(socket_id)) ready |= POLLIN;
+        if ((events & POLLOUT) && socket_is_writable(socket_id)) ready |= POLLOUT;
         return ready;
     }
 

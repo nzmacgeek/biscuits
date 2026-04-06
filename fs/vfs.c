@@ -8,6 +8,7 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../kernel/devev.h"
+#include "../kernel/socket.h"
 #include "../kernel/tty.h"
 #include "vfs.h"
 #include "../kernel/syslog.h"
@@ -256,6 +257,21 @@ int vfs_devev_open(void) {
     return fd;
 }
 
+int vfs_socket_open(int socket_id) {
+    int fd = vfs_alloc_fd();
+    if (fd < 0) return -1;
+    if (socket_add_ref(socket_id) != 0) return -1;
+
+    fd_table[fd].used = 1;
+    fd_table[fd].fd_type = VFS_FD_TYPE_SOCKET;
+    fd_table[fd].pipe_is_write = 0;
+    fd_table[fd].fs_idx = -1;
+    fd_table[fd].fs_fd = socket_id;
+    fd_table[fd].offset = 0;
+    fd_table[fd].path[0] = '\0';
+    return fd;
+}
+
 int vfs_fd_is_devev(int fd) {
     if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return 0;
     return fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV;
@@ -264,6 +280,16 @@ int vfs_fd_is_devev(int fd) {
 int vfs_fd_is_tty(int fd) {
     if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return 0;
     return fd_table[fd].fd_type == VFS_FD_TYPE_TTY;
+}
+
+int vfs_fd_is_socket(int fd) {
+    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return 0;
+    return fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET;
+}
+
+int vfs_socket_id(int fd) {
+    if (!vfs_fd_is_socket(fd)) return -1;
+    return fd_table[fd].fs_fd;
 }
 
 int vfs_open(const char *path, int flags) {
@@ -358,6 +384,8 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
     if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV)
         return devev_read_bytes(buf, len);
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET)
+        return socket_read(fd_table[fd].fs_fd, buf, len);
     if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY)
         return tty_read((char*)buf, len);
     if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) {
@@ -393,6 +421,7 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
 int vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
     if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) return -1;
     vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
@@ -406,6 +435,9 @@ int vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
 
 int vfs_write(int fd, const uint8_t *buf, size_t len) {
     if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) {
+        return socket_write(fd_table[fd].fs_fd, buf, len);
+    }
     if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) {
         tty_write((const char*)buf, len);
         tty_flush();
@@ -446,6 +478,8 @@ int vfs_close(int fd) {
     if (fd_table[fd].fd_type == VFS_FD_TYPE_FILE) {
         vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
         if (m->fs->close) m->fs->close(fd_table[fd].fs_fd);
+    } else if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) {
+        socket_close(fd_table[fd].fs_fd);
     } else if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) {
         int pipe_idx = fd_table[fd].fs_fd;
         if (pipe_idx >= 0 && pipe_idx < VFS_MAX_PIPES) {
@@ -494,6 +528,9 @@ int vfs_dup(int oldfd) {
     int newfd = vfs_alloc_fd();
     if (newfd < 0) return -1;
     fd_table[newfd] = fd_table[oldfd];
+    if (fd_table[newfd].fd_type == VFS_FD_TYPE_SOCKET) {
+        socket_add_ref(fd_table[newfd].fs_fd);
+    }
     /* For pipes, increment the appropriate reference count */
     if (fd_table[newfd].fd_type == VFS_FD_TYPE_PIPE) {
         int pipe_idx = fd_table[newfd].fs_fd;
@@ -513,6 +550,9 @@ int vfs_dup2(int oldfd, int newfd) {
     if (oldfd == newfd) return newfd;
     if (fd_table[newfd].used) vfs_close(newfd);
     fd_table[newfd] = fd_table[oldfd];
+    if (fd_table[newfd].fd_type == VFS_FD_TYPE_SOCKET) {
+        socket_add_ref(fd_table[newfd].fs_fd);
+    }
     /* For pipes, increment the appropriate reference count */
     if (fd_table[newfd].fd_type == VFS_FD_TYPE_PIPE) {
         int pipe_idx = fd_table[newfd].fs_fd;
@@ -578,6 +618,9 @@ int vfs_dup_above(int oldfd, int min_fd) {
     for (int i = min_fd; i < VFS_MAX_OPEN; i++) {
         if (!fd_table[i].used) {
             fd_table[i] = fd_table[oldfd];
+            if (fd_table[i].fd_type == VFS_FD_TYPE_SOCKET) {
+                socket_add_ref(fd_table[i].fs_fd);
+            }
             if (fd_table[i].fd_type == VFS_FD_TYPE_PIPE) {
                 int pipe_idx = fd_table[i].fs_fd;
                 if (pipe_idx >= 0 && pipe_idx < VFS_MAX_PIPES) {
@@ -648,6 +691,14 @@ int vfs_fstat(int fd, vfs_stat_t *out) {
     if (fd < 0 || fd >= VFS_MAX_OPEN) return -1;
     if (!fd_table[fd].used) return -1;
     if (!out) return -1;
+    if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) {
+        out->mode = VFS_S_IFCHR | VFS_S_IRUSR | VFS_S_IWUSR;
+        out->uid = 0;
+        out->gid = 0;
+        out->size = 0;
+        out->is_dir = 0;
+        return 0;
+    }
     if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) {
         out->mode = VFS_S_IFCHR | VFS_S_IRUSR | VFS_S_IWUSR |
                     VFS_S_IRGRP | VFS_S_IWGRP |
