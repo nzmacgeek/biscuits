@@ -2090,6 +2090,11 @@ static int32_t sys_execve(registers_t *regs,
     }
 
     old_page_dir = process->page_dir;
+    /* Remember whether this process was using a vfork-shared VM. If so,
+     * do not destroy the old_page_dir after exec: it may still be the
+     * parent's address space. See: vfork semantics where parent and
+     * child share the same page_dir until the child execs or exits. */
+    int had_vfork_shared_vm = (process->flags & PROC_FLAG_VFORK_SHARED_VM) != 0;
     process_exec_replace(process, image.name, image.entry, image.stack_pointer,
                          image.stack_base, image.stack_top, image.page_dir);
     process_set_memory_layout(process, image.image_end);
@@ -2106,7 +2111,11 @@ static int32_t sys_execve(registers_t *regs,
     result = 0;
 
     if (old_page_dir && old_page_dir != image.page_dir) {
-        paging_destroy_address_space(old_page_dir);
+        if (!had_vfork_shared_vm) {
+            paging_destroy_address_space(old_page_dir);
+        } else {
+            kprintf("[SYS] execve: preserving shared vfork address space 0x%08x\n", old_page_dir);
+        }
     }
 
 cleanup:
