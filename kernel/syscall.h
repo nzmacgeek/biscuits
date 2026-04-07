@@ -15,6 +15,7 @@
 #define SYS_STAT          4
 #define SYS_FSTAT         5
 #define SYS_FSTAT64       197
+#define SYS_GETUID32      199
 #define SYS_WRITEV        146
 #define SYS_LINK          9
 #define SYS_UNLINK        10
@@ -47,12 +48,16 @@
 #define SYS_GETTIMEOFDAY  78
 #define SYS_CLOCK_GETTIME 265
 #define SYS_CLOCK_GETTIME64 403
+/* clock_settime64 syscall number (Linux i386 time64 ABI) */
+#define SYS_CLOCK_SETTIME64 404
 #define SYS_SETTIMEOFDAY  79
 #define SYS_RT_SIGACTION  174
 #define SYS_RT_SIGPROCMASK 175
 #define SYS_SIGRETURN     119
 #define SYS_GETHOSTNAME   125
 #define SYS_SETHOSTNAME   74
+#define SYS_SETRLIMIT     75
+#define SYS_GETRLIMIT     76
 #define SYS_GETDENTS      141
 #define SYS_MKDIR         39
 #define SYS_RMDIR         40
@@ -84,6 +89,10 @@
 #define SYS_ACCEPT4       364
 // chown/fchown/lchown 32-bit uid variants (used by musl on i386)
 #define SYS_LCHOWN32      198
+#define SYS_SETUID32      213
+#define SYS_SETGID32      214
+#define SYS_SETRESUID32   208
+#define SYS_SETRESGID32   210
 #define SYS_FCHOWN32      207
 #define SYS_CHOWN32       212
 // Process groups
@@ -94,15 +103,20 @@
 #define SYS_UMOUNT2       52
 // Poll (event multiplexing for supervision and sockets)
 #define SYS_POLL          168
+#define SYS_PSELECT6      308
 // Device event channel
 #define SYS_DEVEV_OPEN    203
 // Reboot / poweroff
 #define SYS_REBOOT        88
-#define SYS_GETRLIMIT     190
-#define SYS_SETRLIMIT     191
+#define SYS_VFORK         190
+#define SYS_UGETRLIMIT    191
+#define SYS_PRLIMIT64     340
 // Thread-local storage (set_thread_area - sets GS segment base for musl TLS)
 #define SYS_SET_THREAD_AREA 243
 #define SYS_MODIFY_LDT      123
+
+/* Legacy 32-bit llseek syscall used by some libc variants */
+#define SYS__llseek        140
 
 void syscall_init(void);
 // Called from syscall.asm - dispatches based on eax syscall number

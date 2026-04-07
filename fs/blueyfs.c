@@ -68,6 +68,16 @@ typedef struct {
 
 static biscuitfs_fd_t fd_table[BISCUITFS_MAX_OPEN];
 
+#ifndef BISCUITFS_DEBUG
+#define BISCUITFS_DEBUG 0
+#endif
+
+#if BISCUITFS_DEBUG
+#define BISCUITFS_DEBUGF(...) kprintf(__VA_ARGS__)
+#else
+#define BISCUITFS_DEBUGF(...) ((void)0)
+#endif
+
 #define BISCUITFS_DBG_CANARY 0xB15CA9E5u
 #define BISCUITFS_BLOCK_BUF_POOL_SIZE 8u
 
@@ -83,9 +93,10 @@ static int biscuitfs_dbg_log_limited(int *counter, int limit) {
 static void biscuitfs_dbg_check_canary(const char *func,
                                        uint32_t head,
                                        uint32_t tail) {
+    if (!BISCUITFS_DEBUG) return;
     if (head == BISCUITFS_DBG_CANARY && tail == BISCUITFS_DBG_CANARY) return;
-    kprintf("[BISCUITFS DBG] %s stack canary tripped head=0x%x tail=0x%x\n",
-            func, head, tail);
+    BISCUITFS_DEBUGF("[BISCUITFS DBG] %s stack canary tripped head=0x%x tail=0x%x\n",
+                     func, head, tail);
 }
 
 static uint8_t *biscuitfs_alloc_block_buf(const char *func) {
@@ -95,9 +106,8 @@ static uint8_t *biscuitfs_alloc_block_buf(const char *func) {
             return biscuitfs_block_buf_pool[i];
         }
     }
-
-    kprintf("[BISCUITFS DBG] %s exhausted %u scratch block buffers\n",
-            func, (unsigned)BISCUITFS_BLOCK_BUF_POOL_SIZE);
+    BISCUITFS_DEBUGF("[BISCUITFS DBG] %s exhausted %u scratch block buffers\n",
+                     func, (unsigned)BISCUITFS_BLOCK_BUF_POOL_SIZE);
     return NULL;
 }
 
@@ -544,7 +554,7 @@ static uint32_t path_to_inode(const char *path) {
 
     if (path[1] == '\0') return cur_ino;  /* root */
 
-    kprintf("[BISCUITFS DBG] path_to_inode('%s') start root_ino=%u\n", path, cur_ino);
+    BISCUITFS_DEBUGF("[BISCUITFS DBG] path_to_inode('%s') start root_ino=%u\n", path, cur_ino);
 
     // Walk each component
     char component[256];
@@ -564,11 +574,11 @@ static uint32_t path_to_inode(const char *path) {
         if (!component[0]) continue;  /* skip consecutive slashes */
 
         uint32_t next = dir_lookup(cur_ino, component);
-        kprintf("[BISCUITFS DBG]  component='%s' parent_ino=%u -> child_ino=%u\n",
-            component, cur_ino, next);
+        BISCUITFS_DEBUGF("[BISCUITFS DBG]  component='%s' parent_ino=%u -> child_ino=%u\n",
+                         component, cur_ino, next);
         if (!next) {
-            kprintf("[BISCUITFS DBG]  -> component '%s' not found under ino=%u\n",
-                component, cur_ino);
+            BISCUITFS_DEBUGF("[BISCUITFS DBG]  -> component '%s' not found under ino=%u\n",
+                             component, cur_ino);
             return 0;
         }
         cur_ino = next;
@@ -578,6 +588,11 @@ static uint32_t path_to_inode(const char *path) {
 
 // Diagnostic helper: dump a directory's raw entries
 static void biscuitfs_dump_dir(uint32_t dir_ino, const char *label) {
+#if !BISCUITFS_DEBUG
+    (void)dir_ino;
+    (void)label;
+    return;
+#else
     static int dbg_calls;
     biscuitfs_inode_t din;
     uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
@@ -629,6 +644,7 @@ static void biscuitfs_dump_dir(uint32_t dir_ino, const char *label) {
         offset += de->rec_len;
     }
     biscuitfs_free_block_buf(blkbuf);
+#endif
 }
 
 // Add a directory entry (name -> inode) to a directory
@@ -824,9 +840,11 @@ static int biscuitfs_mount_cb(const char *mountpoint, uint32_t start_lba) {
     // Post-mount diagnostic: dump root and /bin directory entries
     biscuitfs_dump_dir(BISCUITFS_ROOT_INO, "/");
     {
+    #if BISCUITFS_DEBUG
         uint32_t bin_ino = path_to_inode("/bin");
-        kprintf("[BISCUITFS DBG] /bin inode at mount-time = %u\n", bin_ino);
+        BISCUITFS_DEBUGF("[BISCUITFS DBG] /bin inode at mount-time = %u\n", bin_ino);
         if (bin_ino) biscuitfs_dump_dir(bin_ino, "/bin");
+    #endif
     }
     return 0;
 }
@@ -846,6 +864,7 @@ static int biscuitfs_open_cb(const char *path, int flags) {
 
     uint32_t ino = path_to_inode(path);
     if (!ino) {
+#if BISCUITFS_DEBUG
         if (strcmp(path, "/bin/init") == 0 || strcmp(path, "/bin/bash") == 0 ||
             strcmp(path, "/etc/fstab") == 0) {
             kprintf("[BISCUITFS] open miss path=%s bin=%u etc=%u init=%u fstab=%u\n",
@@ -855,6 +874,7 @@ static int biscuitfs_open_cb(const char *path, int flags) {
                     path_to_inode("/bin/init"),
                     path_to_inode("/etc/fstab"));
         }
+#endif
         if (!(flags & VFS_O_CREAT)) return -1;
 
         // Create the file
@@ -1046,7 +1066,7 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
     if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
     biscuitfs_fd_t *f = &fd_table[fd];
 
-#ifdef DEBUG
+#if BISCUITFS_DEBUG
     /* Instrumentation: record which caller invoked BiscuitFS write. This
      * helps correlate write attempts with syslog flush activity when
      * tracking memory corruption sources. */

@@ -54,6 +54,9 @@ typedef struct process {
     uint32_t      groups[PROC_MAX_GROUPS];
     uint32_t      group_count;
     uint32_t      pgid;          // process group id
+    /* CPU accounting: cumulative ticks and last-start tick for this process/thread */
+    uint32_t      cpu_ticks;     /* accumulated timer ticks spent on CPU */
+    uint32_t      cpu_last_tick; /* tick value when this process was scheduled in */
     int           exit_code;
     uint32_t      sleep_until;   // timer tick to wake at (0 = not sleeping)
     uint32_t      priority;      // 1 (low) .. 10 (high) - Bluey always gets priority :)
@@ -62,6 +65,7 @@ typedef struct process {
     uint32_t      brk_base;
     uint32_t      brk_current;
     uint32_t      mmap_base;
+    uint32_t      vfork_child_pid;
     int32_t       wait_pid;
     uint32_t      wait_status_ptr;
     uint32_t      wait_options;
@@ -74,6 +78,7 @@ typedef struct process {
 
 #define PROC_FLAG_USER_MODE 0x00000001u
 #define PROC_FLAG_SIGNAL_ACTIVE 0x00000002u
+#define PROC_FLAG_VFORK_SHARED_VM 0x00000004u
 
 void       process_init(void);
 process_t *process_create(const char *name, void (*entry)(void), uint32_t uid, uint32_t gid);
@@ -81,7 +86,8 @@ process_t *process_create_image(const char *name, uint32_t entry, uint32_t user_
                                 uint32_t user_stack_base, uint32_t user_stack_top,
                                 uint32_t page_dir,
                                 uint32_t uid, uint32_t gid);
-process_t *process_fork_current(const registers_t *regs);
+process_t *process_fork_current(const registers_t *regs, int32_t *error_out);
+process_t *process_vfork_current(const registers_t *regs, int32_t *error_out);
 void       process_exec_replace(process_t *process, const char *name,
                                 uint32_t entry, uint32_t user_esp,
                                 uint32_t user_stack_base, uint32_t user_stack_top,
