@@ -26,6 +26,7 @@
 #include "gdt.h"
 #include "poll.h"
 #include "devev.h"
+#include "netctl.h"
 #include "socket.h"
 #include "../fs/vfs.h"
 
@@ -52,6 +53,7 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_EISDIR 21
 #define BLUEY_ERANGE 34
 #define BLUEY_EPIPE  32
+#define BLUEY_EIO     5
 #define BLUEY_EMFILE 24
 #define BLUEY_ENOTSOCK 88
 #define BLUEY_EADDRINUSE 98
@@ -999,16 +1001,9 @@ static int32_t sys_socket_open(int domain, int type, int protocol) {
     int socket_id;
     int fd;
 
-    // Support both AF_UNIX and AF_NETCTL families
-    if (domain == BLUEY_AF_UNIX) {
-        if (type != BLUEY_SOCK_STREAM) return -BLUEY_EPROTONOSUPPORT;
-        if (protocol != 0) return -BLUEY_EPROTONOSUPPORT;
-    } else if (domain == BLUEY_AF_NETCTL) {
-        if (type != BLUEY_SOCK_NETCTL) return -BLUEY_EPROTONOSUPPORT;
-        // protocol is passed to netctl for future extensibility
-    } else {
-        return -BLUEY_EAFNOSUPPORT;
-    }
+    if (domain != BLUEY_AF_UNIX) return -BLUEY_EAFNOSUPPORT;
+    if (type != BLUEY_SOCK_STREAM) return -BLUEY_EPROTONOSUPPORT;
+    if (protocol != 0) return -BLUEY_EPROTONOSUPPORT;
 
     socket_id = socket_create(domain, type, protocol);
     if (socket_id < 0) return -BLUEY_ENOMEM;
@@ -1072,63 +1067,6 @@ static int32_t sys_socket_accept4(int fd, void *addr, uint32_t *addrlen, int fla
         return -BLUEY_EMFILE;
     }
     return newfd;
-}
-
-// Simple message header structure for sendmsg/recvmsg
-// For netctl sockets, iov[0] contains the message buffer
-struct bluey_msghdr {
-    void *msg_name;       // Optional address
-    uint32_t msg_namelen; // Size of address
-    struct bluey_iovec *msg_iov;   // Scatter/gather array
-    uint32_t msg_iovlen;  // Number of elements in msg_iov
-    void *msg_control;    // Ancillary data (not used)
-    uint32_t msg_controllen; // Ancillary data buffer length
-    int msg_flags;        // Flags on received message
-};
-
-struct bluey_iovec {
-    void *iov_base;       // Starting address
-    uint32_t iov_len;     // Number of bytes
-};
-
-static int32_t sys_sendmsg(int fd, const struct bluey_msghdr *msg, int flags) {
-    (void)flags;  // Flags not used for now
-
-    if (!msg || !msg->msg_iov || msg->msg_iovlen == 0) return -BLUEY_EINVAL;
-    if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
-
-    int socket_id = vfs_socket_id(fd);
-    if (socket_id < 0) return -BLUEY_EBADF;
-
-    // For now, only support single iovec
-    if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
-
-    const struct bluey_iovec *iov = &msg->msg_iov[0];
-    if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
-
-    // Use netctl_socket_send for netctl sockets
-    int rc = netctl_socket_send(socket_id, iov->iov_base, iov->iov_len);
-    return rc < 0 ? -BLUEY_EIO : rc;
-}
-
-static int32_t sys_recvmsg(int fd, struct bluey_msghdr *msg, int flags) {
-    (void)flags;  // Flags not used for now
-
-    if (!msg || !msg->msg_iov || msg->msg_iovlen == 0) return -BLUEY_EINVAL;
-    if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
-
-    int socket_id = vfs_socket_id(fd);
-    if (socket_id < 0) return -BLUEY_EBADF;
-
-    // For now, only support single iovec
-    if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
-
-    struct bluey_iovec *iov = &msg->msg_iov[0];
-    if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
-
-    // Use netctl_socket_recv for netctl sockets
-    int rc = netctl_socket_recv(socket_id, iov->iov_base, iov->iov_len);
-    return rc < 0 ? -BLUEY_EIO : rc;
 }
 
 static int32_t sys_socketcall(int call, uint32_t *args) {
@@ -1522,34 +1460,17 @@ static int32_t sys_lseek(int fd, int32_t offset, int whence) {
  */
 static int32_t sys__llseek(uint32_t fd, uint32_t offset_hi, uint32_t offset_lo,
                           uint32_t result_ptr, int whence) {
-    /* Validate fd like sys_lseek. */
-    if ((int)fd < 0) return -BLUEY_EBADF;
-
-    /* Validate whence like sys_lseek. */
-    if (whence != VFS_SEEK_SET && whence != VFS_SEEK_CUR && whence != VFS_SEEK_END)
-        return -BLUEY_EINVAL;
-
     uint64_t off = ((uint64_t)offset_hi << 32) | (uint64_t)offset_lo;
 
     /* This kernel currently only supports 32-bit file offsets. Reject larger */
     if (off > 0xFFFFFFFFull) return -BLUEY_EINVAL;
 
-    /* For VFS_SEEK_SET, a negative offset is always invalid. */
-    if (whence == VFS_SEEK_SET && (int32_t)off < 0) return -BLUEY_EINVAL;
+    int32_t newoff = vfs_lseek((int)fd, (int32_t)off, whence);
+    if (newoff < 0) return -BLUEY_EINVAL;
 
     if (result_ptr == 0) return -BLUEY_EFAULT;
-
-    int32_t newoff = vfs_lseek((int)fd, (int32_t)off, whence);
-    if (newoff < 0) return newoff; /* preserve real errno from vfs_lseek */
-
-    /* Write back the 32-bit result to the user-supplied pointer using the
-     * caller's page directory (same safe pattern as sys_prlimit64). */
-    process_t *caller = process_current();
-    if (!caller) return -BLUEY_EPERM;
-    uint32_t old_dir = paging_current_directory();
-    paging_switch_directory(caller->page_dir);
+    /* Write back the 32-bit result to the user-supplied pointer. */
     *(uint32_t*)(uintptr_t)result_ptr = (uint32_t)newoff;
-    paging_switch_directory(old_dir);
     return 0;
 }
 
@@ -2519,12 +2440,6 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_ACCEPT4:
             ret = sys_socket_accept4((int)regs->ebx, (void*)regs->ecx,
                                      (uint32_t*)regs->edx, (int)regs->esi);
-            break;
-        case SYS_SENDMSG:
-            ret = sys_sendmsg((int)regs->ebx, (const struct bluey_msghdr*)regs->ecx, (int)regs->edx);
-            break;
-        case SYS_RECVMSG:
-            ret = sys_recvmsg((int)regs->ebx, (struct bluey_msghdr*)regs->ecx, (int)regs->edx);
             break;
         /* ---- Device event channel --------------------------------------- */
         case SYS_DEVEV_OPEN:
