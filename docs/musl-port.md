@@ -5,11 +5,18 @@
 - **Build musl for BlueyOS**:
 
   - Ensure you have an i686 multilib toolchain on the host (e.g. `i686-linux-gnu-gcc`/`gcc -m32`).
-  - Build musl under a temporary prefix (the Makefile uses `/tmp/blueyos-musl` by default):
+  - The supported repo path is:
 
     ```bash
-    TARGET=i386-blueyos ./tools/build-musl.sh --prefix=/tmp/blueyos-musl
+    make build-musl-blueyos
     ```
+
+  - That installs musl into three destinations:
+    - `build/userspace/musl` for repo-local builds like `make musl-init`
+    - `/opt/blueyos-sysroot` for the runtime sysroot packaged by `make disk`
+    - `/opt/blueyos-cross/musl` for musl wrapper/tools alongside the cross toolchain
+
+  - If `/opt/blueyos-cross` is root-owned, either adjust its permissions or override the cross destination when invoking `tools/build-musl.sh`.
 
 - **Compile user programs against the musl sysroot**:
 

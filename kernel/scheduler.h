@@ -11,6 +11,7 @@ void       scheduler_tick(void);          // called from IRQ0 (timer)
 void       scheduler_add(process_t *p);
 void       scheduler_remove(uint32_t pid);
 process_t *scheduler_current(void);
+void       scheduler_set_current(process_t *p);
 void       scheduler_handle_trap(registers_t *regs, int rotate);
 void       scheduler_yield(void);         // voluntarily give up the CPU
 void       process_set_current(process_t *p); // set current process pointer

@@ -20,6 +20,7 @@
 #include "signal.h"
 #include "sysinfo.h"
 #include "timer.h"
+#include "rtc.h"
 #include "kheap.h"
 #include "paging.h"
 #include "gdt.h"
@@ -29,6 +30,7 @@
 #include "../fs/vfs.h"
 
 extern void syscall_stub(void);
+extern void syscall_enter_user_frame(const registers_t *regs);
 
 /* Per-entry saved user segment registers. Interrupts are disabled (cli) when
  * these are written and are only accessed on the single boot CPU, so no
@@ -40,6 +42,7 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_ENOSYS 38
 #define BLUEY_EPERM   1
 #define BLUEY_ENOENT  2
+#define BLUEY_ESRCH   3
 #define BLUEY_EFAULT 14
 #define BLUEY_EINVAL 22
 #define BLUEY_E2BIG   7
@@ -71,6 +74,10 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_MAP_SHARED  0x01
 #define BLUEY_MAP_FIXED   0x10
 #define BLUEY_MAP_ANON    0x20
+
+#define BLUEY_CLONE_VM          0x00000100u
+#define BLUEY_CLONE_VFORK       0x00004000u
+#define BLUEY_CLONE_EXIT_SIGNAL 0x000000ffu
 
 static int syscall_is_kernel_mode(const registers_t *regs) {
     return regs && ((regs->cs & 0x3u) == 0);
@@ -187,16 +194,115 @@ static void syscall_prepare_user_return(registers_t *regs, process_t *process) {
 
 static int32_t sys_fork(const registers_t *regs) {
     process_t *child;
+    process_t *current;
+    int32_t fork_error = -BLUEY_EAGAIN;
 
-    if (!regs || !process_current()) return -BLUEY_EPERM;
-    if (syscall_is_kernel_mode(regs)) return -BLUEY_EPERM;
+    if (!regs) {
+        kprintf("[SYS] fork denied: null regs\n");
+        return -BLUEY_EPERM;
+    }
+    current = process_current();
+    if (!current) {
+        kprintf("[SYS] fork denied: no current process\n");
+        return -BLUEY_EPERM;
+    }
+    if (!(current->flags & PROC_FLAG_USER_MODE)) {
+        kprintf("[SYS] fork denied: current process is not user mode (pid=%u flags=0x%x cs=0x%x)\n",
+                current->pid, current->flags, regs->cs);
+        return -BLUEY_EPERM;
+    }
+    if (syscall_is_kernel_mode(regs)) {
+        kprintf("[SYS] fork warning: user-mode process pid=%u entered with kernel cs=0x%x; allowing based on process flags\n",
+                current->pid, regs->cs);
+    }
 
-    child = process_fork_current(regs);
-    if (!child) return -1;
+    child = process_fork_current(regs, &fork_error);
+    if (!child) {
+        if (fork_error == 0) fork_error = -BLUEY_EAGAIN;
+        kprintf("[SYS] fork failed for pid=%u: returning %d\n", current->pid, -fork_error);
+        return fork_error;
+    }
 
     scheduler_add(child);
-    kprintf("[SYS]  Forked pid=%u from pid=%u\n", child->pid, process_current()->pid);
+    kprintf("[SYS]  Forked pid=%u from pid=%u\n", child->pid, current->pid);
     return (int32_t)child->pid;
+}
+
+static int32_t sys_vfork(const registers_t *regs) {
+    process_t *child;
+    process_t *current;
+    int32_t fork_error = -BLUEY_EAGAIN;
+
+    if (!regs) {
+        kprintf("[SYS] vfork denied: null regs\n");
+        return -BLUEY_EPERM;
+    }
+    current = process_current();
+    if (!current) {
+        kprintf("[SYS] vfork denied: no current process\n");
+        return -BLUEY_EPERM;
+    }
+    if (!(current->flags & PROC_FLAG_USER_MODE)) {
+        kprintf("[SYS] vfork denied: current process is not user mode (pid=%u flags=0x%x cs=0x%x)\n",
+                current->pid, current->flags, regs->cs);
+        return -BLUEY_EPERM;
+    }
+    if (syscall_is_kernel_mode(regs)) {
+        kprintf("[SYS] vfork warning: user-mode process pid=%u entered with kernel cs=0x%x; allowing based on process flags\n",
+                current->pid, regs->cs);
+    }
+
+    child = process_vfork_current(regs, &fork_error);
+    if (!child) {
+        if (fork_error == 0) fork_error = -BLUEY_EAGAIN;
+        kprintf("[SYS] vfork failed for pid=%u: returning %d\n", current->pid, -fork_error);
+        return fork_error;
+    }
+
+    scheduler_add(child);
+    current->saved_regs = *regs;
+    current->saved_regs.eax = (uint32_t)child->pid;
+    current->eip = regs->eip;
+    current->esp = regs->useresp;
+    child->state = PROC_RUNNING;
+    scheduler_set_current(child);
+    process_set_current(child);
+    paging_switch_directory(child->page_dir);
+    gdt_set_tls_base(child->tls_base);
+    kprintf("[SYS]  vforked pid=%u from pid=%u\n", child->pid, current->pid);
+    syscall_enter_user_frame(&child->saved_regs);
+    return (int32_t)child->pid;
+}
+
+static int32_t sys_clone(const registers_t *regs) {
+    uint32_t flags;
+    uint32_t exit_signal;
+
+    if (!regs) return -BLUEY_EPERM;
+
+    flags = regs->ebx;
+    exit_signal = flags & BLUEY_CLONE_EXIT_SIGNAL;
+
+    if ((flags & ~(BLUEY_CLONE_VM | BLUEY_CLONE_VFORK | BLUEY_CLONE_EXIT_SIGNAL)) != 0u) {
+        kprintf("[SYS] clone unsupported flags=0x%x\n", flags);
+        return -BLUEY_ENOSYS;
+    }
+
+    if (exit_signal != SIGCHLD) {
+        kprintf("[SYS] clone unsupported exit signal=%u flags=0x%x\n", exit_signal, flags);
+        return -BLUEY_ENOSYS;
+    }
+
+    if ((flags & (BLUEY_CLONE_VM | BLUEY_CLONE_VFORK)) == (BLUEY_CLONE_VM | BLUEY_CLONE_VFORK)) {
+        return sys_vfork(regs);
+    }
+
+    if ((flags & (BLUEY_CLONE_VM | BLUEY_CLONE_VFORK)) == 0u) {
+        return sys_fork(regs);
+    }
+
+    kprintf("[SYS] clone unsupported flags=0x%x stack=0x%x\n", flags, regs->ecx);
+    return -BLUEY_ENOSYS;
 }
 
 static int32_t sys_brk(uint32_t addr) {
@@ -420,9 +526,24 @@ typedef struct {
 } k_timespec_t;
 
 typedef struct {
+    int32_t tv_sec;
+    int32_t tv_nsec;
+} compat_timespec32_t;
+
+typedef struct {
     uint64_t tv_sec;
     uint64_t tv_nsec;
 } k_timespec64_t;
+
+typedef struct {
+    uint64_t rlim_cur;
+    uint64_t rlim_max;
+} compat_rlimit64_t;
+
+typedef struct {
+    uint32_t sigmask;
+    uint32_t sigsetsize;
+} compat_pselect6_data_t;
 
 typedef struct {
     uint32_t iov_base;
@@ -492,22 +613,62 @@ typedef struct {
 #define AT_EMPTY_PATH 0x1000
 #define AT_SYMLINK_NOFOLLOW 0x100
 
-static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
-    (void)clk_id;
-    if (!tp) return -BLUEY_EFAULT;
+#define BLUEY_CLOCK_REALTIME           0
+#define BLUEY_CLOCK_MONOTONIC          1
+#define BLUEY_CLOCK_PROCESS_CPUTIME_ID 2
+#define BLUEY_CLOCK_THREAD_CPUTIME_ID  3
+#define BLUEY_CLOCK_MONOTONIC_RAW      4
+#define BLUEY_CLOCK_REALTIME_COARSE    5
+#define BLUEY_CLOCK_MONOTONIC_COARSE   6
+#define BLUEY_CLOCK_BOOTTIME           7
+#define BLUEY_CLOCK_REALTIME_ALARM     8
+#define BLUEY_CLOCK_BOOTTIME_ALARM     9
+#define BLUEY_CLOCK_TAI               11
+
+static void sys_fill_monotonic_timespec(k_timespec_t *tp) {
     uint32_t ticks = timer_get_ticks();
     uint32_t freq = timer_get_freq();
     uint32_t sec = ticks / freq;
     uint32_t rem = ticks % freq;
-    /* Avoid 64-bit division helper (`__udivdi3`) by scaling in 32-bit when
-     * timer frequency is small (typical PIT=1000). Compute nsec = rem *
-     * (1_000_000_000 / freq). This truncates sub-tick precision but
-     * avoids pulling in libgcc helpers. */
     uint32_t scale = 1000000000u / (freq ? freq : 1000u);
-    uint32_t nsec = rem * scale;
+
     tp->tv_sec = sec;
-    tp->tv_nsec = nsec;
-    return 0;
+    tp->tv_nsec = rem * scale;
+}
+
+static void sys_fill_realtime_timespec(k_timespec_t *tp) {
+    uint32_t unix_secs;
+
+    sys_fill_monotonic_timespec(tp);
+    if (rtc_get_unix_time(&unix_secs)) {
+        tp->tv_sec = unix_secs;
+    }
+}
+
+static int32_t sys_clock_gettime(int clk_id, k_timespec_t *tp) {
+    if (!tp) return -BLUEY_EFAULT;
+
+    switch (clk_id) {
+        case BLUEY_CLOCK_REALTIME:
+        case BLUEY_CLOCK_REALTIME_COARSE:
+        case BLUEY_CLOCK_REALTIME_ALARM:
+        case BLUEY_CLOCK_TAI:
+            sys_fill_realtime_timespec(tp);
+            return 0;
+        case BLUEY_CLOCK_MONOTONIC:
+        case BLUEY_CLOCK_MONOTONIC_RAW:
+        case BLUEY_CLOCK_MONOTONIC_COARSE:
+        case BLUEY_CLOCK_BOOTTIME:
+        case BLUEY_CLOCK_BOOTTIME_ALARM:
+        case BLUEY_CLOCK_PROCESS_CPUTIME_ID:
+        case BLUEY_CLOCK_THREAD_CPUTIME_ID:
+            /* CPU clocks are approximated with monotonic uptime until the
+             * scheduler tracks per-process/per-thread CPU usage. */
+            sys_fill_monotonic_timespec(tp);
+            return 0;
+        default:
+            return -BLUEY_EINVAL;
+    }
 }
 
 static int32_t sys_clock_gettime64(int clk_id, k_timespec64_t *tp) {
@@ -732,6 +893,69 @@ typedef struct {
     int32_t tv_sec;
     int32_t tv_usec;
 } k_timeval_t;
+
+static int32_t sys_gettimeofday(k_timeval_t *tv, void *tz) {
+    k_timespec_t ts;
+
+    (void)tz;
+    if (!tv) return 0;
+
+    if (sys_clock_gettime(BLUEY_CLOCK_REALTIME, &ts) != 0) {
+        return -BLUEY_EINVAL;
+    }
+
+    tv->tv_sec = (int32_t)ts.tv_sec;
+    tv->tv_usec = (int32_t)(ts.tv_nsec / 1000u);
+    return 0;
+}
+
+/* Allow privileged users to set the RTC-backed wall clock. Minimal
+ * implementation: only accept updates to CLOCK_REALTIME via either
+ * settimeofday(2) or clock_settime(2). */
+static int32_t sys_settimeofday(const k_timeval_t *tv, void *tz) {
+    process_t *p = process_current();
+    if (!p) return -BLUEY_EPERM;
+    /* Only allow privileged processes to set the wall clock. */
+    if (p->euid != 0) return -BLUEY_EPERM;
+    if (!tv) return -BLUEY_EINVAL;
+    if (tv->tv_usec < 0 || tv->tv_usec >= 1000000) return -BLUEY_EINVAL;
+    if ((uint64_t)tv->tv_sec > 0xFFFFFFFFull) return -BLUEY_EINVAL;
+
+    rtc_set_unix_time((uint32_t)tv->tv_sec);
+    return 0;
+}
+
+static int32_t sys_clock_settime64(int clk_id, const k_timespec64_t *ts) {
+    if (!ts) return -BLUEY_EFAULT;
+
+    /* Validate nanoseconds range */
+    if (ts->tv_nsec >= 1000000000ull) return -BLUEY_EINVAL;
+    if (ts->tv_sec > 0xFFFFFFFFull) return -BLUEY_EINVAL;
+
+    switch (clk_id) {
+        case BLUEY_CLOCK_REALTIME:
+        case BLUEY_CLOCK_REALTIME_COARSE:
+        case BLUEY_CLOCK_REALTIME_ALARM:
+        case BLUEY_CLOCK_TAI:
+            /* Only privileged callers may set wall clock */
+            if (process_current() == NULL || process_current()->euid != 0) return -BLUEY_EPERM;
+            rtc_set_unix_time((uint32_t)ts->tv_sec);
+            return 0;
+
+        case BLUEY_CLOCK_MONOTONIC:
+        case BLUEY_CLOCK_MONOTONIC_RAW:
+        case BLUEY_CLOCK_MONOTONIC_COARSE:
+        case BLUEY_CLOCK_BOOTTIME:
+        case BLUEY_CLOCK_BOOTTIME_ALARM:
+        case BLUEY_CLOCK_PROCESS_CPUTIME_ID:
+        case BLUEY_CLOCK_THREAD_CPUTIME_ID:
+            /* Setting these clocks is not permitted from userspace. */
+            return -BLUEY_EPERM;
+
+        default:
+            return -BLUEY_EINVAL;
+    }
+}
 
 typedef struct {
     uint16_t sa_family;
@@ -984,6 +1208,160 @@ static int32_t sys_select(int nfds,
 
 /* ---- link / symlink / readlink ----------------------------------------- */
 
+
+static int syscall_id_change_allowed(const process_t *process,
+                                     uint32_t current_real,
+                                     uint32_t current_effective,
+                                     uint32_t requested) {
+    if (!process) return 0;
+    if (requested == 0xFFFFFFFFu) return 1;
+    if (process->euid == 0) return 1;
+    return requested == current_real || requested == current_effective;
+}
+
+static void syscall_refresh_groups(process_t *process) {
+    size_t count;
+
+    if (!process) return;
+
+    count = multiuser_get_groups(process->uid, process->gid,
+                                 process->groups, PROC_MAX_GROUPS);
+    process->group_count = (uint32_t)count;
+    if (process->group_count == 0 && PROC_MAX_GROUPS > 0) {
+        process->groups[0] = process->gid;
+        process->group_count = 1;
+    }
+}
+
+static int32_t sys_setresuid32(uint32_t ruid, uint32_t euid, uint32_t suid) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+
+    if (!syscall_id_change_allowed(process, process->uid, process->euid, ruid) ||
+        !syscall_id_change_allowed(process, process->uid, process->euid, euid) ||
+        !syscall_id_change_allowed(process, process->uid, process->euid, suid)) {
+        return -BLUEY_EPERM;
+    }
+
+    if (ruid != 0xFFFFFFFFu) process->uid = ruid;
+    if (euid != 0xFFFFFFFFu) process->euid = euid;
+
+    /* BlueyOS does not yet track a separate saved uid. */
+    syscall_refresh_groups(process);
+    return 0;
+}
+
+static int32_t sys_setresgid32(uint32_t rgid, uint32_t egid, uint32_t sgid) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+
+    if (!syscall_id_change_allowed(process, process->gid, process->egid, rgid) ||
+        !syscall_id_change_allowed(process, process->gid, process->egid, egid) ||
+        !syscall_id_change_allowed(process, process->gid, process->egid, sgid)) {
+        return -BLUEY_EPERM;
+    }
+
+    if (rgid != 0xFFFFFFFFu) process->gid = rgid;
+    if (egid != 0xFFFFFFFFu) process->egid = egid;
+
+    /* BlueyOS does not yet track a separate saved gid. */
+    syscall_refresh_groups(process);
+    return 0;
+}
+
+static int32_t sys_setuid32(uint32_t uid) {
+    return sys_setresuid32(uid, uid, 0xFFFFFFFFu);
+}
+
+static int32_t sys_setgid32(uint32_t gid) {
+    return sys_setresgid32(gid, gid, 0xFFFFFFFFu);
+}
+
+static int32_t sys_pselect6(int nfds,
+                            void *readfds,
+                            void *writefds,
+                            void *exceptfds,
+                            const compat_timespec32_t *timeout_ts,
+                            const compat_pselect6_data_t *data) {
+    k_timeval_t timeout_tv;
+    k_timeval_t *timeout_ptr = NULL;
+
+    (void)data;
+
+    if (timeout_ts) {
+        if (timeout_ts->tv_sec < 0 || timeout_ts->tv_nsec < 0 || timeout_ts->tv_nsec >= 1000000000) {
+            return -BLUEY_EINVAL;
+        }
+
+        timeout_tv.tv_sec = timeout_ts->tv_sec;
+        timeout_tv.tv_usec = timeout_ts->tv_nsec / 1000;
+        timeout_ptr = &timeout_tv;
+    }
+
+    return sys_select(nfds, readfds, writefds, exceptfds, timeout_ptr);
+}
+
+static int32_t sys_prlimit64(uint32_t pid,
+                             uint32_t resource,
+                             uint32_t new_limit_ptr,
+                             uint32_t old_limit_ptr) {
+    process_t *caller = process_current();
+    process_t *target;
+    uint32_t old_dir;
+
+    if (!caller) return -BLUEY_EPERM;
+    if (resource != RLIMIT_STACK) return -BLUEY_EINVAL;
+
+    if (pid == 0 || pid == caller->pid) {
+        target = caller;
+    } else {
+        target = process_get_by_pid(pid);
+        if (!target) return -BLUEY_ESRCH;
+        if (caller->euid != 0) return -BLUEY_EPERM;
+    }
+
+    if (new_limit_ptr) {
+        compat_rlimit64_t requested;
+        uint32_t new_cur;
+        uint32_t new_max;
+
+        old_dir = paging_current_directory();
+        paging_switch_directory(caller->page_dir);
+        requested = *(compat_rlimit64_t*)(uintptr_t)new_limit_ptr;
+        paging_switch_directory(old_dir);
+
+        if (requested.rlim_cur > requested.rlim_max) return -BLUEY_EINVAL;
+
+        if (requested.rlim_cur == ~0ull) new_cur = 0xFFFFFFFFu;
+        else if (requested.rlim_cur <= 0xFFFFFFFFull) new_cur = (uint32_t)requested.rlim_cur;
+        else return -BLUEY_EINVAL;
+
+        if (requested.rlim_max == ~0ull) new_max = 0xFFFFFFFFu;
+        else if (requested.rlim_max <= 0xFFFFFFFFull) new_max = (uint32_t)requested.rlim_max;
+        else return -BLUEY_EINVAL;
+
+        target->rlimit_stack_cur = new_cur;
+        target->rlimit_stack_max = new_max;
+    }
+
+    if (old_limit_ptr) {
+        compat_rlimit64_t current;
+
+        current.rlim_cur = (target->rlimit_stack_cur == 0xFFFFFFFFu)
+            ? ~0ull : (uint64_t)target->rlimit_stack_cur;
+        current.rlim_max = (target->rlimit_stack_max == 0xFFFFFFFFu)
+            ? ~0ull : (uint64_t)target->rlimit_stack_max;
+
+        old_dir = paging_current_directory();
+        paging_switch_directory(caller->page_dir);
+        *(compat_rlimit64_t*)(uintptr_t)old_limit_ptr = current;
+        paging_switch_directory(old_dir);
+    }
+
+    return 0;
+}
 static int32_t sys_link(const char *oldpath, const char *newpath) {
     if (!oldpath || !newpath) return -BLUEY_EFAULT;
     vfs_stat_t st;
@@ -1072,6 +1450,26 @@ static int32_t sys_lseek(int fd, int32_t offset, int whence) {
 
     /* Delegate to VFS and return its result (or error code). */
     return vfs_lseek(fd, offset, whence);
+}
+
+/* Legacy _llseek syscall (i386 ABI):
+ * args: ebx=fd, ecx=offset_high, edx=offset_low, esi=result_ptr, edi=whence
+ * On success writes the (32-bit) resulting offset to *result_ptr and returns 0.
+ */
+static int32_t sys__llseek(uint32_t fd, uint32_t offset_hi, uint32_t offset_lo,
+                          uint32_t result_ptr, int whence) {
+    uint64_t off = ((uint64_t)offset_hi << 32) | (uint64_t)offset_lo;
+
+    /* This kernel currently only supports 32-bit file offsets. Reject larger */
+    if (off > 0xFFFFFFFFull) return -BLUEY_EINVAL;
+
+    int32_t newoff = vfs_lseek((int)fd, (int32_t)off, whence);
+    if (newoff < 0) return -BLUEY_EINVAL;
+
+    if (result_ptr == 0) return -BLUEY_EFAULT;
+    /* Write back the 32-bit result to the user-supplied pointer. */
+    *(uint32_t*)(uintptr_t)result_ptr = (uint32_t)newoff;
+    return 0;
 }
 
 /* ---- dup / dup2 / pipe / fcntl / ioctl ---------------------------------- */
@@ -1546,7 +1944,7 @@ static int32_t sys_execve(registers_t *regs,
 
     if (!process) return -BLUEY_EPERM;
     if (!path) return -BLUEY_EFAULT;
-    if (syscall_is_kernel_mode(regs)) return -BLUEY_EPERM;
+    if (!(process->flags & PROC_FLAG_USER_MODE)) return -BLUEY_EPERM;
 
     path_copy = syscall_copy_string(path);
     if (!path_copy || !path_copy[0]) {
@@ -1562,17 +1960,21 @@ static int32_t sys_execve(registers_t *regs,
     }
 
     if (vfs_stat(path_copy, &stat) != 0) {
+        kprintf("[SYS] execve missing path: %s\n", path_copy);
         result = -BLUEY_ENOENT;
         goto cleanup;
     }
     // Execute permission is still required even for setuid/setgid binaries.
     if (vfs_access(path_copy, VFS_ACCESS_EXEC) != 0 || stat.is_dir) {
+        kprintf("[SYS] execve denied path=%s is_dir=%u mode=0%o\n",
+                path_copy, stat.is_dir, stat.mode);
         result = -BLUEY_EPERM;
         goto cleanup;
     }
 
     if (elf_load_image(path_copy, (const char *const *)argv_copy,
                        (const char *const *)envp_copy, &image) != 0) {
+        kprintf("[SYS] execve load failed path=%s\n", path_copy);
         result = -1;
         goto cleanup;
     }
@@ -1856,10 +2258,13 @@ int32_t syscall_dispatch(registers_t *regs) {
             ret = sys_getppid();
             break;
         case SYS_GETUID:
-            ret = (int32_t)process_get_euid();
+            ret = (int32_t)process_get_uid();
+            break;
+        case SYS_GETUID32:
+            ret = (int32_t)process_get_uid();
             break;
         case SYS_GETGID:
-            ret = (int32_t)process_get_egid();
+            ret = (int32_t)process_get_gid();
             break;
         case SYS_UNAME:
             ret = sys_uname((utsname_t*)regs->ebx);
@@ -1868,9 +2273,10 @@ int32_t syscall_dispatch(registers_t *regs) {
             ret = sys_gethostname((char*)regs->ebx, (size_t)regs->ecx);
             break;
         case SYS_GETTIMEOFDAY:
-            // Return ticks as a proxy for time
-            if (regs->ebx) *(uint32_t*)regs->ebx = timer_get_ticks();
-            ret = 0;
+            ret = sys_gettimeofday((k_timeval_t*)regs->ebx, (void*)regs->ecx);
+            break;
+        case SYS_SETTIMEOFDAY:
+            ret = sys_settimeofday((const k_timeval_t*)regs->ebx, (void*)regs->ecx);
             break;
         case SYS_CLOCK_GETTIME:
             ret = sys_clock_gettime((int)regs->ebx, (k_timespec_t*)regs->ecx);
@@ -1888,7 +2294,14 @@ int32_t syscall_dispatch(registers_t *regs) {
             ret = sys_setrlimit((uint32_t)regs->ebx, (uint32_t)regs->ecx);
             break;
         case SYS_GETRLIMIT:
+        case SYS_UGETRLIMIT:
             ret = sys_getrlimit((uint32_t)regs->ebx, (uint32_t)regs->ecx);
+            break;
+        case SYS_PRLIMIT64:
+            ret = sys_prlimit64((uint32_t)regs->ebx,
+                                (uint32_t)regs->ecx,
+                                (uint32_t)regs->edx,
+                                (uint32_t)regs->esi);
             break;
         case SYS_WAITPID:
             ret = process_waitpid((int32_t)regs->ebx, (int*)regs->ecx, (int)regs->edx);
@@ -1898,8 +2311,13 @@ int32_t syscall_dispatch(registers_t *regs) {
                             (int)regs->edx, (void*)regs->esi);
             break;
         case SYS_FORK:
-        case SYS_CLONE:
             ret = sys_fork(regs);
+            break;
+        case SYS_VFORK:
+            ret = sys_vfork(regs);
+            break;
+        case SYS_CLONE:
+            ret = sys_clone(regs);
             break;
         case SYS_SCHED_YIELD:
             ret = sys_sched_yield();
@@ -1936,6 +2354,13 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_FSTAT64:
             ret = sys_fstat64((int)regs->ebx, (k_stat64_t*)regs->ecx);
             break;
+        case SYS__llseek:
+            ret = sys__llseek((uint32_t)regs->ebx,
+                              (uint32_t)regs->ecx,
+                              (uint32_t)regs->edx,
+                              (uint32_t)regs->esi,
+                              (int)regs->edi);
+            break;
         case SYS_WRITEV:
             ret = sys_writev((int)regs->ebx, (const k_iovec_t*)regs->ecx, regs->edx);
             break;
@@ -1950,6 +2375,9 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_CLOCK_GETTIME64:
             ret = sys_clock_gettime64((int)regs->ebx, (k_timespec64_t*)regs->ecx);
+            break;
+        case SYS_CLOCK_SETTIME64:
+            ret = sys_clock_settime64((int)regs->ebx, (const k_timespec64_t*)regs->ecx);
             break;
         case SYS_STATX:
             ret = sys_statx((int)regs->ebx, (const char*)regs->ecx, (int)regs->edx,
@@ -1987,6 +2415,14 @@ int32_t syscall_dispatch(registers_t *regs) {
                              (void*)regs->esi,
                              (const k_timeval_t*)regs->edi);
             break;
+        case SYS_PSELECT6:
+            ret = sys_pselect6((int)regs->ebx,
+                               (void*)regs->ecx,
+                               (void*)regs->edx,
+                               (void*)regs->esi,
+                               (const compat_timespec32_t*)regs->edi,
+                               (const compat_pselect6_data_t*)regs->ebp);
+            break;
         case SYS_SOCKET:
             ret = sys_socket_open((int)regs->ebx, (int)regs->ecx, (int)regs->edx);
             break;
@@ -2006,6 +2442,22 @@ int32_t syscall_dispatch(registers_t *regs) {
         /* ---- Device event channel --------------------------------------- */
         case SYS_DEVEV_OPEN:
             ret = sys_devev_open();
+            break;
+        case SYS_SETRESUID32:
+            ret = sys_setresuid32((uint32_t)regs->ebx,
+                                  (uint32_t)regs->ecx,
+                                  (uint32_t)regs->edx);
+            break;
+        case SYS_SETUID32:
+            ret = sys_setuid32((uint32_t)regs->ebx);
+            break;
+        case SYS_SETRESGID32:
+            ret = sys_setresgid32((uint32_t)regs->ebx,
+                                  (uint32_t)regs->ecx,
+                                  (uint32_t)regs->edx);
+            break;
+        case SYS_SETGID32:
+            ret = sys_setgid32((uint32_t)regs->ebx);
             break;
         /* ---- Reboot / poweroff ----------------------------------------- */
         case SYS_REBOOT:

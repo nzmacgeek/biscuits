@@ -126,6 +126,7 @@ void scheduler_tick(void) {
 }
 
 process_t *scheduler_current(void) { return sched_current; }
+void scheduler_set_current(process_t *p) { sched_current = p; }
 
 void scheduler_handle_trap(registers_t *regs, int rotate) {
     process_t *current = process_current();
@@ -143,10 +144,18 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
     }
 
     if (current) {
+        /* Update CPU accounting for the outgoing process: accumulate ticks
+         * spent since it was scheduled in. */
+        uint32_t now = timer_get_ticks();
+        if (current->state == PROC_RUNNING) {
+            if (now >= current->cpu_last_tick) {
+                current->cpu_ticks += (now - current->cpu_last_tick);
+            }
+            current->state = PROC_READY;
+        }
         current->saved_regs = *regs;
         current->eip = regs->eip;
         current->esp = regs->useresp;
-        if (current->state == PROC_RUNNING) current->state = PROC_READY;
     }
 
     next = scheduler_pick_next_user(current,
@@ -179,10 +188,14 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
         /* Sanitize EFLAGS: clear TF (bit 8) and ensure IF (bit 9) is set. */
         frame.eflags = (frame.eflags & ~0x100u) | 0x200u;
 
+        /* Record CPU accounting: mark this process as running and remember
+         * the tick when it started so we can accumulate on subsequent switch-out. */
         next->saved_regs = frame;
         next->state = PROC_RUNNING;
         sched_current = next;
         process_set_current(next);
+        /* start accounting from current tick */
+        next->cpu_last_tick = timer_get_ticks();
         *regs = frame;
         return;
     }

@@ -19,6 +19,8 @@
 
 #define BLUEY_ECHILD 10
 #define BLUEY_EAGAIN 11
+#define BLUEY_ENOMEM 12
+#define BLUEY_EPERM   1
 
 #define PROCESS_USER_MMAP_BASE 0x50000000u
 
@@ -26,8 +28,43 @@ static process_t *proc_list  = NULL;   // head of process linked list
 static process_t *proc_current = NULL; // currently running process
 static uint32_t   next_pid   = 1;
 static process_t *proc_deferred_reap = NULL;
+static uint8_t    proc_kernel_stacks[MAX_PROCESSES][PROC_STACK_SIZE] __attribute__((aligned(16)));
+static uint8_t    proc_kernel_stack_used[MAX_PROCESSES];
 
 static void process_reap(process_t *process);
+
+static void process_free_kernel_stack(process_t *process) {
+    if (!process || !process->stack_base) return;
+
+    for (uint32_t index = 0; index < MAX_PROCESSES; index++) {
+        if ((uint32_t)(uintptr_t)proc_kernel_stacks[index] == process->stack_base) {
+            proc_kernel_stack_used[index] = 0;
+            process->stack_base = 0;
+            return;
+        }
+    }
+
+    kheap_free((void*)process->stack_base);
+    process->stack_base = 0;
+}
+
+static void process_release_vfork_parent(process_t *process, int clear_shared_vm) {
+    process_t *parent;
+
+    if (!process || !(process->flags & PROC_FLAG_VFORK_SHARED_VM)) return;
+
+    parent = process->parent_pid ? process_get_by_pid(process->parent_pid) : NULL;
+    if (parent && parent->vfork_child_pid == process->pid) {
+        parent->vfork_child_pid = 0;
+        if (parent->state == PROC_WAITING) {
+            parent->state = PROC_READY;
+        }
+    }
+
+    if (clear_shared_vm) {
+        process->flags &= ~PROC_FLAG_VFORK_SHARED_VM;
+    }
+}
 
 uint32_t process_next_pid(void) { return next_pid++; }
 
@@ -157,12 +194,11 @@ static void process_reap(process_t *process) {
     scheduler_remove(process->pid);
     process_remove_from_list(process);
 
-    if ((process->flags & PROC_FLAG_USER_MODE) && process->page_dir) {
+    if ((process->flags & PROC_FLAG_USER_MODE) && process->page_dir &&
+        !(process->flags & PROC_FLAG_VFORK_SHARED_VM)) {
         paging_destroy_address_space(process->page_dir);
     }
-    if (process->stack_base) {
-        kheap_free((void*)process->stack_base);
-    }
+    process_free_kernel_stack(process);
     kheap_free(process);
 }
 
@@ -191,28 +227,32 @@ static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t 
 
     process->next = proc_list;
     proc_list = process;
+    /* Initialize CPU accounting */
+    process->cpu_ticks = 0;
+    process->cpu_last_tick = 0;
     return process;
 }
 
 static uint8_t *process_alloc_kernel_stack(process_t *process) {
-    uint8_t *stack;
-
     if (!process) return NULL;
 
-    stack = (uint8_t*)kheap_alloc(PROC_STACK_SIZE, 1);
-    if (!stack) {
-        kprintf("[PRC] ERROR: out of memory for stack!\n");
-        return NULL;
+    for (uint32_t index = 0; index < MAX_PROCESSES; index++) {
+        if (proc_kernel_stack_used[index]) continue;
+
+        proc_kernel_stack_used[index] = 1;
+        process->stack_base = (uint32_t)(uintptr_t)proc_kernel_stacks[index];
+        return proc_kernel_stacks[index];
     }
 
-    process->stack_base = (uint32_t)stack;
-    return stack;
+    kprintf("[PRC] ERROR: no kernel stacks available! max=%u\n", MAX_PROCESSES);
+    return NULL;
 }
 
 void process_init(void) {
     proc_list    = NULL;
     proc_current = NULL;
     proc_deferred_reap = NULL;
+    memset(proc_kernel_stack_used, 0, sizeof(proc_kernel_stack_used));
     kprintf("%s\n", MSG_PROC_INIT);
 }
 
@@ -270,25 +310,42 @@ process_t *process_create_image(const char *name, uint32_t entry, uint32_t user_
     return process;
 }
 
-process_t *process_fork_current(const registers_t *regs) {
+process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     process_t *parent = proc_current;
     process_t *child;
     uint8_t *stack;
     uint32_t page_dir;
 
-    if (!parent || !regs || !(parent->flags & PROC_FLAG_USER_MODE)) return NULL;
+    if (error_out) *error_out = -BLUEY_EAGAIN;
+
+    if (!parent || !regs || !(parent->flags & PROC_FLAG_USER_MODE)) {
+        if (error_out) *error_out = -BLUEY_EPERM;
+        kprintf("[PRC] fork failed: invalid parent/regs/user-mode state (parent=%p regs=%p flags=0x%x)\n",
+                (void*)parent, (void*)regs, parent ? parent->flags : 0u);
+        return NULL;
+    }
 
     page_dir = paging_clone_address_space(parent->page_dir);
-    if (!page_dir) return NULL;
+    if (!page_dir) {
+        if (error_out) *error_out = -BLUEY_ENOMEM;
+        kprintf("[PRC] fork failed: paging_clone_address_space for pid=%u (used_frames=%u total_frames=%u)\n",
+                parent->pid, pmm_used_frames(), pmm_total_frames());
+        return NULL;
+    }
 
     child = process_alloc_common(parent->name, parent->uid, parent->gid);
     if (!child) {
+        if (error_out) *error_out = -BLUEY_ENOMEM;
+        kprintf("[PRC] fork failed: process_alloc_common for parent pid=%u\n", parent->pid);
         paging_destroy_address_space(page_dir);
         return NULL;
     }
 
     stack = process_alloc_kernel_stack(child);
     if (!stack) {
+        if (error_out) *error_out = -BLUEY_ENOMEM;
+        kprintf("[PRC] fork failed: process_alloc_kernel_stack for child pid=%u parent pid=%u\n",
+                child->pid, parent->pid);
         process_remove_from_list(child);
         kheap_free(child);
         paging_destroy_address_space(page_dir);
@@ -317,6 +374,83 @@ process_t *process_fork_current(const registers_t *regs) {
     child->saved_regs.eax = 0;
     child->eip = child->saved_regs.eip;
     child->esp = child->saved_regs.useresp;
+    /* Child starts with zeroed CPU accounting (do not inherit parent's usage) */
+    child->cpu_ticks = 0;
+    child->cpu_last_tick = 0;
+    if (error_out) *error_out = 0;
+    return child;
+}
+
+process_t *process_vfork_current(const registers_t *regs, int32_t *error_out) {
+    process_t *parent = proc_current;
+    process_t *child;
+    uint8_t *stack;
+
+    if (error_out) *error_out = -BLUEY_EAGAIN;
+
+    if (!parent || !regs || !(parent->flags & PROC_FLAG_USER_MODE)) {
+        if (error_out) *error_out = -BLUEY_EPERM;
+        kprintf("[PRC] vfork failed: invalid parent/regs/user-mode state (parent=%p regs=%p flags=0x%x)\n",
+                (void*)parent, (void*)regs, parent ? parent->flags : 0u);
+        return NULL;
+    }
+
+    if (parent->vfork_child_pid != 0) {
+        if (error_out) *error_out = -BLUEY_EAGAIN;
+        kprintf("[PRC] vfork failed: parent pid=%u already has active child pid=%u\n",
+                parent->pid, parent->vfork_child_pid);
+        return NULL;
+    }
+
+    child = process_alloc_common(parent->name, parent->uid, parent->gid);
+    if (!child) {
+        if (error_out) *error_out = -BLUEY_ENOMEM;
+        kprintf("[PRC] vfork failed: process_alloc_common for parent pid=%u\n", parent->pid);
+        return NULL;
+    }
+
+    stack = process_alloc_kernel_stack(child);
+    if (!stack) {
+        if (error_out) *error_out = -BLUEY_ENOMEM;
+        kprintf("[PRC] vfork failed: process_alloc_kernel_stack for child pid=%u parent pid=%u\n",
+                child->pid, parent->pid);
+        process_remove_from_list(child);
+        kheap_free(child);
+        return NULL;
+    }
+
+    child->flags = (parent->flags & ~PROC_FLAG_SIGNAL_ACTIVE) | PROC_FLAG_VFORK_SHARED_VM;
+    child->euid = parent->euid;
+    child->egid = parent->egid;
+    child->group_count = parent->group_count;
+    memcpy(child->groups, parent->groups, sizeof(child->groups));
+    child->pgid = parent->pgid;
+    child->user_stack_base = parent->user_stack_base;
+    child->user_stack_top = parent->user_stack_top;
+    child->rlimit_stack_cur = parent->rlimit_stack_cur;
+    child->rlimit_stack_max = parent->rlimit_stack_max;
+    child->tls_base = parent->tls_base;
+    child->page_dir = parent->page_dir;
+    child->brk_base = parent->brk_base;
+    child->brk_current = parent->brk_current;
+    child->mmap_base = parent->mmap_base;
+    child->blocked_signals = parent->blocked_signals;
+    memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
+    memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    child->saved_regs = *regs;
+    child->saved_regs.eax = 0;
+    child->eip = child->saved_regs.eip;
+    child->esp = child->saved_regs.useresp;
+    child->cpu_ticks = 0;
+    child->cpu_last_tick = 0;
+
+    parent->vfork_child_pid = child->pid;
+    parent->state = PROC_WAITING;
+    parent->wait_pid = 0;
+    parent->wait_status_ptr = 0;
+    parent->wait_options = 0;
+
+    if (error_out) *error_out = 0;
     return child;
 }
 
@@ -324,7 +458,11 @@ void process_exec_replace(process_t *process, const char *name,
                           uint32_t entry, uint32_t user_esp,
                           uint32_t user_stack_base, uint32_t user_stack_top,
                           uint32_t page_dir) {
+    int release_vfork_parent;
+
     if (!process) return;
+
+    release_vfork_parent = (process->flags & PROC_FLAG_VFORK_SHARED_VM) != 0;
 
     if (name && name[0]) {
         strncpy(process->name, name, sizeof(process->name) - 1);
@@ -345,6 +483,10 @@ void process_exec_replace(process_t *process, const char *name,
     process->page_dir = page_dir;
     process->exit_code = 0;
     process_init_user_frame(process, entry, user_esp);
+
+    if (release_vfork_parent) {
+        process_release_vfork_parent(process, 1);
+    }
 
     signal_reset_on_exec(process);
 }
@@ -371,6 +513,8 @@ void process_mark_exited(process_t *process, int code) {
     process->state = PROC_ZOMBIE;
     process->exit_code = code;
     process->pending_signals = 0;
+
+    process_release_vfork_parent(process, 0);
 
     /* Notify the device event channel so supervisors like claw can react */
     ev.type = DEV_EV_CHILD_EXIT;

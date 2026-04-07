@@ -343,7 +343,28 @@ int vfs_open(const char *path, int flags) {
         else need = VFS_ACCESS_READ;
 
         if (!vfs_check_mode(&stat, need, &cred)) return -1;
-        if (stat.is_dir) return -1;
+        if (stat.is_dir) {
+            /* Allow opening a directory for reading (e.g. musl's opendir uses
+             * open(..., O_RDONLY|O_DIRECTORY)). Reject write/create flags. */
+            if ((flags & (VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND)) != 0) {
+                return -1;
+            }
+            /* Proceed without calling the filesystem open callback. The fd's
+             * path is sufficient for getdents/readdir/fstat operations. */
+            int fd = vfs_alloc_fd();
+            if (fd < 0) { kprintf("[VFS]  Out of file descriptors for %s!\n", path); return -1; }
+
+            fd_table[fd].used    = 1;
+            fd_table[fd].fd_type = VFS_FD_TYPE_FILE; /* directory represented as file FD */
+            fd_table[fd].fs_fd   = -1; /* no per-FS handle */
+            fd_table[fd].offset  = 0;
+            strncpy(fd_table[fd].path, path, VFS_PATH_LEN - 1);
+            // find mount index
+            for (int i = 0; i < mount_count; i++) {
+                if (&mounts[i] == m) { fd_table[fd].fs_idx = i; break; }
+            }
+            return fd;
+        }
     } else if (flags & VFS_O_CREAT) {
         char parent[VFS_PATH_LEN];
         vfs_stat_t parent_stat;

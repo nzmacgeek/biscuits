@@ -81,6 +81,9 @@ MUSL_PREFIX ?= $(BUILD_USERS_DIR)/musl
 MUSL_INCLUDE_DIR := $(MUSL_PREFIX)/include
 MUSL_LIB_DIR := $(MUSL_PREFIX)/lib
 MUSL_INIT_TARGET := $(BUILD_USERS_DIR)/init/init-musl.elf
+BLUEYOS_SYSROOT ?= /opt/blueyos-sysroot
+BLUEYOS_CROSS ?= /opt/blueyos-cross
+BLUEYOS_CROSS_MUSL ?= $(BLUEYOS_CROSS)/musl
 # Optional external sysroot to assemble disk images from (preferred when present)
 # If this directory exists, disk builds will use it instead of the locally
 # assembled $(BUILD_SYSROOT).
@@ -310,10 +313,12 @@ endif
 
 ISO    = $(BUILD_DIR)/blueyos.iso
 DISK_IMAGE = $(BUILD_DIR)/blueyos-disk.img
+LOG_DISK_IMAGE ?= $(BUILD_DIR)/blueyos-log-fat.img
 MKFS_BLUEYFS = $(BUILD_TOOLS_DIR)/mkfs_blueyfs
 MKSWAP_BLUEYFS = $(BUILD_TOOLS_DIR)/mkswap_blueyfs
 FSCK_BLUEYFS = $(BUILD_TOOLS_DIR)/fsck_blueyfs
 LIST_BLUEYFS = $(BUILD_TOOLS_DIR)/list_blueyfs
+MOUNT_BLUEYFS = $(BUILD_TOOLS_DIR)/mount_blueyfs
 ISO_STAGE_DIR = $(BUILD_DIR)/isodir
 
 # Convenience dirs
@@ -364,7 +369,7 @@ endif
 
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso disk disk-musl musl-init run run-m68k version clean full-clean help tools-host toolinfo FORCE
+.PHONY: all iso disk disk-musl fat-log-disk musl-init run run-m68k version clean full-clean help tools-host toolinfo FORCE
 
 all: $(TARGET)
 	@echo ""
@@ -408,6 +413,9 @@ disk: $(TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  D
 
 disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(ROOT_EXTRA_DIR) --boot-extra-dir $(ROOT_EXTRA_DIR)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
 
+fat-log-disk:
+	@bash tools/mkfat_logs_disk.sh "$(LOG_DISK_IMAGE)"
+
 run: disk ; @if [ "$(ARCH)" != "i386" ]; then echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/qemu-run.sh
 
 run-m68k: $(BUILD_DIR)/blueyos-m68k.elf
@@ -432,9 +440,11 @@ tools-host: $(MKFS_BLUEYFS) $(MKSWAP_BLUEYFS) $(FSCK_BLUEYFS) $(LIST_BLUEYFS) ; 
 
 .PHONY: build-musl-blueyos
 build-musl-blueyos:
-	@echo "Building musl for BlueyOS under $(MUSL_PREFIX) (this may take a while)"
-	@mkdir -p $(MUSL_PREFIX)
-	@TARGET=i386-blueyos ./tools/build-musl.sh --prefix=$(MUSL_PREFIX)
+	@echo "Building musl for BlueyOS into local, sysroot, and cross prefixes (this may take a while)"
+	@TARGET=i386-linux-gnu ./tools/build-musl.sh \
+		--prefix=$(MUSL_PREFIX) \
+		--sysroot=$(BLUEYOS_SYSROOT) \
+		--cross-prefix=$(BLUEYOS_CROSS_MUSL)
 
 $(MKFS_BLUEYFS): tools/mkfs_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
 
@@ -443,6 +453,14 @@ $(MKSWAP_BLUEYFS): tools/mkswap_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -
 $(FSCK_BLUEYFS): tools/fsck_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
 
 $(LIST_BLUEYFS): tools/list_blueyfs.c ; @mkdir -p $(dir $@); gcc -O2 -Wall -Wextra -o $@ $<; echo "  [CC]  $< (host)"
+
+$(MOUNT_BLUEYFS): tools/mount_blueyfs.c ; @mkdir -p $(dir $@); \
+  if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists fuse3; then \
+    echo "  [CC]  missing fuse3 development files; install libfuse3-dev to build $@"; \
+    exit 1; \
+  fi; \
+  gcc -O2 -Wall -Wextra -o $@ $< $$(pkg-config --cflags --libs fuse3); \
+  echo "  [CC]  $< (host, fuse3)"
 
 $(BUILD_USER_DIR)/init.elf: user/init.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
 
@@ -478,9 +496,11 @@ help:
 	@echo "  make ARCH=m68k        - build M68K kernel (Macintosh LC III)"
 	@echo "  make ARCH=ppc         - build PowerPC kernel (iMac G4 Sunflower)"
 	@echo "  make iso              - create bootable ISO (i386 only)"
-	@echo "  make disk             - create a partitioned BlueyOS disk image"
+	@echo "  make disk             - create a partitioned BlueyOS disk image (root auto-sized from sysroot +30%)"
+	@echo "  make fat-log-disk     - create an optional FAT16 log disk image at $(LOG_DISK_IMAGE)"
+	@echo "  make $(MOUNT_BLUEYFS) - build the read-only Linux FUSE BiscuitFS mounter"
 	@echo "  make musl-init        - build static musl test init at $(MUSL_INIT_TARGET)"
-	@echo "  make disk-musl        - create a disk image using the musl test init"
+	@echo "  make disk-musl        - create a disk image using the musl test init (root auto-sized from sysroot +30%)"
 	@echo "  make run              - build ISO and launch in QEMU (i386 only)"
 	@echo "  make run-m68k         - launch M68K QEMU with detached serial capture"
 	@echo "  make tools-host       - build host-side mkfs/mkswap/fsck tools"

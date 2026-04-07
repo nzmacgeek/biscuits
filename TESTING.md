@@ -290,6 +290,12 @@ This is expected and normal — the OS continues to boot without disk access.
 
 To test the FAT16 filesystem, create a FAT16 disk image:
 
+Or use the repository helper to create the default extra FAT log disk image:
+
+```bash
+make fat-log-disk
+```
+
 ```bash
 # Create a 32MB FAT16 image
 dd if=/dev/zero of=disk.img bs=1M count=32

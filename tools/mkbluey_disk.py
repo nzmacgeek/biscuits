@@ -5,15 +5,170 @@ import struct
 import subprocess
 import tempfile
 import shutil
+import math
 from pathlib import Path
 
 SECTOR_SIZE = 512
+FS_BLOCK_SIZE = 4096
 BOOT_START_LBA = 2048
 BOOT_MB = 32
+DEFAULT_ROOT_BUFFER_PCT = 30
+BLUEYFS_INODE_SIZE = 256
+BLUEYFS_INODES_PER_GROUP = 8192
+BLUEYFS_BLOCKS_PER_GROUP = 8192
+BLUEYFS_JOURNAL_BLOCKS = 2048
+BLUEYFS_FIRST_INO = 11
 
 
 def sectors_from_mb(mb: int) -> int:
     return mb * 1024 * 1024 // SECTOR_SIZE
+
+
+def blocks_from_bytes(size_bytes: int) -> int:
+    if size_bytes <= 0:
+        return 0
+    return (size_bytes + FS_BLOCK_SIZE - 1) // FS_BLOCK_SIZE
+
+
+def pointer_metadata_blocks(data_blocks: int) -> int:
+    if data_blocks <= 12:
+        return 0
+
+    ptrs_per_block = FS_BLOCK_SIZE // 4
+    remaining_blocks = data_blocks - 12
+    metadata_blocks = 1
+
+    if remaining_blocks <= ptrs_per_block:
+        return metadata_blocks
+
+    remaining_blocks -= ptrs_per_block
+    metadata_blocks += 1
+    metadata_blocks += math.ceil(remaining_blocks / ptrs_per_block)
+    return metadata_blocks
+
+
+def filesystem_overhead_blocks(total_blocks: int) -> tuple[int, int, int]:
+    num_groups = max(1, math.ceil(total_blocks / BLUEYFS_BLOCKS_PER_GROUP))
+    inodes_per_block = FS_BLOCK_SIZE // BLUEYFS_INODE_SIZE
+    inode_table_blocks = math.ceil(BLUEYFS_INODES_PER_GROUP / inodes_per_block)
+    overhead_per_group = 1 + 1 + inode_table_blocks + 1
+    total_overhead = num_groups * overhead_per_group + 1 + BLUEYFS_JOURNAL_BLOCKS
+    free_blocks = max(0, total_blocks - total_overhead)
+    reserved_blocks = free_blocks // 20
+    usable_blocks = free_blocks - reserved_blocks
+    return num_groups, total_overhead, usable_blocks
+
+
+def estimate_directory_payload(root_dir: Path) -> tuple[int, int, int, int, int]:
+    total_file_bytes = 0
+    total_file_blocks = 0
+    total_dirs = 0
+    total_files = 0
+    total_indirect_blocks = 0
+    visited_dirs: set[Path] = set()
+
+    def scan_dir(path: Path) -> None:
+        nonlocal total_file_bytes, total_file_blocks, total_dirs, total_files, total_indirect_blocks
+        real_path = path.resolve()
+        if real_path in visited_dirs:
+            return
+        visited_dirs.add(real_path)
+
+        for entry in path.iterdir():
+            try:
+                if entry.is_dir():
+                    total_dirs += 1
+                    scan_dir(entry)
+                elif entry.is_file():
+                    size_bytes = entry.stat().st_size
+                    file_blocks = blocks_from_bytes(size_bytes)
+                    total_files += 1
+                    total_file_bytes += size_bytes
+                    total_file_blocks += file_blocks
+                    total_indirect_blocks += pointer_metadata_blocks(file_blocks)
+            except OSError:
+                continue
+
+    scan_dir(root_dir)
+    return total_file_bytes, total_file_blocks, total_dirs, total_files, total_indirect_blocks
+
+
+def estimate_root_partition_sectors(root_extra_dir: str | None,
+                                    init_path: Path,
+                                    fstab_path: Path,
+                                    fallback_root_mb: int,
+                                    buffer_pct: int) -> tuple[int, dict[str, int | bool]]:
+    details: dict[str, int | bool] = {
+        "dynamic": False,
+        "payload_bytes": 0,
+        "payload_blocks": 0,
+        "buffered_blocks": 0,
+        "required_inodes": 0,
+        "total_blocks": 0,
+        "total_mb": fallback_root_mb,
+    }
+
+    if not root_extra_dir:
+        return sectors_from_mb(fallback_root_mb), details
+
+    root_dir = Path(root_extra_dir)
+    if not root_dir.exists() or not root_dir.is_dir():
+        return sectors_from_mb(fallback_root_mb), details
+
+    root_dir_resolved = root_dir.resolve()
+    payload_bytes, payload_blocks, directory_count, file_count, indirect_blocks = estimate_directory_payload(root_dir)
+    for required_dir in ("bin", "etc"):
+        if not (root_dir / required_dir).exists():
+            directory_count += 1
+
+    explicit_files: set[Path] = set()
+    if init_path.exists():
+        explicit_files.add(init_path.resolve())
+    if fstab_path.exists():
+        explicit_files.add(fstab_path.resolve())
+
+    for explicit_file in explicit_files:
+        try:
+            if not explicit_file.is_relative_to(root_dir_resolved):
+                file_size = explicit_file.stat().st_size
+                file_blocks = blocks_from_bytes(file_size)
+                payload_bytes += file_size
+                payload_blocks += file_blocks
+                file_count += 1
+                indirect_blocks += pointer_metadata_blocks(file_blocks)
+        except ValueError:
+            file_size = explicit_file.stat().st_size
+            file_blocks = blocks_from_bytes(file_size)
+            payload_bytes += file_size
+            payload_blocks += file_blocks
+            file_count += 1
+            indirect_blocks += pointer_metadata_blocks(file_blocks)
+
+    directory_blocks = directory_count
+
+    buffered_blocks = math.ceil((payload_blocks + directory_blocks + indirect_blocks) * (1 + (buffer_pct / 100.0)))
+    required_inodes = BLUEYFS_FIRST_INO + directory_count + file_count
+
+    total_blocks = max(1, buffered_blocks)
+    while True:
+        _, _, usable_blocks = filesystem_overhead_blocks(total_blocks)
+        num_groups = max(1, math.ceil(total_blocks / BLUEYFS_BLOCKS_PER_GROUP))
+        total_inodes = num_groups * BLUEYFS_INODES_PER_GROUP
+        if usable_blocks >= buffered_blocks and total_inodes - BLUEYFS_FIRST_INO >= required_inodes:
+            break
+        total_blocks += 1
+
+    total_mb = math.ceil((total_blocks * FS_BLOCK_SIZE) / (1024 * 1024))
+    details.update({
+        "dynamic": True,
+        "payload_bytes": payload_bytes,
+        "payload_blocks": payload_blocks + directory_blocks + indirect_blocks,
+        "buffered_blocks": buffered_blocks,
+        "required_inodes": required_inodes,
+        "total_blocks": total_blocks,
+        "total_mb": total_mb,
+    })
+    return total_blocks * (FS_BLOCK_SIZE // SECTOR_SIZE), details
 
 
 def write_mbr(image: Path,
@@ -234,6 +389,8 @@ def main() -> int:
     parser.add_argument("--root-mb", type=int, default=64)
     parser.add_argument("--swap-mb", type=int, default=16)
     parser.add_argument("--slack-mb", type=int, default=16)
+    parser.add_argument("--root-buffer-pct", type=int, default=DEFAULT_ROOT_BUFFER_PCT,
+                        help="Extra headroom added to the estimated root filesystem payload size")
     parser.add_argument("--kernel", default="build/blueyos.elf")
     parser.add_argument("--init", default="build/userspace/init/init-musl.elf")
     parser.add_argument("--boot-extra-dir", default=None,
@@ -275,9 +432,21 @@ def main() -> int:
         getattr(args, 'timezone_file', None),
     )
     boot_sectors = sectors_from_mb(args.boot_mb)
-    root_sectors = sectors_from_mb(args.root_mb)
     swap_sectors = sectors_from_mb(args.swap_mb)
     slack_sectors = sectors_from_mb(args.slack_mb)
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="ascii", newline="\n") as fstab_fp:
+        fstab_fp.write("# BlueyOS mount table - Chilli keeps it organised\n")
+        fstab_fp.write("/dev/hda2 / blueyfs defaults 0 1\n")
+        fstab_fp.write("/dev/hda3 none swap defaults 0 0\n")
+        fstab_name = fstab_fp.name
+    fstab_path = Path(fstab_name)
+    root_sectors, root_size_details = estimate_root_partition_sectors(
+        effective_root_extra_dir,
+        init_path,
+        fstab_path,
+        args.root_mb,
+        args.root_buffer_pct,
+    )
     root_start = BOOT_START_LBA + boot_sectors
     swap_start = root_start + root_sectors
     total_sectors = swap_start + swap_sectors + slack_sectors
@@ -299,13 +468,17 @@ def main() -> int:
 
     write_mbr(image, BOOT_START_LBA, boot_sectors, root_start, root_sectors, swap_start, swap_sectors)
 
-    with tempfile.NamedTemporaryFile("w", delete=False, encoding="ascii", newline="\n") as fstab_fp:
-        fstab_fp.write("# BlueyOS mount table - Chilli keeps it organised\n")
-        fstab_fp.write("/dev/hda2 / blueyfs defaults 0 1\n")
-        fstab_fp.write("/dev/hda3 none swap defaults 0 0\n")
-        fstab_name = fstab_fp.name
-
     try:
+        if root_size_details["dynamic"]:
+            print(
+                "[DISK] Root partition sized from sysroot payload: "
+                f"{root_size_details['payload_bytes']} bytes -> "
+                f"{root_size_details['total_mb']} MiB "
+                f"({args.root_buffer_pct}% buffer included)"
+            )
+        else:
+            print(f"[DISK] Root partition using fallback size: {args.root_mb} MiB")
+
         build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/hda2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'))
 
         mkfs_cmd = [str(mkfs_tool), "-F", "-L", args.root_label, "-o", str(root_start), "-n", str(root_sectors), "-I", str(init_path), "-T", fstab_name]

@@ -27,7 +27,12 @@ Quick build (i386)
 
    `make musl-init`
 
-   - You can override the musl install prefix: `MUSL_PREFIX=/path/to/sysroot make musl-init`.
+   - You can override the local musl install prefix used by repo builds: `MUSL_PREFIX=/path/to/musl make musl-init`.
+   - To build and install musl into all supported destinations, use `make build-musl-blueyos`.
+   - That target installs musl into:
+     - `build/userspace/musl` for repo-local builds
+     - `/opt/blueyos-sysroot` for the runtime sysroot used by `make disk`
+     - `/opt/blueyos-cross/musl` for musl wrapper/tools alongside the cross toolchain
 
 4. (Optional) Build optional userspace programs (bash)
 
@@ -48,7 +53,20 @@ Quick build (i386)
    `make disk`
 
    - For creating a disk using the musl init test: `make disk-musl`.
+   - To create an additional FAT16 disk image that QEMU will attach as a second IDE disk when present: `make fat-log-disk`.
+   - The root partition is now sized from the assembled sysroot payload with an additional 30% buffer, so larger userlands automatically produce larger disk images.
    - There are helper wrappers: `tools/mkbluey_disk.py` and `scripts/build-disk-with-stage.sh` to assemble images including host-provided stage dirs.
+
+7. (Optional) Build a read-only Linux BiscuitFS mounter:
+
+    `make build/tools/mount_blueyfs`
+
+    - Requires FUSE3 development headers on the host, typically `libfuse3-dev` on Debian/Ubuntu.
+    - Example usage against the root partition inside the BlueyOS disk image:
+
+       `build/tools/mount_blueyfs --start-sector 67584 build/blueyos-disk.img /mnt/blueyos -f`
+
+    - This mounter is read-only and intended for inspection, copying files out, and debugging host-side images.
 
 7. Run the image in QEMU:
 

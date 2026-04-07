@@ -638,16 +638,129 @@ static uint32_t alloc_inode_host(void) {
     return 0;
 }
 
+static uint32_t inode_get_block_host(const biscuitfs_inode_t *inode, uint32_t block_index) {
+    uint32_t ptrs_per_block = g_block_size / sizeof(uint32_t);
+    uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
+
+    if (block_index < BISCUITFS_N_DIRECT) {
+        return inode->block[block_index];
+    }
+
+    block_index -= BISCUITFS_N_DIRECT;
+    if (block_index < ptrs_per_block) {
+        if (!inode->block[12]) return 0;
+        read_block(inode->block[12], blkbuf);
+        return ((uint32_t *)blkbuf)[block_index];
+    }
+
+    block_index -= ptrs_per_block;
+    if (block_index < ptrs_per_block * ptrs_per_block) {
+        uint8_t l1buf[BISCUITFS_BLOCK_SIZE];
+        uint8_t l2buf[BISCUITFS_BLOCK_SIZE];
+        uint32_t l1_index;
+        uint32_t l2_index;
+        uint32_t l2_block;
+
+        if (!inode->block[13]) return 0;
+        read_block(inode->block[13], l1buf);
+        l1_index = block_index / ptrs_per_block;
+        l2_index = block_index % ptrs_per_block;
+        l2_block = ((uint32_t *)l1buf)[l1_index];
+        if (!l2_block) return 0;
+        read_block(l2_block, l2buf);
+        return ((uint32_t *)l2buf)[l2_index];
+    }
+
+    return 0;
+}
+
+static int inode_set_block_host(biscuitfs_inode_t *inode,
+                                uint32_t block_index,
+                                uint32_t block_no,
+                                uint32_t *metadata_blocks_added) {
+    uint32_t ptrs_per_block = g_block_size / sizeof(uint32_t);
+
+    if (metadata_blocks_added) *metadata_blocks_added = 0;
+
+    if (block_index < BISCUITFS_N_DIRECT) {
+        inode->block[block_index] = block_no;
+        return 0;
+    }
+
+    block_index -= BISCUITFS_N_DIRECT;
+    if (block_index < ptrs_per_block) {
+        uint8_t ibuf[BISCUITFS_BLOCK_SIZE];
+
+        if (!inode->block[12]) {
+            uint32_t ib = alloc_block_host();
+            uint8_t empty[BISCUITFS_BLOCK_SIZE];
+
+            if (!ib) return -1;
+            memset(empty, 0, sizeof(empty));
+            write_block(ib, empty);
+            inode->block[12] = ib;
+            if (metadata_blocks_added) (*metadata_blocks_added)++;
+        }
+
+        read_block(inode->block[12], ibuf);
+        ((uint32_t *)ibuf)[block_index] = block_no;
+        write_block(inode->block[12], ibuf);
+        return 0;
+    }
+
+    block_index -= ptrs_per_block;
+    if (block_index < ptrs_per_block * ptrs_per_block) {
+        uint32_t l1_index = block_index / ptrs_per_block;
+        uint32_t l2_index = block_index % ptrs_per_block;
+        uint8_t l1buf[BISCUITFS_BLOCK_SIZE];
+        uint8_t l2buf[BISCUITFS_BLOCK_SIZE];
+        uint32_t *l1ptrs;
+        uint32_t *l2ptrs;
+
+        if (!inode->block[13]) {
+            uint32_t dib = alloc_block_host();
+            if (!dib) return -1;
+            memset(l1buf, 0, sizeof(l1buf));
+            write_block(dib, l1buf);
+            inode->block[13] = dib;
+            if (metadata_blocks_added) (*metadata_blocks_added)++;
+        }
+
+        read_block(inode->block[13], l1buf);
+        l1ptrs = (uint32_t *)l1buf;
+        if (!l1ptrs[l1_index]) {
+            uint32_t l2blk = alloc_block_host();
+            if (!l2blk) return -1;
+            memset(l2buf, 0, sizeof(l2buf));
+            write_block(l2blk, l2buf);
+            l1ptrs[l1_index] = l2blk;
+            write_block(inode->block[13], l1buf);
+            if (metadata_blocks_added) (*metadata_blocks_added)++;
+        }
+
+        read_block(l1ptrs[l1_index], l2buf);
+        l2ptrs = (uint32_t *)l2buf;
+        l2ptrs[l2_index] = block_no;
+        write_block(l1ptrs[l1_index], l2buf);
+        return 0;
+    }
+
+    return -1;
+}
+
 static int dir_add_entry_host(uint32_t dir_ino, const char *name, uint32_t ino, uint8_t ftype) {
     biscuitfs_inode_t dir_inode;
     uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
     uint32_t namelen = (uint32_t)strlen(name);
     uint16_t needed = (uint16_t)((BISCUITFS_DIRENT_MIN + namelen + 3u) & ~3u);
+    uint32_t block_count;
 
     if (read_inode_host(dir_ino, &dir_inode) != 0) return -1;
 
-    for (uint32_t block_index = 0; block_index < BISCUITFS_N_DIRECT; block_index++) {
-        uint32_t phys = dir_inode.block[block_index];
+    block_count = (dir_inode.size_lo + g_block_size - 1u) / g_block_size;
+
+    for (uint32_t block_index = 0; block_index < block_count; block_index++) {
+        uint32_t phys = inode_get_block_host(&dir_inode, block_index);
         uint32_t off = 0;
 
         if (!phys) continue;
@@ -680,7 +793,32 @@ static int dir_add_entry_host(uint32_t dir_ino, const char *name, uint32_t ino, 
         }
     }
 
-    return -1;
+    {
+        uint32_t new_block = alloc_block_host();
+        uint32_t metadata_blocks_added = 0;
+        biscuitfs_dirent_t *de;
+
+        if (!new_block) return -1;
+
+        memset(blkbuf, 0, sizeof(blkbuf));
+        de = (biscuitfs_dirent_t *)blkbuf;
+        de->inode = ino;
+        de->rec_len = (uint16_t)g_block_size;
+        de->name_len = (uint8_t)namelen;
+        de->file_type = ftype;
+        memcpy(de->name, name, namelen);
+
+        if (inode_set_block_host(&dir_inode, block_count, new_block, &metadata_blocks_added) != 0) {
+            return -1;
+        }
+
+        write_block(new_block, blkbuf);
+        dir_inode.size_lo += g_block_size;
+        dir_inode.blocks_lo += (uint32_t)((1u + metadata_blocks_added) * (g_block_size / HOST_SECTOR_SIZE));
+        if (write_inode_host(dir_ino, &dir_inode) != 0) return -1;
+        return 0;
+    }
+
 }
 
 static uint32_t dir_lookup_host(uint32_t dir_ino, const char *name) {
@@ -694,17 +832,7 @@ static uint32_t dir_lookup_host(uint32_t dir_ino, const char *name) {
     while (offset < size) {
         uint32_t blk_n = offset / g_block_size;
         uint32_t phys = 0;
-        /* get physical block number from inode.block[] or indirects */
-        if (blk_n < BISCUITFS_N_DIRECT) {
-            phys = dir_inode.block[blk_n];
-        } else {
-            uint32_t n = blk_n - BISCUITFS_N_DIRECT;
-            uint32_t ptrs_per_block = g_block_size / sizeof(uint32_t);
-            if (!dir_inode.block[12]) return 0;
-            read_block(dir_inode.block[12], blkbuf);
-            if (n >= ptrs_per_block) return 0;
-            phys = ((uint32_t *)blkbuf)[n];
-        }
+        phys = inode_get_block_host(&dir_inode, blk_n);
         if (!phys) return 0;
         read_block(phys, blkbuf);
 
@@ -808,6 +936,7 @@ static int create_file_host(uint32_t parent_ino, const char *name,
         uint32_t blk = alloc_block_host();
         uint8_t blkbuf[BISCUITFS_BLOCK_SIZE];
         size_t chunk;
+        uint32_t metadata_blocks_added = 0;
 
         if (!blk) return -1;
 
@@ -816,34 +945,9 @@ static int create_file_host(uint32_t parent_ino, const char *name,
         memcpy(blkbuf, data + offset, chunk);
         write_block(blk, blkbuf);
 
-        /* Place the block number into the inode (direct or indirect) */
-        if (block_index < BISCUITFS_N_DIRECT) {
-            inode.block[block_index] = blk;
-        } else {
-            /* single indirect block handling */
-            uint32_t n = block_index - BISCUITFS_N_DIRECT;
-            uint32_t ptrs_per_block = g_block_size / sizeof(uint32_t);
-            if (n < ptrs_per_block) {
-                /* allocate indirect block if needed */
-                if (!inode.block[12]) {
-                    uint32_t ib = alloc_block_host();
-                    if (!ib) return -1;
-                    uint8_t empty[BISCUITFS_BLOCK_SIZE];
-                    memset(empty, 0, sizeof(empty));
-                    write_block(ib, empty);
-                    inode.block[12] = ib;
-                }
-                uint8_t ibuf[BISCUITFS_BLOCK_SIZE];
-                read_block(inode.block[12], ibuf);
-                ((uint32_t *)ibuf)[n] = blk;
-                write_block(inode.block[12], ibuf);
-            } else {
-                /* double indirect not implemented in host mkfs */
-                return -1;
-            }
-        }
+        if (inode_set_block_host(&inode, block_index, blk, &metadata_blocks_added) != 0) return -1;
 
-        inode.blocks_lo += g_block_size / HOST_SECTOR_SIZE;
+        inode.blocks_lo += (uint32_t)((1u + metadata_blocks_added) * (g_block_size / HOST_SECTOR_SIZE));
         offset += chunk;
         remaining -= chunk;
         block_index++;

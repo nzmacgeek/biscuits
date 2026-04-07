@@ -258,3 +258,10 @@ uint32_t rtc_get_uptime_seconds(void) {
 const char *rtc_source_name(void) {
     return rtc_arch_source_name();
 }
+
+void rtc_set_unix_time(uint32_t unix_secs) {
+    /* Accept a user-provided wall clock value and anchor it to the current
+     * monotonic tick so subsequent rtc_get_unix_time() reports sensible
+     * epoch-based values. */
+    rtc_accept_hardware_time(unix_secs);
+}
