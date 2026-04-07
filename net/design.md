@@ -118,9 +118,9 @@ All operations must be accessible via the Netlink-like socket.
 
 ## Phase 6 – Syscall Surface (MINIMAL)
 
-- [ ] `socket()` supports new control family
-- [ ] `sendmsg()` / `recvmsg()` supported
-- [ ] `bind()` supports multicast group subscription
+- [x] `socket()` supports new control family
+- [x] `sendmsg()` / `recvmsg()` supported
+- [x] `bind()` supports multicast group subscription
 - [ ] Optional: `getsockopt()` for discovery
 
 No networking-specific syscalls beyond this phase.

@@ -304,10 +304,10 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 15: TCP/IP IPv4 stack
     tcpip_init();
 
-    // Apply network interface configuration from /etc/interfaces.
-    // Must be after tcpip_init() — tcpip_init() resets the config to compiled-in
-    // defaults, so any config loaded here correctly overrides those defaults.
-    netcfg_apply();
+    // Network configuration is now managed by userspace via the 'walkies' tool
+    // using the netctl control plane (AF_BLUEY_NETCTL sockets).
+    // The /etc/interfaces file can still be used if desired, but configuration
+    // must be applied from userspace, not automatically by the kernel.
 
     // Step 16: ELF loader ready
     kprintf("%s\n", MSG_ELF_INIT);

@@ -134,13 +134,27 @@ int socket_bind(int socket_id, const char *path) {
     bluey_socket_t *sock;
     size_t path_len;
 
-    if (!socket_valid_id(socket_id) || !path || !path[0]) return -SOCKET_EINVAL;
+    if (!socket_valid_id(socket_id)) return -SOCKET_EINVAL;
+
+    sock = &socket_table[socket_id];
+
+    // For NETCTL sockets, delegate to netctl_socket_bind
+    // The "path" parameter is reinterpreted as a pointer to uint32_t groups
+    if (sock->domain == BLUEY_AF_NETCTL) {
+        // For netctl, bind is used to subscribe to multicast groups
+        // addr is actually a pointer to uint32_t containing group mask
+        if (!path) return -SOCKET_EINVAL;
+        uint32_t groups = *(const uint32_t *)path;
+        return netctl_socket_bind(socket_id, groups);
+    }
+
+    // For UNIX domain sockets, use path binding
+    if (!path || !path[0]) return -SOCKET_EINVAL;
     if (socket_path_in_use(path)) return -SOCKET_EADDRINUSE;
 
     path_len = strlen(path);
     if (path_len >= SOCKET_PATH_LEN) return -SOCKET_EINVAL;
 
-    sock = &socket_table[socket_id];
     if (sock->state != SOCKET_STATE_INIT && sock->state != SOCKET_STATE_BOUND) return -SOCKET_EINVAL;
 
     strncpy(sock->path, path, sizeof(sock->path) - 1);

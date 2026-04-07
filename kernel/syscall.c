@@ -999,9 +999,16 @@ static int32_t sys_socket_open(int domain, int type, int protocol) {
     int socket_id;
     int fd;
 
-    if (domain != BLUEY_AF_UNIX) return -BLUEY_EAFNOSUPPORT;
-    if (type != BLUEY_SOCK_STREAM) return -BLUEY_EPROTONOSUPPORT;
-    if (protocol != 0) return -BLUEY_EPROTONOSUPPORT;
+    // Support both AF_UNIX and AF_NETCTL families
+    if (domain == BLUEY_AF_UNIX) {
+        if (type != BLUEY_SOCK_STREAM) return -BLUEY_EPROTONOSUPPORT;
+        if (protocol != 0) return -BLUEY_EPROTONOSUPPORT;
+    } else if (domain == BLUEY_AF_NETCTL) {
+        if (type != BLUEY_SOCK_NETCTL) return -BLUEY_EPROTONOSUPPORT;
+        // protocol is passed to netctl for future extensibility
+    } else {
+        return -BLUEY_EAFNOSUPPORT;
+    }
 
     socket_id = socket_create(domain, type, protocol);
     if (socket_id < 0) return -BLUEY_ENOMEM;
@@ -1065,6 +1072,63 @@ static int32_t sys_socket_accept4(int fd, void *addr, uint32_t *addrlen, int fla
         return -BLUEY_EMFILE;
     }
     return newfd;
+}
+
+// Simple message header structure for sendmsg/recvmsg
+// For netctl sockets, iov[0] contains the message buffer
+struct bluey_msghdr {
+    void *msg_name;       // Optional address
+    uint32_t msg_namelen; // Size of address
+    struct bluey_iovec *msg_iov;   // Scatter/gather array
+    uint32_t msg_iovlen;  // Number of elements in msg_iov
+    void *msg_control;    // Ancillary data (not used)
+    uint32_t msg_controllen; // Ancillary data buffer length
+    int msg_flags;        // Flags on received message
+};
+
+struct bluey_iovec {
+    void *iov_base;       // Starting address
+    uint32_t iov_len;     // Number of bytes
+};
+
+static int32_t sys_sendmsg(int fd, const struct bluey_msghdr *msg, int flags) {
+    (void)flags;  // Flags not used for now
+
+    if (!msg || !msg->msg_iov || msg->msg_iovlen == 0) return -BLUEY_EINVAL;
+    if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
+
+    int socket_id = vfs_socket_id(fd);
+    if (socket_id < 0) return -BLUEY_EBADF;
+
+    // For now, only support single iovec
+    if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+
+    const struct bluey_iovec *iov = &msg->msg_iov[0];
+    if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+
+    // Use netctl_socket_send for netctl sockets
+    int rc = netctl_socket_send(socket_id, iov->iov_base, iov->iov_len);
+    return rc < 0 ? -BLUEY_EIO : rc;
+}
+
+static int32_t sys_recvmsg(int fd, struct bluey_msghdr *msg, int flags) {
+    (void)flags;  // Flags not used for now
+
+    if (!msg || !msg->msg_iov || msg->msg_iovlen == 0) return -BLUEY_EINVAL;
+    if (!vfs_fd_is_socket(fd)) return -BLUEY_ENOTSOCK;
+
+    int socket_id = vfs_socket_id(fd);
+    if (socket_id < 0) return -BLUEY_EBADF;
+
+    // For now, only support single iovec
+    if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+
+    struct bluey_iovec *iov = &msg->msg_iov[0];
+    if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+
+    // Use netctl_socket_recv for netctl sockets
+    int rc = netctl_socket_recv(socket_id, iov->iov_base, iov->iov_len);
+    return rc < 0 ? -BLUEY_EIO : rc;
 }
 
 static int32_t sys_socketcall(int call, uint32_t *args) {
@@ -2455,6 +2519,12 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_ACCEPT4:
             ret = sys_socket_accept4((int)regs->ebx, (void*)regs->ecx,
                                      (uint32_t*)regs->edx, (int)regs->esi);
+            break;
+        case SYS_SENDMSG:
+            ret = sys_sendmsg((int)regs->ebx, (const struct bluey_msghdr*)regs->ecx, (int)regs->edx);
+            break;
+        case SYS_RECVMSG:
+            ret = sys_recvmsg((int)regs->ebx, (struct bluey_msghdr*)regs->ecx, (int)regs->edx);
             break;
         /* ---- Device event channel --------------------------------------- */
         case SYS_DEVEV_OPEN:
