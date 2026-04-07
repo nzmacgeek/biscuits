@@ -31,6 +31,7 @@
 #include "scheduler.h"
 #include "signal.h"
 #include "syscall.h"
+#include "netctl.h"
 #include "multiuser.h"
 #include "smp.h"
 #include "sysinfo.h"
@@ -203,6 +204,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 10: VFS, FAT16, and BiscuitFS
     socket_init();
+    netctl_init();  // Network control plane (Netlink-inspired)
     vfs_init();
     vfs_register_fs(fat_get_filesystem());
     vfs_register_fs(biscuitfs_get_filesystem());

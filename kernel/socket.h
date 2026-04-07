@@ -3,7 +3,9 @@
 #include "../include/types.h"
 
 #define BLUEY_AF_UNIX      1
+#define BLUEY_AF_NETCTL    2  // Network control plane (Netlink-inspired)
 #define BLUEY_SOCK_STREAM  1
+#define BLUEY_SOCK_NETCTL  3  // Message-oriented netctl socket
 
 void socket_init(void);
 int  socket_create(int domain, int type, int protocol);

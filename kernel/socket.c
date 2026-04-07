@@ -1,4 +1,5 @@
 #include "socket.h"
+#include "netctl.h"
 
 #include "../lib/string.h"
 
@@ -102,6 +103,14 @@ int socket_create(int domain, int type, int protocol) {
     int socket_id;
     bluey_socket_t *sock;
 
+    // Handle NETCTL family separately
+    if (domain == BLUEY_AF_NETCTL) {
+        if (type != BLUEY_SOCK_NETCTL) return -1;
+        // Delegate to netctl subsystem
+        return netctl_socket_create(protocol);
+    }
+
+    // Handle UNIX domain sockets
     if (domain != BLUEY_AF_UNIX || type != BLUEY_SOCK_STREAM) return -1;
 
     socket_id = socket_alloc();
