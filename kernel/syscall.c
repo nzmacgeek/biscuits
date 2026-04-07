@@ -1458,17 +1458,34 @@ static int32_t sys_lseek(int fd, int32_t offset, int whence) {
  */
 static int32_t sys__llseek(uint32_t fd, uint32_t offset_hi, uint32_t offset_lo,
                           uint32_t result_ptr, int whence) {
+    /* Validate fd like sys_lseek. */
+    if ((int)fd < 0) return -BLUEY_EBADF;
+
+    /* Validate whence like sys_lseek. */
+    if (whence != VFS_SEEK_SET && whence != VFS_SEEK_CUR && whence != VFS_SEEK_END)
+        return -BLUEY_EINVAL;
+
     uint64_t off = ((uint64_t)offset_hi << 32) | (uint64_t)offset_lo;
 
     /* This kernel currently only supports 32-bit file offsets. Reject larger */
     if (off > 0xFFFFFFFFull) return -BLUEY_EINVAL;
 
-    int32_t newoff = vfs_lseek((int)fd, (int32_t)off, whence);
-    if (newoff < 0) return -BLUEY_EINVAL;
+    /* For VFS_SEEK_SET, a negative offset is always invalid. */
+    if (whence == VFS_SEEK_SET && (int32_t)off < 0) return -BLUEY_EINVAL;
 
     if (result_ptr == 0) return -BLUEY_EFAULT;
-    /* Write back the 32-bit result to the user-supplied pointer. */
+
+    int32_t newoff = vfs_lseek((int)fd, (int32_t)off, whence);
+    if (newoff < 0) return newoff; /* preserve real errno from vfs_lseek */
+
+    /* Write back the 32-bit result to the user-supplied pointer using the
+     * caller's page directory (same safe pattern as sys_prlimit64). */
+    process_t *caller = process_current();
+    if (!caller) return -BLUEY_EPERM;
+    uint32_t old_dir = paging_current_directory();
+    paging_switch_directory(caller->page_dir);
     *(uint32_t*)(uintptr_t)result_ptr = (uint32_t)newoff;
+    paging_switch_directory(old_dir);
     return 0;
 }
 

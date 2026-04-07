@@ -358,7 +358,9 @@ int vfs_open(const char *path, int flags) {
             fd_table[fd].fd_type = VFS_FD_TYPE_FILE; /* directory represented as file FD */
             fd_table[fd].fs_fd   = -1; /* no per-FS handle */
             fd_table[fd].offset  = 0;
+            fd_table[fd].fs_idx  = -1; /* initialise before scan */
             strncpy(fd_table[fd].path, path, VFS_PATH_LEN - 1);
+            fd_table[fd].path[VFS_PATH_LEN - 1] = '\0';
             // find mount index
             for (int i = 0; i < mount_count; i++) {
                 if (&mounts[i] == m) { fd_table[fd].fs_idx = i; break; }

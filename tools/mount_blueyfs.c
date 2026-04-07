@@ -654,7 +654,7 @@ int main(int argc, char **argv) {
 
     rc = blueyfs_load_filesystem(image_path, start_sector);
     if (rc != 0) {
-        fprintf(stderr, "failed to open BiscuitFS image %s: %s\n", image_path, strerror(-rc));
+        fprintf(stderr, "failed to open blueyfs image %s: %s\n", image_path, strerror(-rc));
         return 1;
     }
 
