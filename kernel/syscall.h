@@ -87,6 +87,8 @@
 #define SYS_CONNECT       362
 #define SYS_LISTEN        363
 #define SYS_ACCEPT4       364
+#define SYS_SENDMSG       366
+#define SYS_RECVMSG       367
 // chown/fchown/lchown 32-bit uid variants (used by musl on i386)
 #define SYS_LCHOWN32      198
 #define SYS_SETUID32      213

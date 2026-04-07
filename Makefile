@@ -210,6 +210,8 @@ I386_C_SOURCES = \
   kernel/sysinfo.c \
   kernel/tty.c \
   kernel/socket.c \
+  kernel/netctl.c \
+  kernel/netdev.c \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \
@@ -231,6 +233,8 @@ I386_C_SOURCES = \
     kernel/smp.c \
     kernel/tty.c \
     kernel/socket.c \
+    kernel/netctl.c \
+    kernel/netdev.c \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \

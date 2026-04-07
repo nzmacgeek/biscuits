@@ -9,88 +9,88 @@ compatibility.
 ---
 
 ## Phase 0 – Ground Rules
-- [ ] No ioctl-based networking control paths
-- [ ] Prefer socket-based IPC for kernel ↔ user control
-- [ ] Avoid bespoke networking syscalls where message passing suffices
-- [ ] Design for async notifications from day one
+- [x] No ioctl-based networking control paths
+- [x] Prefer socket-based IPC for kernel ↔ user control
+- [x] Avoid bespoke networking syscalls where message passing suffices
+- [x] Design for async notifications from day one
 
 ---
 
 ## Phase 1 – Netlink‑Like Control Plane (FOUNDATIONAL)
 
 ### Socket Family
-- [ ] Define a new socket family (e.g. `AF_BLUEY_NETCTL`)
-- [ ] Socket type is message-oriented
-- [ ] Kernel ↔ user space IPC via sockets only
+- [x] Define a new socket family (e.g. `AF_BLUEY_NETCTL`)
+- [x] Socket type is message-oriented
+- [x] Kernel ↔ user space IPC via sockets only
 
 ### Message Format
-- [ ] Message header:
-  - [ ] message type
-  - [ ] flags
-  - [ ] sequence number
-  - [ ] sender port / pid
-  - [ ] protocol version
-- [ ] Attribute system:
-  - [ ] TLV-style attributes
-  - [ ] Nestable attributes (optional but preferred)
-  - [ ] Unknown attributes safely ignored
+- [x] Message header:
+  - [x] message type
+  - [x] flags
+  - [x] sequence number
+  - [x] sender port / pid
+  - [x] protocol version
+- [x] Attribute system:
+  - [x] TLV-style attributes
+  - [x] Nestable attributes (optional but preferred)
+  - [x] Unknown attributes safely ignored
 
 ### Versioning & Capability Discovery
-- [ ] Kernel reports protocol version
-- [ ] Kernel reports supported message types
-- [ ] Optional capability flags via `getsockopt` or control message
+- [x] Kernel reports protocol version
+- [x] Kernel reports supported message types
+- [x] Optional capability flags via `getsockopt` or control message
 
 ---
 
 ## Phase 2 – Multicast / Group Subscription
 
-- [ ] Define multicast group identifiers:
-  - [ ] Link events
-  - [ ] Address events
-  - [ ] Route events
-- [ ] Allow sockets to subscribe to groups via `bind`
-- [ ] Kernel can broadcast events to subscribed sockets
-- [ ] User space subscribes once and reacts (no polling)
+- [x] Define multicast group identifiers:
+  - [x] Link events
+  - [x] Address events
+  - [x] Route events
+- [x] Allow sockets to subscribe to groups via `bind`
+- [x] Kernel can broadcast events to subscribed sockets
+- [x] User space subscribes once and reacts (no polling)
 
 ---
 
 ## Phase 3 – Core Kernel Networking Objects
 
 ### Network Device (`netdev`)
-- [ ] Device name
-- [ ] Interface index
-- [ ] Flags:
-  - [ ] UP
-  - [ ] RUNNING
-  - [ ] CARRIER
-- [ ] MTU
-- [ ] MAC address
-- [ ] Driver pointer / ops table
-- [ ] Reference counting or lifetime rules
+- [x] Device name
+- [x] Interface index
+- [x] Flags:
+  - [x] UP
+  - [x] RUNNING
+  - [x] CARRIER
+- [x] MTU
+- [x] MAC address
+- [x] Driver pointer / ops table
+- [x] Reference counting or lifetime rules
 
 ### Address Objects
-- [ ] Associated interface
-- [ ] Address family (e.g. IPv4 initially)
-- [ ] Prefix length
-- [ ] Multiple addresses per interface supported
+- [x] Associated interface
+- [x] Address family (e.g. IPv4 initially)
+- [x] Prefix length
+- [x] Multiple addresses per interface supported
 
 ### Routing Table
-- [ ] Destination prefix
-- [ ] Gateway
-- [ ] Output interface
-- [ ] Metric
-- [ ] Longest-prefix match lookup
+- [x] Destination prefix
+- [x] Gateway
+- [x] Output interface
+- [x] Metric
+- [x] Longest-prefix match lookup
 
 ---
 
 ## Phase 4 – Control Plane Operations
 
 ### Netdev Operations
-- [ ] Enumerate devices
-- [ ] Query device attributes
-- [ ] Bring interface UP/DOWN
-- [ ] Change MTU
-- [ ] Report link state
+- [x] Enumerate devices
+- [x] Query device attributes
+- [x] Bring interface UP/DOWN
+- [x] Change MTU
+- [x] Report link state
 
 ### Address Operations
 - [ ] Add address
@@ -108,19 +108,19 @@ All operations must be accessible via the Netlink-like socket.
 
 ## Phase 5 – Kernel → User Notifications (MANDATORY)
 
-- [ ] Emit event on link up/down
-- [ ] Emit event on carrier change
-- [ ] Emit event on address add/remove
-- [ ] Emit event on route add/remove
-- [ ] Events include enough attributes for user space to act
+- [x] Emit event on link up/down
+- [x] Emit event on carrier change
+- [x] Emit event on address add/remove
+- [x] Emit event on route add/remove
+- [x] Events include enough attributes for user space to act
 
 ---
 
 ## Phase 6 – Syscall Surface (MINIMAL)
 
-- [ ] `socket()` supports new control family
-- [ ] `sendmsg()` / `recvmsg()` supported
-- [ ] `bind()` supports multicast group subscription
+- [x] `socket()` supports new control family
+- [x] `sendmsg()` / `recvmsg()` supported
+- [x] `bind()` supports multicast group subscription
 - [ ] Optional: `getsockopt()` for discovery
 
 No networking-specific syscalls beyond this phase.

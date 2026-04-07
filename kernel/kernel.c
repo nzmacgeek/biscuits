@@ -31,6 +31,8 @@
 #include "scheduler.h"
 #include "signal.h"
 #include "syscall.h"
+#include "netctl.h"
+#include "netdev.h"
 #include "multiuser.h"
 #include "smp.h"
 #include "sysinfo.h"
@@ -203,6 +205,8 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 10: VFS, FAT16, and BiscuitFS
     socket_init();
+    netctl_init();  // Network control plane (Netlink-inspired)
+    netdev_init();  // Network device management
     vfs_init();
     vfs_register_fs(fat_get_filesystem());
     vfs_register_fs(biscuitfs_get_filesystem());
@@ -300,10 +304,10 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 15: TCP/IP IPv4 stack
     tcpip_init();
 
-    // Apply network interface configuration from /etc/interfaces.
-    // Must be after tcpip_init() — tcpip_init() resets the config to compiled-in
-    // defaults, so any config loaded here correctly overrides those defaults.
-    netcfg_apply();
+    // Network configuration is now managed by userspace via the 'walkies' tool
+    // using the netctl control plane (AF_BLUEY_NETCTL sockets).
+    // The /etc/interfaces file can still be used if desired, but configuration
+    // must be applied from userspace, not automatically by the kernel.
 
     // Step 16: ELF loader ready
     kprintf("%s\n", MSG_ELF_INIT);
