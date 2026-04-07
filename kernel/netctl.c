@@ -4,6 +4,7 @@
 // licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
 
 #include "netctl.h"
+#include "netdev.h"
 #include "../lib/string.h"
 #include "../lib/stdio.h"
 #include "kheap.h"
@@ -217,6 +218,144 @@ static int netctl_handle_get_version(const netctl_msg_header_t *req,
     return (int)resp->msg_len;
 }
 
+// Helper: Process NETDEV_LIST request
+static int netctl_handle_netdev_list(const netctl_msg_header_t *req,
+                                      void *response, size_t response_maxlen) {
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_NETDEV_LIST, 0, req->msg_seq, 0);
+
+    netdev_device_t *devs[NETDEV_MAX_DEVICES];
+    int count = 0;
+    netdev_list_all(devs, &count, NETDEV_MAX_DEVICES);
+
+    // Add each device as a set of attributes
+    for (int i = 0; i < count; i++) {
+        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_IFINDEX,
+                            &devs[i]->ifindex, sizeof(devs[i]->ifindex));
+        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_IFNAME,
+                            devs[i]->name, strlen(devs[i]->name) + 1);
+        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_FLAGS,
+                            &devs[i]->flags, sizeof(devs[i]->flags));
+        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_MTU,
+                            &devs[i]->mtu, sizeof(devs[i]->mtu));
+        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_MAC,
+                            devs[i]->mac, 6);
+        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_CARRIER,
+                            &devs[i]->carrier, sizeof(devs[i]->carrier));
+    }
+
+    return (int)resp->msg_len;
+}
+
+// Helper: Process NETDEV_GET request
+static int netctl_handle_netdev_get(const netctl_msg_header_t *req,
+                                     const void *msg, size_t len,
+                                     void *response, size_t response_maxlen) {
+    (void)len;  // Unused for now
+
+    // Extract ifindex from request attributes
+    const uint8_t *attr_data = (const uint8_t *)msg + sizeof(netctl_msg_header_t);
+    uint32_t remaining = req->msg_len - sizeof(netctl_msg_header_t);
+    uint32_t ifindex = 0;
+
+    while (remaining >= sizeof(netctl_attr_header_t)) {
+        const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_type == NETCTL_ATTR_IFINDEX && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&ifindex, attr_data + sizeof(netctl_attr_header_t), sizeof(uint32_t));
+            break;
+        }
+        uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
+        if (aligned_len > remaining) break;
+        attr_data += aligned_len;
+        remaining -= aligned_len;
+    }
+
+    netdev_device_t *dev = netdev_get_by_index(ifindex);
+    if (!dev) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Device not found");
+    }
+
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_NETDEV_GET, 0, req->msg_seq, 0);
+
+    netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_IFINDEX,
+                        &dev->ifindex, sizeof(dev->ifindex));
+    netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_IFNAME,
+                        dev->name, strlen(dev->name) + 1);
+    netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_FLAGS,
+                        &dev->flags, sizeof(dev->flags));
+    netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_MTU,
+                        &dev->mtu, sizeof(dev->mtu));
+    netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_MAC,
+                        dev->mac, 6);
+    netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_CARRIER,
+                        &dev->carrier, sizeof(dev->carrier));
+
+    return (int)resp->msg_len;
+}
+
+// Helper: Process NETDEV_SET request
+static int netctl_handle_netdev_set(const netctl_msg_header_t *req,
+                                     const void *msg, size_t len,
+                                     void *response, size_t response_maxlen) {
+    (void)len;
+
+    // Parse attributes
+    const uint8_t *attr_data = (const uint8_t *)msg + sizeof(netctl_msg_header_t);
+    uint32_t remaining = req->msg_len - sizeof(netctl_msg_header_t);
+    uint32_t ifindex = 0;
+    uint32_t flags = 0;
+    uint32_t mtu = 0;
+    int have_flags = 0;
+    int have_mtu = 0;
+
+    while (remaining >= sizeof(netctl_attr_header_t)) {
+        const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
+
+        if (attr->attr_type == NETCTL_ATTR_IFINDEX && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&ifindex, payload, sizeof(uint32_t));
+        } else if (attr->attr_type == NETCTL_ATTR_FLAGS && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&flags, payload, sizeof(uint32_t));
+            have_flags = 1;
+        } else if (attr->attr_type == NETCTL_ATTR_MTU && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&mtu, payload, sizeof(uint32_t));
+            have_mtu = 1;
+        }
+
+        uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
+        if (aligned_len > remaining) break;
+        attr_data += aligned_len;
+        remaining -= aligned_len;
+    }
+
+    if (ifindex == 0) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "No ifindex specified");
+    }
+
+    // Apply changes
+    if (have_flags) {
+        if (netdev_set_flags(ifindex, flags) < 0) {
+            return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                      -1, "Failed to set flags");
+        }
+    }
+
+    if (have_mtu) {
+        if (netdev_set_mtu(ifindex, mtu) < 0) {
+            return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                      -1, "Failed to set MTU");
+        }
+    }
+
+    // Send ACK
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_DONE, 0, req->msg_seq, 0);
+    return (int)resp->msg_len;
+}
+
 // Main message dispatcher
 int netctl_process_message(const void *msg, size_t len, void *response,
                            size_t response_maxlen) {
@@ -250,8 +389,14 @@ int netctl_process_message(const void *msg, size_t len, void *response,
             return netctl_handle_get_version(hdr, response, response_maxlen);
 
         case NETCTL_MSG_NETDEV_LIST:
+            return netctl_handle_netdev_list(hdr, response, response_maxlen);
+
         case NETCTL_MSG_NETDEV_GET:
+            return netctl_handle_netdev_get(hdr, msg, len, response, response_maxlen);
+
         case NETCTL_MSG_NETDEV_SET:
+            return netctl_handle_netdev_set(hdr, msg, len, response, response_maxlen);
+
         case NETCTL_MSG_ADDR_NEW:
         case NETCTL_MSG_ADDR_DEL:
         case NETCTL_MSG_ADDR_LIST:

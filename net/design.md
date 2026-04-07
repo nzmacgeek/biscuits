@@ -57,40 +57,40 @@ compatibility.
 ## Phase 3 – Core Kernel Networking Objects
 
 ### Network Device (`netdev`)
-- [ ] Device name
-- [ ] Interface index
-- [ ] Flags:
-  - [ ] UP
-  - [ ] RUNNING
-  - [ ] CARRIER
-- [ ] MTU
-- [ ] MAC address
-- [ ] Driver pointer / ops table
-- [ ] Reference counting or lifetime rules
+- [x] Device name
+- [x] Interface index
+- [x] Flags:
+  - [x] UP
+  - [x] RUNNING
+  - [x] CARRIER
+- [x] MTU
+- [x] MAC address
+- [x] Driver pointer / ops table
+- [x] Reference counting or lifetime rules
 
 ### Address Objects
-- [ ] Associated interface
-- [ ] Address family (e.g. IPv4 initially)
-- [ ] Prefix length
-- [ ] Multiple addresses per interface supported
+- [x] Associated interface
+- [x] Address family (e.g. IPv4 initially)
+- [x] Prefix length
+- [x] Multiple addresses per interface supported
 
 ### Routing Table
-- [ ] Destination prefix
-- [ ] Gateway
-- [ ] Output interface
-- [ ] Metric
-- [ ] Longest-prefix match lookup
+- [x] Destination prefix
+- [x] Gateway
+- [x] Output interface
+- [x] Metric
+- [x] Longest-prefix match lookup
 
 ---
 
 ## Phase 4 – Control Plane Operations
 
 ### Netdev Operations
-- [ ] Enumerate devices
-- [ ] Query device attributes
-- [ ] Bring interface UP/DOWN
-- [ ] Change MTU
-- [ ] Report link state
+- [x] Enumerate devices
+- [x] Query device attributes
+- [x] Bring interface UP/DOWN
+- [x] Change MTU
+- [x] Report link state
 
 ### Address Operations
 - [ ] Add address
@@ -108,11 +108,11 @@ All operations must be accessible via the Netlink-like socket.
 
 ## Phase 5 – Kernel → User Notifications (MANDATORY)
 
-- [ ] Emit event on link up/down
-- [ ] Emit event on carrier change
-- [ ] Emit event on address add/remove
-- [ ] Emit event on route add/remove
-- [ ] Events include enough attributes for user space to act
+- [x] Emit event on link up/down
+- [x] Emit event on carrier change
+- [x] Emit event on address add/remove
+- [x] Emit event on route add/remove
+- [x] Events include enough attributes for user space to act
 
 ---
 
