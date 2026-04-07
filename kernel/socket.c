@@ -119,7 +119,8 @@ int socket_create(int domain, int type, int protocol) {
         sock->state = SOCKET_STATE_INIT;
         sock->netctl_id = netctl_socket_create(protocol);
         if (sock->netctl_id < 0) {
-            socket_reset(sock);  // roll back the allocation
+            // Roll back: clear the socket_table slot (socket_reset sets used=0)
+            socket_reset(sock);
             return -1;
         }
         return socket_id;

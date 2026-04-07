@@ -15,6 +15,7 @@
 
 #define NETCTL_MAX_SOCKETS      16
 #define NETCTL_SOCKET_BUFFER    8192
+#define NETCTL_ERR_EAGAIN       11  // EAGAIN: RX ring full, caller should drain and retry
 
 typedef struct {
     int      used;
@@ -99,7 +100,7 @@ int netctl_socket_send(int socket_id, const void *msg, size_t len) {
     // Messages must be delivered atomically to preserve framing in the RX ring.
     // If the response cannot fit entirely, return -EAGAIN rather than truncating.
     if ((size_t)response_len > NETCTL_SOCKET_BUFFER - sock->rx_count) {
-        return -11;  // -EAGAIN: caller should drain the ring and retry
+        return -NETCTL_ERR_EAGAIN;  // caller should drain the ring and retry
     }
 
     for (int i = 0; i < response_len; i++) {
@@ -239,6 +240,7 @@ static int netctl_handle_netdev_list(const netctl_msg_header_t *req,
 
         netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_IFINDEX,
                             &devs[i]->ifindex, sizeof(devs[i]->ifindex));
+        // Name length is bounded by NETDEV_NAME_LEN (16), so the +1 fits in uint16_t
         netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_IFNAME,
                             devs[i]->name, (uint16_t)(strlen(devs[i]->name) + 1));
         netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_FLAGS,

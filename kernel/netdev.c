@@ -77,6 +77,7 @@ int netdev_unregister(uint32_t ifindex) {
                 netctl_msg_add_attr(del_msg, sizeof(del_msg),
                                     NETCTL_ATTR_IFNAME,
                                     devices[i].name,
+                                    // Name length is bounded by NETDEV_NAME_LEN (16)
                                     (uint16_t)(strlen(devices[i].name) + 1));
                 netctl_notify(NETCTL_GROUP_LINK, del_msg, del_hdr->msg_len);
 
@@ -402,6 +403,7 @@ void netdev_notify_link_change(uint32_t ifindex, uint32_t flags, uint8_t carrier
     // Include name, MTU, and MAC so subscribers get a complete snapshot
     netdev_device_t *dev = netdev_get_by_index(ifindex);
     if (dev) {
+        // Name length is bounded by NETDEV_NAME_LEN (16)
         netctl_msg_add_attr(msg_buf, sizeof(msg_buf), NETCTL_ATTR_IFNAME,
                             dev->name, (uint16_t)(strlen(dev->name) + 1));
         netctl_msg_add_attr(msg_buf, sizeof(msg_buf), NETCTL_ATTR_MTU,

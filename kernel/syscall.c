@@ -1132,8 +1132,8 @@ static int32_t sys_sendmsg(int fd, const struct bluey_msghdr *msg, int flags) {
     iov = (const struct bluey_iovec *)msg->msg_iov;
     if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
 
-    int rc = socket_netctl_send(socket_id, iov->iov_base, iov->iov_len);
-    return rc < 0 ? -BLUEY_EIO : rc;
+    int bytes_sent = socket_netctl_send(socket_id, iov->iov_base, iov->iov_len);
+    return bytes_sent < 0 ? -BLUEY_EIO : bytes_sent;
 }
 
 static int32_t sys_recvmsg(int fd, struct bluey_msghdr *msg, int flags) {
@@ -1155,8 +1155,8 @@ static int32_t sys_recvmsg(int fd, struct bluey_msghdr *msg, int flags) {
     iov = (struct bluey_iovec *)msg->msg_iov;
     if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
 
-    int rc = socket_netctl_recv(socket_id, iov->iov_base, iov->iov_len);
-    return rc < 0 ? -BLUEY_EIO : rc;
+    int bytes_received = socket_netctl_recv(socket_id, iov->iov_base, iov->iov_len);
+    return bytes_received < 0 ? -BLUEY_EIO : bytes_received;
 }
 
 static int32_t sys_socketcall(int call, uint32_t *args) {
