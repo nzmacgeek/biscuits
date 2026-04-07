@@ -34,6 +34,7 @@ typedef struct {
     uint32_t pending_head;
     uint32_t pending_tail;
     uint32_t pending_count;
+    int      netctl_id;    // For BLUEY_AF_NETCTL: underlying netctl socket id; -1 otherwise
     char     path[SOCKET_PATH_LEN];
     uint8_t  rx_buf[SOCKET_BUFFER_SIZE];
     uint32_t rx_head;
@@ -48,6 +49,7 @@ static void socket_reset(bluey_socket_t *sock) {
     memset(sock, 0, sizeof(*sock));
     sock->peer_id = -1;
     sock->listener_id = -1;
+    sock->netctl_id = -1;
 }
 
 static int socket_valid_id(int socket_id) {
@@ -103,11 +105,24 @@ int socket_create(int domain, int type, int protocol) {
     int socket_id;
     bluey_socket_t *sock;
 
-    // Handle NETCTL family separately
+    // Handle NETCTL family: allocate a socket_table entry AND a netctl socket
+    // so that all generic socket APIs (add_ref, close, etc.) work correctly
+    // and NETCTL ids cannot collide with AF_UNIX ids.
     if (domain == BLUEY_AF_NETCTL) {
         if (type != BLUEY_SOCK_NETCTL) return -1;
-        // Delegate to netctl subsystem
-        return netctl_socket_create(protocol);
+        socket_id = socket_alloc();
+        if (socket_id < 0) return -1;
+        sock = &socket_table[socket_id];
+        sock->domain = domain;
+        sock->type = type;
+        sock->protocol = protocol;
+        sock->state = SOCKET_STATE_INIT;
+        sock->netctl_id = netctl_socket_create(protocol);
+        if (sock->netctl_id < 0) {
+            socket_reset(sock);  // roll back the allocation
+            return -1;
+        }
+        return socket_id;
     }
 
     // Handle UNIX domain sockets
@@ -138,14 +153,12 @@ int socket_bind(int socket_id, const char *path) {
 
     sock = &socket_table[socket_id];
 
-    // For NETCTL sockets, delegate to netctl_socket_bind
-    // The "path" parameter is reinterpreted as a pointer to uint32_t groups
+    // For NETCTL sockets, bind subscribes to multicast groups.
+    // The "path" parameter carries a pointer to a uint32_t group mask.
     if (sock->domain == BLUEY_AF_NETCTL) {
-        // For netctl, bind is used to subscribe to multicast groups
-        // addr is actually a pointer to uint32_t containing group mask
         if (!path) return -SOCKET_EINVAL;
         uint32_t groups = *(const uint32_t *)path;
-        return netctl_socket_bind(socket_id, groups);
+        return netctl_socket_bind(sock->netctl_id, groups);
     }
 
     // For UNIX domain sockets, use path binding
@@ -247,6 +260,14 @@ int socket_close(int socket_id) {
         if (sock->refcount > 0) return 0;
     }
 
+    // For NETCTL sockets, release the underlying netctl socket
+    if (sock->domain == BLUEY_AF_NETCTL && sock->netctl_id >= 0) {
+        netctl_socket_close(sock->netctl_id);
+        sock->netctl_id = -1;
+        socket_reset(sock);
+        return 0;
+    }
+
     peer_id = sock->peer_id;
     if (peer_id >= 0 && socket_valid_id(peer_id)) {
         socket_table[peer_id].peer_id = -1;
@@ -318,4 +339,23 @@ int socket_is_writable(int socket_id) {
     if (sock->state != SOCKET_STATE_CONNECTED) return 0;
     if (!socket_valid_id(sock->peer_id)) return 0;
     return socket_table[sock->peer_id].rx_count < SOCKET_BUFFER_SIZE;
+}
+
+int socket_is_netctl(int socket_id) {
+    if (!socket_valid_id(socket_id)) return 0;
+    return socket_table[socket_id].domain == BLUEY_AF_NETCTL;
+}
+
+int socket_netctl_send(int socket_id, const void *msg, size_t len) {
+    if (!socket_valid_id(socket_id)) return -1;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_NETCTL || sock->netctl_id < 0) return -1;
+    return netctl_socket_send(sock->netctl_id, msg, len);
+}
+
+int socket_netctl_recv(int socket_id, void *buf, size_t len) {
+    if (!socket_valid_id(socket_id)) return -1;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_NETCTL || sock->netctl_id < 0) return -1;
+    return netctl_socket_recv(sock->netctl_id, buf, len);
 }

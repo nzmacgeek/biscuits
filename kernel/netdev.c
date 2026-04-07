@@ -65,6 +65,21 @@ int netdev_unregister(uint32_t ifindex) {
                 kprintf("[NETDEV] Unregistered %s (ifindex=%u)\n",
                         devices[i].name, devices[i].ifindex);
 
+                // Notify listeners before the device slot is cleared
+                uint8_t del_msg[128];
+                netctl_msg_header_t *del_hdr = (netctl_msg_header_t *)del_msg;
+                netctl_msg_init(del_hdr, NETCTL_MSG_NETDEV_DEL,
+                                NETCTL_FLAG_MULTICAST, 0, 0);
+                netctl_msg_add_attr(del_msg, sizeof(del_msg),
+                                    NETCTL_ATTR_IFINDEX,
+                                    &devices[i].ifindex,
+                                    sizeof(devices[i].ifindex));
+                netctl_msg_add_attr(del_msg, sizeof(del_msg),
+                                    NETCTL_ATTR_IFNAME,
+                                    devices[i].name,
+                                    (uint16_t)(strlen(devices[i].name) + 1));
+                netctl_notify(NETCTL_GROUP_LINK, del_msg, del_hdr->msg_len);
+
                 // Remove all addresses associated with this interface
                 for (int j = 0; j < NETDEV_MAX_DEVICES * NETDEV_MAX_ADDRS; j++) {
                     if (addresses[j].used && addresses[j].ifindex == ifindex) {
@@ -258,6 +273,9 @@ int netdev_route_add(uint16_t family, const void *dest, uint8_t prefix_len,
                      const void *gateway, uint32_t oif, uint32_t metric) {
     if (!dest) return -1;
 
+    // Validate prefix length for IPv4
+    if (family == NETDEV_AF_INET && prefix_len > 32) return -1;
+
     // Verify output interface exists if specified
     if (oif != 0 && !netdev_get_by_index(oif)) return -1;
 
@@ -336,19 +354,22 @@ netdev_route_t *netdev_route_lookup(uint16_t family, const void *dest) {
         if (!routes[i].used) continue;
         if (routes[i].family != family) continue;
 
+        uint8_t prefix_len = routes[i].prefix_len;
+        if (prefix_len > 32) continue;  // guard against UB from invalid shift
+
         // Create mask for this route's prefix length
         uint32_t mask = 0;
-        if (routes[i].prefix_len > 0) {
-            mask = ~((1u << (32 - routes[i].prefix_len)) - 1);
+        if (prefix_len > 0) {
+            mask = ~((1u << (32 - prefix_len)) - 1);
         }
 
         // Check if destination matches this route's prefix
         if ((dest_ip & mask) == (routes[i].dest.ipv4 & mask)) {
             // Prefer longer prefix (more specific route)
-            if ((int)routes[i].prefix_len > best_prefix) {
+            if ((int)prefix_len > best_prefix) {
                 best = &routes[i];
-                best_prefix = routes[i].prefix_len;
-            } else if ((int)routes[i].prefix_len == best_prefix && best) {
+                best_prefix = (int)prefix_len;
+            } else if ((int)prefix_len == best_prefix && best) {
                 // Same prefix length: prefer lower metric
                 if (routes[i].metric < best->metric) {
                     best = &routes[i];
@@ -365,7 +386,8 @@ netdev_route_t *netdev_route_lookup(uint16_t family, const void *dest) {
 // ============================================================================
 
 void netdev_notify_link_change(uint32_t ifindex, uint32_t flags, uint8_t carrier) {
-    // Build a NETDEV_NEW or link change notification
+    // Build a link change notification; include all device attributes so
+    // subscribers can act without a separate NETDEV_GET round-trip.
     uint8_t msg_buf[256];
     netctl_msg_header_t *hdr = (netctl_msg_header_t *)msg_buf;
 
@@ -376,6 +398,17 @@ void netdev_notify_link_change(uint32_t ifindex, uint32_t flags, uint8_t carrier
                         &flags, sizeof(flags));
     netctl_msg_add_attr(msg_buf, sizeof(msg_buf), NETCTL_ATTR_CARRIER,
                         &carrier, sizeof(carrier));
+
+    // Include name, MTU, and MAC so subscribers get a complete snapshot
+    netdev_device_t *dev = netdev_get_by_index(ifindex);
+    if (dev) {
+        netctl_msg_add_attr(msg_buf, sizeof(msg_buf), NETCTL_ATTR_IFNAME,
+                            dev->name, (uint16_t)(strlen(dev->name) + 1));
+        netctl_msg_add_attr(msg_buf, sizeof(msg_buf), NETCTL_ATTR_MTU,
+                            &dev->mtu, sizeof(dev->mtu));
+        netctl_msg_add_attr(msg_buf, sizeof(msg_buf), NETCTL_ATTR_MAC,
+                            dev->mac, 6);
+    }
 
     netctl_notify(NETCTL_GROUP_LINK, msg_buf, hdr->msg_len);
 }

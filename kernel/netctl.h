@@ -84,6 +84,7 @@ typedef struct {
 // Attribute types - generic
 #define NETCTL_ATTR_UNSPEC      0   // Unspecified (padding)
 #define NETCTL_ATTR_NESTED      1   // Nested attributes
+#define NETCTL_ATTR_VERSION     5   // Protocol version (uint16_t)
 
 // Attribute types - netdev
 #define NETCTL_ATTR_IFINDEX     10  // Interface index (uint32_t)
@@ -105,12 +106,17 @@ typedef struct {
 #define NETCTL_ATTR_ROUTE_METRIC 33 // Route metric (uint32_t)
 
 // TLV attribute header
+// attr_len stores the actual attribute length (header + payload), NOT including
+// any trailing padding bytes. Padding is added when advancing to the next
+// attribute so that each attribute starts on a 4-byte boundary.
 typedef struct {
-    uint16_t attr_len;     // Length including header (must be 4-byte aligned)
+    uint16_t attr_len;     // Length including header; not required to be 4-byte aligned
     uint16_t attr_type;    // Attribute type
 } netctl_attr_header_t;
 
 // Attribute alignment
+// NETCTL_ATTR_ALIGN() rounds a length up to the padded size used for stepping
+// to the next attribute. The length stored in attr_len remains unaligned.
 #define NETCTL_ATTR_ALIGN(len)  (((len) + 3) & ~3)
 #define NETCTL_ATTR_HDRLEN      sizeof(netctl_attr_header_t)
 #define NETCTL_ATTR_LENGTH(payload_len) \

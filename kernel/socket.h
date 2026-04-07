@@ -19,3 +19,8 @@ int  socket_read(int socket_id, uint8_t *buf, size_t len);
 int  socket_write(int socket_id, const uint8_t *buf, size_t len);
 int  socket_is_readable(int socket_id);
 int  socket_is_writable(int socket_id);
+
+// NETCTL socket helpers
+int  socket_is_netctl(int socket_id);
+int  socket_netctl_send(int socket_id, const void *msg, size_t len);
+int  socket_netctl_recv(int socket_id, void *buf, size_t len);

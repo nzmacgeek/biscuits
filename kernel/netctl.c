@@ -96,19 +96,19 @@ int netctl_socket_send(int socket_id, const void *msg, size_t len) {
 
     netctl_socket_t *sock = &socket_table[socket_id];
 
-    // Copy response to RX buffer
-    size_t to_copy = (size_t)response_len;
-    if (to_copy > NETCTL_SOCKET_BUFFER - sock->rx_count) {
-        to_copy = NETCTL_SOCKET_BUFFER - sock->rx_count;
+    // Messages must be delivered atomically to preserve framing in the RX ring.
+    // If the response cannot fit entirely, return -EAGAIN rather than truncating.
+    if ((size_t)response_len > NETCTL_SOCKET_BUFFER - sock->rx_count) {
+        return -11;  // -EAGAIN: caller should drain the ring and retry
     }
 
-    for (size_t i = 0; i < to_copy; i++) {
+    for (int i = 0; i < response_len; i++) {
         sock->rx_buf[sock->rx_head] = response_buf[i];
         sock->rx_head = (sock->rx_head + 1) % NETCTL_SOCKET_BUFFER;
         sock->rx_count++;
     }
 
-    return (int)to_copy;
+    return response_len;
 }
 
 int netctl_socket_recv(int socket_id, void *buf, size_t len) {
@@ -209,7 +209,7 @@ static int netctl_handle_get_version(const netctl_msg_header_t *req,
 
     uint16_t version = NETCTL_PROTOCOL_VERSION;
     if (netctl_msg_add_attr(response, response_maxlen,
-                            NETCTL_ATTR_IFINDEX,  // Reusing as generic value
+                            NETCTL_ATTR_VERSION,
                             &version, sizeof(version)) < 0) {
         return netctl_build_error(response, response_maxlen, req->msg_seq,
                                   -1, "Buffer too small");
@@ -228,20 +228,34 @@ static int netctl_handle_netdev_list(const netctl_msg_header_t *req,
     int count = 0;
     netdev_list_all(devs, &count, NETDEV_MAX_DEVICES);
 
-    // Add each device as a set of attributes
+    // Wrap each device's attributes in a NETCTL_ATTR_NESTED container so
+    // consumers can parse the list robustly regardless of attribute order.
     for (int i = 0; i < count; i++) {
-        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_IFINDEX,
+        // Build this device's attributes in a temporary buffer.
+        // Use a fake msg_header at the front so we can reuse netctl_msg_add_attr.
+        uint8_t dev_msg[192];
+        netctl_msg_header_t *dev_hdr = (netctl_msg_header_t *)dev_msg;
+        netctl_msg_init(dev_hdr, 0, 0, 0, 0);
+
+        netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_IFINDEX,
                             &devs[i]->ifindex, sizeof(devs[i]->ifindex));
-        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_IFNAME,
-                            devs[i]->name, strlen(devs[i]->name) + 1);
-        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_FLAGS,
+        netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_IFNAME,
+                            devs[i]->name, (uint16_t)(strlen(devs[i]->name) + 1));
+        netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_FLAGS,
                             &devs[i]->flags, sizeof(devs[i]->flags));
-        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_MTU,
+        netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_MTU,
                             &devs[i]->mtu, sizeof(devs[i]->mtu));
-        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_MAC,
+        netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_MAC,
                             devs[i]->mac, 6);
-        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_CARRIER,
+        netctl_msg_add_attr(dev_msg, sizeof(dev_msg), NETCTL_ATTR_CARRIER,
                             &devs[i]->carrier, sizeof(devs[i]->carrier));
+
+        // Payload is everything after the fake header
+        const uint8_t *payload = dev_msg + sizeof(netctl_msg_header_t);
+        uint16_t payload_len = (uint16_t)(dev_hdr->msg_len - sizeof(netctl_msg_header_t));
+
+        netctl_msg_add_attr(response, response_maxlen, NETCTL_ATTR_NESTED,
+                            payload, payload_len);
     }
 
     return (int)resp->msg_len;
@@ -371,8 +385,8 @@ int netctl_process_message(const void *msg, size_t len, void *response,
                                   -1, "Protocol version mismatch");
     }
 
-    // Validate message length
-    if (hdr->msg_len > len) {
+    // Validate message length (must be at least a full header, and no larger than input)
+    if (hdr->msg_len < sizeof(netctl_msg_header_t) || hdr->msg_len > len) {
         return netctl_build_error(response, response_maxlen, hdr->msg_seq,
                                   -1, "Invalid message length");
     }
@@ -420,21 +434,23 @@ int netctl_process_message(const void *msg, size_t len, void *response,
 void netctl_notify(uint32_t groups, const void *msg, size_t len) {
     if (!msg || len == 0) return;
 
+    // Messages must be delivered atomically to preserve framing in the RX ring.
+    // If a message cannot fit in a socket buffer, skip delivery to that socket.
+    if (len > NETCTL_SOCKET_BUFFER) return;
+
     // Send to all sockets subscribed to any of the specified groups
     for (int i = 0; i < NETCTL_MAX_SOCKETS; i++) {
         if (!socket_table[i].used) continue;
         if ((socket_table[i].groups & groups) == 0) continue;
 
         netctl_socket_t *sock = &socket_table[i];
+        size_t free_space = NETCTL_SOCKET_BUFFER - sock->rx_count;
 
-        // Copy message to socket RX buffer
-        size_t to_copy = len;
-        if (to_copy > NETCTL_SOCKET_BUFFER - sock->rx_count) {
-            to_copy = NETCTL_SOCKET_BUFFER - sock->rx_count;
-        }
+        // Preserve message atomicity: do not enqueue partial notifications.
+        if (len > free_space) continue;
 
         const uint8_t *msg_bytes = (const uint8_t *)msg;
-        for (size_t j = 0; j < to_copy; j++) {
+        for (size_t j = 0; j < len; j++) {
             sock->rx_buf[sock->rx_head] = msg_bytes[j];
             sock->rx_head = (sock->rx_head + 1) % NETCTL_SOCKET_BUFFER;
             sock->rx_count++;
