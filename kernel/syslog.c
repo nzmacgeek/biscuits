@@ -264,9 +264,10 @@ void syslog_flush_to_fs(void) {
     }
     vga_set_color(VGA_WHITE, VGA_BLACK);
 #endif
-    // Ensure /var and /var/log directories exist (best-effort, ignore errors)
+    // Ensure /var, /var/log, and /var/run directories exist (best-effort, ignore errors)
     vfs_mkdir("/var");
     vfs_mkdir("/var/log");
+    vfs_mkdir("/var/run");
 
     // Open (or create+truncate) the log file
     int fd = vfs_open(KERNEL_LOG_PATH, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC);
