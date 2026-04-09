@@ -3,25 +3,25 @@
 // Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
 // licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
 
-#define SYS_WRITE        4
-#define SYS_OPEN         5
-#define SYS_CLOSE        6
-#define SYS_READ        63
+#define SYS_READ         0
+#define SYS_WRITE        1
+#define SYS_OPEN         2
+#define SYS_CLOSE        3
 #define SYS_INIT_MODULE 128
-#define SYS_EXIT        93
+#define SYS_EXIT        60
 
 #define O_RDONLY 0
 
 // System call wrapper
 static inline int syscall1(int num, int arg1) {
     int ret;
-    asm volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1));
+    asm volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1) : "memory");
     return ret;
 }
 
 static inline int syscall3(int num, int arg1, int arg2, int arg3) {
     int ret;
-    asm volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3));
+    asm volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3) : "memory");
     return ret;
 }
 
@@ -47,9 +47,21 @@ static int read_file(const char *path, char *buffer, int max_size) {
 
     int total = 0;
     while (total < max_size) {
-        int n = syscall3(SYS_READ, fd, (int)(buffer + total), 4096);
+        int remaining = max_size - total;
+        int chunk = remaining < 4096 ? remaining : 4096;
+        int n = syscall3(SYS_READ, fd, (int)(buffer + total), chunk);
         if (n <= 0) break;
         total += n;
+    }
+
+    if (total == max_size) {
+        char extra;
+        int n = syscall3(SYS_READ, fd, (int)&extra, 1);
+        if (n > 0) {
+            my_write(2, "insmod: module file too large\n");
+            syscall1(SYS_CLOSE, fd);
+            return -1;
+        }
     }
 
     syscall1(SYS_CLOSE, fd);

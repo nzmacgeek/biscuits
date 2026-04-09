@@ -3,20 +3,20 @@
 // Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
 // licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
 
-#define SYS_WRITE         4
+#define SYS_WRITE         1
 #define SYS_DELETE_MODULE 129
-#define SYS_EXIT          93
+#define SYS_EXIT          60
 
 // System call wrapper
 static inline int syscall1(int num, int arg1) {
     int ret;
-    asm volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1));
+    asm volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1) : "memory");
     return ret;
 }
 
 static inline int syscall3(int num, int arg1, int arg2, int arg3) {
     int ret;
-    asm volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3));
+    asm volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3) : "memory");
     return ret;
 }
 

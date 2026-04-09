@@ -104,6 +104,17 @@ int module_elf_load(const uint8_t *data, size_t len, void **base_out, size_t *si
     }
 
     // Calculate total size needed - sum of all allocated sections
+    // Validate section header table is fully within data
+    if (ehdr->e_shentsize < sizeof(elf32_shdr_t)) {
+        kprintf("[MODELF] Invalid e_shentsize %u\n", ehdr->e_shentsize);
+        return -1;
+    }
+    if (ehdr->e_shoff > len ||
+        (size_t)ehdr->e_shnum * ehdr->e_shentsize > len - ehdr->e_shoff) {
+        kprintf("[MODELF] Section header table out of bounds\n");
+        return -1;
+    }
+
     elf32_shdr_t *shdr = (elf32_shdr_t *)(data + ehdr->e_shoff);
     size_t total_size = 0;
     uint32_t *section_addrs = NULL;
@@ -156,14 +167,19 @@ int module_elf_load(const uint8_t *data, size_t len, void **base_out, size_t *si
         section_addrs[i] = (uint32_t)module_mem + offset;
 
         if (shdr[i].sh_type == SHT_PROGBITS) {
-            // Copy section data
-            if (shdr[i].sh_offset + shdr[i].sh_size <= len) {
-                memcpy((void*)section_addrs[i],
-                       data + shdr[i].sh_offset,
-                       shdr[i].sh_size);
-                kprintf("[MODELF] Loaded section %d at 0x%x (size %u)\n",
-                        i, section_addrs[i], shdr[i].sh_size);
+            // Copy section data - validate file range first
+            if (shdr[i].sh_offset > len || shdr[i].sh_size > len - shdr[i].sh_offset) {
+                kprintf("[MODELF] Section %d has invalid file range (offset %u size %u, len %u)\n",
+                        i, shdr[i].sh_offset, shdr[i].sh_size, (uint32_t)len);
+                kheap_free(module_mem);
+                kheap_free(section_addrs);
+                return -1;
             }
+            memcpy((void*)section_addrs[i],
+                   data + shdr[i].sh_offset,
+                   shdr[i].sh_size);
+            kprintf("[MODELF] Loaded section %d at 0x%x (size %u)\n",
+                    i, section_addrs[i], shdr[i].sh_size);
         } else if (shdr[i].sh_type == SHT_NOBITS) {
             // BSS - already zeroed
             kprintf("[MODELF] BSS section %d at 0x%x (size %u)\n",
@@ -190,66 +206,94 @@ int module_elf_load(const uint8_t *data, size_t len, void **base_out, size_t *si
     for (int i = 0; i < ehdr->e_shnum; i++) {
         if (shdr[i].sh_type != SHT_REL && shdr[i].sh_type != SHT_RELA) continue;
 
+        // Reject RELA sections - only REL is supported on i386
+        if (shdr[i].sh_type == SHT_RELA) {
+            kprintf("[MODELF] ERROR: RELA relocations not supported (section %d)\n", i);
+            kheap_free(module_mem);
+            kheap_free(section_addrs);
+            return -1;
+        }
+
         // Get target section
         if (shdr[i].sh_info >= ehdr->e_shnum) continue;
         if (!section_addrs[shdr[i].sh_info]) continue;
 
+        // Validate relocation section data is within bounds
+        if (shdr[i].sh_offset > len || shdr[i].sh_size > len - shdr[i].sh_offset) {
+            kprintf("[MODELF] Relocation section %d out of bounds\n", i);
+            kheap_free(module_mem);
+            kheap_free(section_addrs);
+            return -1;
+        }
+
         kprintf("[MODELF] Processing relocations for section %d\n", shdr[i].sh_info);
 
-        if (shdr[i].sh_type == SHT_REL) {
-            elf32_rel_t *rel = (elf32_rel_t*)(data + shdr[i].sh_offset);
-            int num_rels = shdr[i].sh_size / sizeof(elf32_rel_t);
+        elf32_rel_t *rel = (elf32_rel_t*)(data + shdr[i].sh_offset);
+        int num_rels = shdr[i].sh_size / sizeof(elf32_rel_t);
+        uint32_t target_section_size = shdr[shdr[i].sh_info].sh_size;
 
-            for (int j = 0; j < num_rels; j++) {
-                uint32_t sym_idx = ELF32_R_SYM(rel[j].r_info);
-                uint32_t rel_type = ELF32_R_TYPE(rel[j].r_info);
-                uint32_t *ref = (uint32_t*)(section_addrs[shdr[i].sh_info] + rel[j].r_offset);
+        for (int j = 0; j < num_rels; j++) {
+            uint32_t sym_idx = ELF32_R_SYM(rel[j].r_info);
+            uint32_t rel_type = ELF32_R_TYPE(rel[j].r_info);
 
-                // Get symbol
-                elf32_sym_t *sym = NULL;
-                if (symtab && sym_idx < (symtab->sh_size / sizeof(elf32_sym_t))) {
-                    sym = (elf32_sym_t*)(data + symtab->sh_offset) + sym_idx;
-                }
+            // Bounds-check the relocation target within the target section
+            if (rel[j].r_offset + sizeof(uint32_t) > target_section_size) {
+                kprintf("[MODELF] Relocation %d offset 0x%x out of section bounds\n",
+                        j, rel[j].r_offset);
+                kheap_free(module_mem);
+                kheap_free(section_addrs);
+                return -1;
+            }
 
-                uint32_t sym_addr = 0;
-                if (sym) {
-                    if (sym->st_shndx == SHN_UNDEF) {
-                        // External symbol - look up in kernel symbol table
-                        const char *sym_name = strtab ? strtab + sym->st_name : NULL;
-                        if (sym_name) {
-                            void *addr = ksym_lookup(sym_name);
-                            if (addr) {
-                                sym_addr = (uint32_t)addr;
-                            } else {
-                                kprintf("[MODELF] WARNING: Undefined symbol '%s'\n", sym_name);
-                            }
+            uint32_t *ref = (uint32_t*)(section_addrs[shdr[i].sh_info] + rel[j].r_offset);
+
+            // Get symbol
+            elf32_sym_t *sym = NULL;
+            if (symtab && sym_idx < (symtab->sh_size / sizeof(elf32_sym_t))) {
+                sym = (elf32_sym_t*)(data + symtab->sh_offset) + sym_idx;
+            }
+
+            uint32_t sym_addr = 0;
+            if (sym) {
+                if (sym->st_shndx == SHN_UNDEF) {
+                    // External symbol - look up in kernel symbol table
+                    const char *sym_name = strtab ? strtab + sym->st_name : NULL;
+                    if (sym_name) {
+                        void *addr = ksym_lookup(sym_name);
+                        if (addr) {
+                            sym_addr = (uint32_t)addr;
+                        } else {
+                            kprintf("[MODELF] ERROR: Undefined symbol '%s'\n", sym_name);
+                            kheap_free(module_mem);
+                            kheap_free(section_addrs);
+                            return -1;
                         }
-                    } else if (sym->st_shndx < ehdr->e_shnum && section_addrs[sym->st_shndx]) {
-                        // Internal symbol
-                        sym_addr = section_addrs[sym->st_shndx] + sym->st_value;
                     }
+                } else if (sym->st_shndx < ehdr->e_shnum && section_addrs[sym->st_shndx]) {
+                    // Internal symbol
+                    sym_addr = section_addrs[sym->st_shndx] + sym->st_value;
                 }
+            }
 
-                // Apply relocation
-                switch (rel_type) {
-                    case R_386_NONE:
-                        break;
-                    case R_386_32:
-                        // Direct 32-bit: S + A
-                        *ref += sym_addr;
-                        break;
-                    case R_386_PC32:
-                        // PC-relative: S + A - P
-                        *ref += sym_addr - (uint32_t)ref;
-                        break;
-                    case R_386_RELATIVE:
-                        // Adjust by program base: B + A
-                        *ref += (uint32_t)module_mem;
-                        break;
-                    default:
-                        kprintf("[MODELF] WARNING: Unsupported relocation type %d\n", rel_type);
-                        break;
-                }
+            // Apply relocation
+            switch (rel_type) {
+                case R_386_NONE:
+                    break;
+                case R_386_32:
+                    // Direct 32-bit: S + A
+                    *ref += sym_addr;
+                    break;
+                case R_386_PC32:
+                    // PC-relative: S + A - P
+                    *ref += sym_addr - (uint32_t)ref;
+                    break;
+                case R_386_RELATIVE:
+                    // Adjust by program base: B + A
+                    *ref += (uint32_t)module_mem;
+                    break;
+                default:
+                    kprintf("[MODELF] WARNING: Unsupported relocation type %d\n", rel_type);
+                    break;
             }
         }
     }

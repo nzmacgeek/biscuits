@@ -2350,13 +2350,16 @@ static int32_t sys_reboot(uint32_t magic1, uint32_t magic2, uint32_t cmd) {
     return 0;
 }
 
-#define BLUEY_ENOMEM 12
-
 // Module loading syscalls
+#define MODULE_IMAGE_MAX (1024 * 1024)  // 1 MB max module image size
+
 static int32_t sys_init_module(const void *module_image, uint32_t len, const char *param_values) {
     (void)param_values; // Parameters not yet implemented
 
     if (!module_image || len == 0) return -BLUEY_EINVAL;
+
+    // Enforce sane maximum module image size
+    if (len > MODULE_IMAGE_MAX) return -BLUEY_E2BIG;
 
     // For security, only allow root to load modules
     if (multiuser_current_uid() != 0) return -BLUEY_EPERM;
@@ -2369,12 +2372,13 @@ static int32_t sys_init_module(const void *module_image, uint32_t len, const cha
 
     kprintf("[SYS]  Loading module from memory (len=%u)\n", len);
 
-    // Try to load as a named module
-    int result = module_load_from_memory("usermodule", buffer, len);
+    // Use a placeholder name; module_load_from_memory will update it from module_info
+    int result = module_load_from_memory(NULL, buffer, len);
 
     kheap_free(buffer);
 
-    return result;
+    if (result < 0) return -BLUEY_EINVAL;
+    return 0;
 }
 
 static int32_t sys_delete_module(const char *name, uint32_t flags) {
@@ -2385,7 +2389,9 @@ static int32_t sys_delete_module(const char *name, uint32_t flags) {
     // For security, only allow root to unload modules
     if (multiuser_current_uid() != 0) return -BLUEY_EPERM;
 
-    return module_unload(name);
+    int result = module_unload(name);
+    if (result < 0) return -BLUEY_ENOENT;
+    return 0;
 }
 
 

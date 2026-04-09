@@ -16,8 +16,6 @@ static uint8_t  el3_mac[6];
 
 static void el3_write16(uint16_t reg, uint16_t val) { outw(el3_base + reg, val); }
 static uint16_t el3_read16(uint16_t reg) { return inw(el3_base + reg); }
-static void el3_write8(uint16_t reg, uint8_t val) { outb(el3_base + reg, val); }
-static uint8_t el3_read8(uint16_t reg) { return inb(el3_base + reg); }
 
 // Send ID sequence to activate 3c509
 static void el3_send_id_sequence(void) {

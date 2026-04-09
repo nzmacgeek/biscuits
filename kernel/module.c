@@ -98,15 +98,38 @@ void module_list(void) {
 }
 
 // Dynamic module loading from memory buffer
+// If name is NULL, the name is derived from the module's embedded module_info.name
 int module_load_from_memory(const char *name, const uint8_t *data, size_t len) {
-    if (!name || !data || len == 0) {
+    if (!data || len == 0) {
         kprintf("[MOD]  Invalid parameters for module_load_from_memory\n");
         return -1;
     }
 
-    // Check if module already loaded
-    if (module_find(name)) {
-        kprintf("[MOD]  Module '%s' already loaded\n", name);
+    // Load ELF module first to get module_info (and hence the real name)
+    void *base = NULL;
+    size_t size = 0;
+    module_info_t *info = NULL;
+
+    if (module_elf_load(data, len, &base, &size, &info) != 0) {
+        kprintf("[MOD]  Failed to load ELF module\n");
+        return -1;
+    }
+
+    // Determine module name: prefer embedded module_info.name over caller-supplied name
+    const char *effective_name = name;
+    if (info && info->name && info->name[0]) {
+        effective_name = info->name;
+    }
+    if (!effective_name || !effective_name[0]) {
+        kprintf("[MOD]  Cannot determine module name\n");
+        module_elf_unload(base, size);
+        return -1;
+    }
+
+    // Check if module already loaded (now that we know the real name)
+    if (module_find(effective_name)) {
+        kprintf("[MOD]  Module '%s' already loaded\n", effective_name);
+        module_elf_unload(base, size);
         return -1;
     }
 
@@ -114,6 +137,7 @@ int module_load_from_memory(const char *name, const uint8_t *data, size_t len) {
     module_t *mod = (module_t*)kheap_alloc(sizeof(module_t), 0);
     if (!mod) {
         kprintf("[MOD]  Failed to allocate module structure\n");
+        module_elf_unload(base, size);
         return -1;
     }
 
@@ -121,27 +145,16 @@ int module_load_from_memory(const char *name, const uint8_t *data, size_t len) {
     mod->is_dynamic = 1;
 
     // Allocate name copy
-    size_t name_len = strlen(name);
+    size_t name_len = strlen(effective_name);
     char *name_copy = (char*)kheap_alloc(name_len + 1, 0);
     if (!name_copy) {
         kheap_free(mod);
+        module_elf_unload(base, size);
         return -1;
     }
-    strncpy(name_copy, name, name_len);
+    strncpy(name_copy, effective_name, name_len);
     name_copy[name_len] = '\0';
     mod->name = name_copy;
-
-    // Load ELF module
-    void *base = NULL;
-    size_t size = 0;
-    module_info_t *info = NULL;
-
-    if (module_elf_load(data, len, &base, &size, &info) != 0) {
-        kprintf("[MOD]  Failed to load ELF module '%s'\n", name);
-        kheap_free((void*)name_copy);
-        kheap_free(mod);
-        return -1;
-    }
 
     mod->base_addr = base;
     mod->size = size;
@@ -161,17 +174,30 @@ int module_load_from_memory(const char *name, const uint8_t *data, size_t len) {
         return -1;
     }
 
-    // Call init if present
+    // Call init if present; on failure, undo registration and free resources
     if (mod->init) {
         if (mod->init() != 0) {
-            kprintf("[MOD]  Module '%s' init failed\n", name);
-            // Don't unload, just mark as not loaded
+            kprintf("[MOD]  Module '%s' init failed\n", effective_name);
+            // Remove from registry
+            for (int i = 0; i < module_count; i++) {
+                if (modules[i] == mod) {
+                    for (int j = i; j < module_count - 1; j++) {
+                        modules[j] = modules[j + 1];
+                    }
+                    modules[module_count - 1] = NULL;
+                    module_count--;
+                    break;
+                }
+            }
+            module_elf_unload(base, size);
+            kheap_free((void*)name_copy);
+            kheap_free(mod);
             return -1;
         }
     }
 
     mod->loaded = 1;
-    kprintf("[MOD]  Dynamically loaded module '%s' at 0x%x\n", name, (uint32_t)base);
+    kprintf("[MOD]  Dynamically loaded module '%s' at 0x%x\n", effective_name, (uint32_t)base);
     return 0;
 }
 
@@ -202,12 +228,20 @@ int module_load_from_file(const char *path) {
     // Read file
     int total = 0;
     while (total < (int)max_size) {
-        int n = vfs_read(fd, buffer + total, 4096);
+        int remaining = (int)max_size - total;
+        int to_read = remaining < 4096 ? remaining : 4096;
+        int n = vfs_read(fd, buffer + total, to_read);
         if (n <= 0) break;
         total += n;
     }
 
     vfs_close(fd);
+
+    if (total == (int)max_size) {
+        kprintf("[MOD]  Module file %s is too large (max %d bytes)\n", path, (int)max_size);
+        kheap_free(buffer);
+        return -1;
+    }
 
     if (total == 0) {
         kprintf("[MOD]  Empty file %s\n", path);

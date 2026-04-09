@@ -3,15 +3,7 @@
 // Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
 // licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
 
-// Module API
-typedef struct {
-    const char *name;
-    const char *description;
-    const char *version;
-    const char *author;
-    int       (*init)(void);
-    int       (*exit)(void);
-} module_info_t;
+#include "../kernel/module_elf.h"
 
 // Kernel functions we'll use (imported via symbol table)
 extern int kprintf(const char *fmt, ...);

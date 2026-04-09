@@ -20,7 +20,7 @@ typedef struct module {
     void      *base_addr;   // loaded module base address (NULL for static)
     size_t     size;        // module memory size
     int        refcount;    // usage count
-    int        is_dynamic;  // 1 if loaded from disk, 0 if statically registered
+    int        is_dynamic;  // 1 if dynamically loaded (from file or memory), 0 if statically registered
 } module_t;
 
 void      module_framework_init(void);

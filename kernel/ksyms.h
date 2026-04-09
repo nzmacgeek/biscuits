@@ -23,8 +23,14 @@ void      ksym_export_core(void);
 void      ksym_export_drivers(void);
 void      ksym_export_net(void);
 
-// Macro to export a kernel symbol
+// Macro to export a kernel symbol.
+//
+// Do not use constructor-based auto-registration: this kernel build does not
+// provide .init_array / ctor support, so constructor functions would never run.
+// EXPORT_SYMBOL(sym) defines an explicit registration helper that must be
+// called from a normal initialization path such as ksym_export_core(),
+// ksym_export_drivers(), or ksym_export_net().
 #define EXPORT_SYMBOL(sym) \
-    __attribute__((constructor)) static void __export_##sym(void) { \
-        ksym_register(#sym, (void*)sym); \
+    static void __export_##sym(void) { \
+        ksym_register(#sym, (void *)(sym)); \
     }

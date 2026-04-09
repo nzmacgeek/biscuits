@@ -13,8 +13,6 @@
 
 static uint16_t rtl_base = 0;   // I/O base, 0 if no card found
 static uint8_t  rtl_mac[6];
-static uint32_t rtl_rx_buffer = 0;  // Physical address of RX ring buffer
-static uint32_t rtl_tx_buffer[4] = {0, 0, 0, 0};  // 4 TX descriptors
 static int      rtl_tx_current = 0;
 
 // For simplicity, we'll use statically allocated buffers
@@ -80,6 +78,26 @@ static int rtl8139_send(const uint8_t *data, uint16_t len) {
     return 0;
 }
 
+static uint16_t rtl8139_rx_read16(uint16_t offset) {
+    uint16_t next = (offset + 1) % RTL8139_RX_BUF_SIZE;
+    return (uint16_t)rtl_rx_buf[offset] | ((uint16_t)rtl_rx_buf[next] << 8);
+}
+
+static void rtl8139_rx_copy(uint8_t *dst, uint16_t offset, uint16_t len) {
+    uint16_t first_chunk;
+
+    if (len == 0) return;
+
+    offset %= RTL8139_RX_BUF_SIZE;
+    first_chunk = RTL8139_RX_BUF_SIZE - offset;
+    if (first_chunk > len) first_chunk = len;
+
+    memcpy(dst, rtl_rx_buf + offset, first_chunk);
+    if (first_chunk < len) {
+        memcpy(dst + first_chunk, rtl_rx_buf, len - first_chunk);
+    }
+}
+
 static int rtl8139_recv(uint8_t *buf, uint16_t *len) {
     if (!rtl_base) return -1;
 
@@ -90,32 +108,42 @@ static int rtl8139_recv(uint8_t *buf, uint16_t *len) {
         return -1;
     }
 
-    // Read packet header (4 bytes: status + length)
-    uint16_t offset = rtl_rx_offset;
-    uint16_t status = *(uint16_t *)(rtl_rx_buf + offset);
-    uint16_t pkt_len = *(uint16_t *)(rtl_rx_buf + offset + 2);
+    // Read packet header (4 bytes: status + length) from the RX ring safely
+    uint16_t offset = rtl_rx_offset % RTL8139_RX_BUF_SIZE;
+    uint16_t status    = rtl8139_rx_read16(offset);
+    uint16_t raw_pkt_len = rtl8139_rx_read16((offset + 2) % RTL8139_RX_BUF_SIZE);
+
+    // Reject obviously invalid lengths before using them
+    if (raw_pkt_len == 0 || raw_pkt_len > (RTL8139_RX_BUF_SIZE - 4)) {
+        *len = 0;
+        return -1;
+    }
 
     // Check status (bit 0 = ROK, receive OK)
     if (!(status & 0x0001)) {
         // Bad packet, skip it
-        rtl_rx_offset = (offset + pkt_len + 4 + 3) & ~3;  // Align to 4 bytes
+        uint32_t next_offset = (uint32_t)((offset + raw_pkt_len + 4 + 3) & ~3);
+        rtl_rx_offset = (uint16_t)(next_offset % RTL8139_RX_BUF_SIZE);
         rtl8139_write16(RTL8139_REG_CAPR, rtl_rx_offset - 16);
         *len = 0;
         return -1;
     }
 
+    uint16_t pkt_len = raw_pkt_len;
+
     // Exclude CRC (last 4 bytes)
     if (pkt_len > 4) pkt_len -= 4;
+    else pkt_len = 0;
 
     if (pkt_len > 1518) pkt_len = 1518;  // Sanity check
 
-    // Copy packet data (skip 4-byte header)
-    memcpy(buf, rtl_rx_buf + offset + 4, pkt_len);
+    // Copy packet data (skip 4-byte header), handling RX ring wraparound
+    rtl8139_rx_copy(buf, (offset + 4) % RTL8139_RX_BUF_SIZE, pkt_len);
     *len = pkt_len;
 
-    // Update read offset (4-byte aligned, include header and CRC)
-    rtl_rx_offset = (offset + pkt_len + 4 + 3) & ~3;
-    if (rtl_rx_offset >= RTL8139_RX_BUF_SIZE) rtl_rx_offset = 0;
+    // Update read offset (4-byte aligned, include header)
+    uint32_t next_offset = (uint32_t)((offset + raw_pkt_len + 4 + 3) & ~3);
+    rtl_rx_offset = (uint16_t)(next_offset % RTL8139_RX_BUF_SIZE);
 
     // Update CAPR (Current Address of Packet Read) - must subtract 16
     rtl8139_write16(RTL8139_REG_CAPR, rtl_rx_offset - 16);

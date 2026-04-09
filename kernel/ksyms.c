@@ -6,6 +6,7 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../drivers/driver.h"
+#include "../drivers/net/network.h"
 #include "ksyms.h"
 #include "kheap.h"
 
@@ -103,7 +104,7 @@ void ksym_export_drivers(void) {
 // Export networking symbols
 void ksym_export_net(void);
 void ksym_export_net(void) {
-    extern int net_register_interface(const char *name, void *priv);
+    extern void net_register_interface(net_interface_t *iface);
     ksym_register("net_register_interface", (void*)net_register_interface);
 }
 
