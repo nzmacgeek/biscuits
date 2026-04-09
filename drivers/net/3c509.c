@@ -159,7 +159,7 @@ int el3_ioctl(uint32_t cmd, void *arg) {
 }
 
 static net_interface_t el3_iface = {
-    .name        = "eth0",
+    .name        = "",  // Will be assigned dynamically (eth0, eth1, etc.)
     .mac         = {0},
     .send        = el3_send,
     .recv        = el3_recv,
@@ -202,6 +202,7 @@ void el3_init(void) {
             for (int j = 0; j < 6; j++) el3_iface.mac[j] = el3_mac[j];
             el3_iface.up = 1;
             net_register_interface(&el3_iface);
+            kprintf("[NET]  Registered as %s\n", el3_iface.name);
             kprintf("%s\n", MSG_EL3_INIT);
             return;
         }

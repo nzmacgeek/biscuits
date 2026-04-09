@@ -239,7 +239,7 @@ int e1000_ioctl(uint32_t cmd, void *arg) {
 }
 
 static net_interface_t e1000_iface = {
-    .name        = "eth0",
+    .name        = "",  // Will be assigned dynamically (eth0, eth1, etc.)
     .mac         = {0},
     .send        = e1000_send,
     .recv        = e1000_recv,
