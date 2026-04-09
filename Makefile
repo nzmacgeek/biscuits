@@ -499,6 +499,27 @@ toolinfo:
 	@printf "  xorriso     : "; if command -v xorriso >/dev/null 2>&1; then xorriso --version 2>&1 | head -1; else echo "not installed"; fi
 	@echo ""
 
+# ---------------------------------------------------------------------------
+# Kernel Module Building
+# Builds .ko files (kernel modules) that can be dynamically loaded
+# ---------------------------------------------------------------------------
+MODULE_CFLAGS := -m32 -std=gnu11 -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -ffreestanding -c
+MODULE_LDFLAGS := -m elf_i386 -r
+
+# Build a simple test module
+modules/test_module.ko: modules/test_module.c | modules
+	@echo "  [CC]  $< (module)"
+	@$(CC) $(MODULE_CFLAGS) -o modules/test_module.o $<
+	@$(LD) $(MODULE_LDFLAGS) -o $@ modules/test_module.o
+	@echo "  [LD]  $@ (kernel module)"
+
+modules:
+	@mkdir -p modules
+
+.PHONY: test-module
+test-module: modules/test_module.ko
+	@echo "  [MODULE] Test module built at modules/test_module.ko"
+
 help:
 	@echo "BlueyOS Build System - 'Let's Play!' - Bluey"
 	@echo ""

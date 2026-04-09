@@ -103,18 +103,23 @@ int module_elf_load(const uint8_t *data, size_t len, void **base_out, size_t *si
         return -1;
     }
 
-    // Calculate total size needed
+    // Calculate total size needed - sum of all allocated sections
     elf32_shdr_t *shdr = (elf32_shdr_t *)(data + ehdr->e_shoff);
     size_t total_size = 0;
+    uint32_t *section_addrs = NULL;
 
+    // First pass: calculate size
     for (int i = 0; i < ehdr->e_shnum; i++) {
         if (shdr[i].sh_flags & SHF_ALLOC) {
-            size_t end = shdr[i].sh_size;
-            if (end > total_size) total_size = end;
+            // Align section
+            if (shdr[i].sh_addralign > 1) {
+                total_size = (total_size + shdr[i].sh_addralign - 1) & ~(shdr[i].sh_addralign - 1);
+            }
+            total_size += shdr[i].sh_size;
         }
     }
 
-    // Add some padding
+    // Add padding
     total_size += 4096;
 
     // Allocate memory for the module
@@ -127,35 +132,151 @@ int module_elf_load(const uint8_t *data, size_t len, void **base_out, size_t *si
     memset(module_mem, 0, total_size);
     kprintf("[MODELF] Allocated %u bytes at 0x%x\n", (uint32_t)total_size, (uint32_t)module_mem);
 
-    // For now, simplified: just copy sections that should be loaded
-    // A full implementation would handle relocations
+    // Allocate section address array
+    section_addrs = (uint32_t*)kheap_alloc(sizeof(uint32_t) * ehdr->e_shnum, 0);
+    if (!section_addrs) {
+        kheap_free(module_mem);
+        return -1;
+    }
+    memset(section_addrs, 0, sizeof(uint32_t) * ehdr->e_shnum);
+
+    // Second pass: load sections and track their addresses
+    size_t offset = 0;
     for (int i = 0; i < ehdr->e_shnum; i++) {
-        if (!(shdr[i].sh_flags & SHF_ALLOC)) continue;
+        if (!(shdr[i].sh_flags & SHF_ALLOC)) {
+            section_addrs[i] = 0;
+            continue;
+        }
+
+        // Align section
+        if (shdr[i].sh_addralign > 1) {
+            offset = (offset + shdr[i].sh_addralign - 1) & ~(shdr[i].sh_addralign - 1);
+        }
+
+        section_addrs[i] = (uint32_t)module_mem + offset;
 
         if (shdr[i].sh_type == SHT_PROGBITS) {
             // Copy section data
             if (shdr[i].sh_offset + shdr[i].sh_size <= len) {
-                memcpy((uint8_t*)module_mem + shdr[i].sh_addr,
+                memcpy((void*)section_addrs[i],
                        data + shdr[i].sh_offset,
                        shdr[i].sh_size);
-                kprintf("[MODELF] Loaded section %d at offset 0x%x (size %u)\n",
-                        i, shdr[i].sh_addr, shdr[i].sh_size);
+                kprintf("[MODELF] Loaded section %d at 0x%x (size %u)\n",
+                        i, section_addrs[i], shdr[i].sh_size);
             }
         } else if (shdr[i].sh_type == SHT_NOBITS) {
             // BSS - already zeroed
-            kprintf("[MODELF] BSS section %d at offset 0x%x (size %u)\n",
-                    i, shdr[i].sh_addr, shdr[i].sh_size);
+            kprintf("[MODELF] BSS section %d at 0x%x (size %u)\n",
+                    i, section_addrs[i], shdr[i].sh_size);
+        }
+
+        offset += shdr[i].sh_size;
+    }
+
+    // Find symbol table and string table
+    elf32_shdr_t *symtab = NULL;
+    const char *strtab = NULL;
+    for (int i = 0; i < ehdr->e_shnum; i++) {
+        if (shdr[i].sh_type == SHT_SYMTAB) {
+            symtab = &shdr[i];
+            if (shdr[i].sh_link < ehdr->e_shnum) {
+                strtab = (const char*)(data + shdr[shdr[i].sh_link].sh_offset);
+            }
+            break;
         }
     }
 
-    // TODO: Handle relocations (simplified for now)
-    // TODO: Resolve symbols against kernel symbol table
-    // TODO: Find module_info structure
+    // Process relocations
+    for (int i = 0; i < ehdr->e_shnum; i++) {
+        if (shdr[i].sh_type != SHT_REL && shdr[i].sh_type != SHT_RELA) continue;
 
-    // For now, just return what we have
+        // Get target section
+        if (shdr[i].sh_info >= ehdr->e_shnum) continue;
+        if (!section_addrs[shdr[i].sh_info]) continue;
+
+        kprintf("[MODELF] Processing relocations for section %d\n", shdr[i].sh_info);
+
+        if (shdr[i].sh_type == SHT_REL) {
+            elf32_rel_t *rel = (elf32_rel_t*)(data + shdr[i].sh_offset);
+            int num_rels = shdr[i].sh_size / sizeof(elf32_rel_t);
+
+            for (int j = 0; j < num_rels; j++) {
+                uint32_t sym_idx = ELF32_R_SYM(rel[j].r_info);
+                uint32_t rel_type = ELF32_R_TYPE(rel[j].r_info);
+                uint32_t *ref = (uint32_t*)(section_addrs[shdr[i].sh_info] + rel[j].r_offset);
+
+                // Get symbol
+                elf32_sym_t *sym = NULL;
+                if (symtab && sym_idx < (symtab->sh_size / sizeof(elf32_sym_t))) {
+                    sym = (elf32_sym_t*)(data + symtab->sh_offset) + sym_idx;
+                }
+
+                uint32_t sym_addr = 0;
+                if (sym) {
+                    if (sym->st_shndx == SHN_UNDEF) {
+                        // External symbol - look up in kernel symbol table
+                        const char *sym_name = strtab ? strtab + sym->st_name : NULL;
+                        if (sym_name) {
+                            void *addr = ksym_lookup(sym_name);
+                            if (addr) {
+                                sym_addr = (uint32_t)addr;
+                            } else {
+                                kprintf("[MODELF] WARNING: Undefined symbol '%s'\n", sym_name);
+                            }
+                        }
+                    } else if (sym->st_shndx < ehdr->e_shnum && section_addrs[sym->st_shndx]) {
+                        // Internal symbol
+                        sym_addr = section_addrs[sym->st_shndx] + sym->st_value;
+                    }
+                }
+
+                // Apply relocation
+                switch (rel_type) {
+                    case R_386_NONE:
+                        break;
+                    case R_386_32:
+                        // Direct 32-bit: S + A
+                        *ref += sym_addr;
+                        break;
+                    case R_386_PC32:
+                        // PC-relative: S + A - P
+                        *ref += sym_addr - (uint32_t)ref;
+                        break;
+                    case R_386_RELATIVE:
+                        // Adjust by program base: B + A
+                        *ref += (uint32_t)module_mem;
+                        break;
+                    default:
+                        kprintf("[MODELF] WARNING: Unsupported relocation type %d\n", rel_type);
+                        break;
+                }
+            }
+        }
+    }
+
+    // Try to find module_info structure
+    module_info_t *module_info = NULL;
+    if (symtab && strtab) {
+        elf32_sym_t *syms = (elf32_sym_t*)(data + symtab->sh_offset);
+        int num_syms = symtab->sh_size / sizeof(elf32_sym_t);
+
+        for (int i = 0; i < num_syms; i++) {
+            const char *name = strtab + syms[i].st_name;
+            if (strcmp(name, "module_info") == 0) {
+                if (syms[i].st_shndx < ehdr->e_shnum && section_addrs[syms[i].st_shndx]) {
+                    module_info = (module_info_t*)(section_addrs[syms[i].st_shndx] + syms[i].st_value);
+                    kprintf("[MODELF] Found module_info at 0x%x\n", (uint32_t)module_info);
+                    break;
+                }
+            }
+        }
+    }
+
+    kheap_free(section_addrs);
+
     *base_out = module_mem;
     *size_out = total_size;
-    *info_out = NULL; // TODO: find module_info in loaded module
+    *info_out = module_info;
 
     kprintf("[MODELF] Module loaded at 0x%x (size %u)\n", (uint32_t)module_mem, (uint32_t)total_size);
     return 0;

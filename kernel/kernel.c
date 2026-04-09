@@ -185,6 +185,8 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     module_framework_init();
     ksym_init();              // Initialize kernel symbol table
     ksym_export_core();       // Export core kernel symbols for modules
+    ksym_export_drivers();    // Export driver framework symbols
+    ksym_export_net();        // Export networking symbols
     driver_modules_register();
 
     // Step 5: Keyboard - PS/2, IRQ1 (module)

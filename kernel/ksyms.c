@@ -5,6 +5,7 @@
 #include "../include/types.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
+#include "../drivers/driver.h"
 #include "ksyms.h"
 #include "kheap.h"
 
@@ -91,3 +92,18 @@ void ksym_export_core(void) {
 
     kprintf("[KSYM] Exported %d core symbols\n", ksym_count_val);
 }
+
+// Export driver framework symbols
+void ksym_export_drivers(void);
+void ksym_export_drivers(void) {
+    extern int driver_register(struct driver *drv);
+    ksym_register("driver_register", (void*)driver_register);
+}
+
+// Export networking symbols
+void ksym_export_net(void);
+void ksym_export_net(void) {
+    extern int net_register_interface(const char *name, void *priv);
+    ksym_register("net_register_interface", (void*)net_register_interface);
+}
+
