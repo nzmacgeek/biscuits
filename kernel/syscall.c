@@ -28,6 +28,7 @@
 #include "devev.h"
 #include "netctl.h"
 #include "socket.h"
+#include "../net/tcpip.h"
 #include "../fs/vfs.h"
 
 extern void syscall_stub(void);
@@ -325,7 +326,11 @@ static int32_t sys_brk(uint32_t addr) {
     if (map_end > map_start) {
         result = syscall_map_user_pages(process, map_start, map_end,
                                         PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE);
-        if (result != 0) return (int32_t)process->brk_current;
+        if (result != 0) {
+            kprintf("[SYS] brk map failed pid=%d name=%s map_start=0x%x map_end=0x%x result=%d\n",
+                    process->pid, process->name, map_start, map_end, result);
+            return (int32_t)process->brk_current;
+        }
     }
 
     process->brk_current = addr;
@@ -969,6 +974,13 @@ typedef struct {
     char     sun_path[108];
 } k_sockaddr_un_t;
 
+// IPv4 sockaddr (basic): family, port (network order), addr (network order)
+typedef struct {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+} k_sockaddr_in_t;
+
 // sockaddr for AF_BLUEY_NETCTL: bind() uses this to subscribe to multicast groups
 typedef struct {
     uint16_t sn_family;   // BLUEY_AF_NETCTL
@@ -1026,11 +1038,14 @@ static int32_t sys_socket_open(int domain, int type, int protocol) {
 
     // Support both AF_UNIX and AF_NETCTL families
     if (domain == BLUEY_AF_UNIX) {
-        if (type != BLUEY_SOCK_STREAM) return -BLUEY_EPROTONOSUPPORT;
+        if (type != BLUEY_SOCK_STREAM && type != BLUEY_SOCK_DGRAM) return -BLUEY_EPROTONOSUPPORT;
         if (protocol != 0) return -BLUEY_EPROTONOSUPPORT;
     } else if (domain == BLUEY_AF_NETCTL) {
         if (type != BLUEY_SOCK_NETCTL) return -BLUEY_EPROTONOSUPPORT;
         // protocol is passed to netctl for future extensibility
+    } else if (domain == BLUEY_AF_INET) {
+        if (type != BLUEY_SOCK_DGRAM) return -BLUEY_EPROTONOSUPPORT;
+        // protocol 0 = UDP
     } else {
         return -BLUEY_EAFNOSUPPORT;
     }
@@ -1062,6 +1077,17 @@ static int32_t sys_socket_bind(int fd, const void *addr, uint32_t addrlen) {
         if (sn->sn_family != BLUEY_AF_NETCTL) return -BLUEY_EAFNOSUPPORT;
         // Pass groups via socket_bind using reinterpreted pointer convention
         return socket_bind(socket_id, (const char *)&sn->sn_groups);
+    }
+
+    // AF_INET datagram bind
+    if (socket_is_inet(socket_id)) {
+        const k_sockaddr_in_t *in = (const k_sockaddr_in_t *)addr;
+        if (!addr || addrlen < sizeof(*in)) return -BLUEY_EINVAL;
+        if (in->sin_family != BLUEY_AF_INET) return -BLUEY_EAFNOSUPPORT;
+        uint16_t port = ntohs(in->sin_port);
+        uint32_t ip   = ntohl(in->sin_addr);
+        rc = socket_inet_bind(socket_id, ip, port);
+        return rc == 0 ? 0 : -BLUEY_EINVAL;
     }
 
     // UNIX domain sockets bind to a path
@@ -1124,16 +1150,43 @@ static int32_t sys_sendmsg(int fd, const struct bluey_msghdr *msg, int flags) {
 
     socket_id = vfs_socket_id(fd);
     if (socket_id < 0) return -BLUEY_EBADF;
-    if (!socket_is_netctl(socket_id)) return -BLUEY_EPROTONOSUPPORT;
+    // Dispatch based on socket domain
+    if (socket_is_netctl(socket_id)) {
+        // Only single-iovec supported for netctl messages
+        if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+        iov = (const struct bluey_iovec *)msg->msg_iov;
+        if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+        int bytes_sent = socket_netctl_send(socket_id, iov->iov_base, iov->iov_len);
+        return bytes_sent < 0 ? -BLUEY_EIO : bytes_sent;
+    }
 
-    // Only single-iovec supported for netctl messages
-    if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+    if (socket_is_unix_dgram(socket_id)) {
+        // msg_name must point to sockaddr_un describing destination path
+        if (!msg->msg_name || msg->msg_namelen == 0) return -BLUEY_EINVAL;
+        const k_sockaddr_un_t *un = (const k_sockaddr_un_t *)msg->msg_name;
+        if (un->sun_family != BLUEY_AF_UNIX) return -BLUEY_EAFNOSUPPORT;
+        // single iovec only
+        if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+        iov = (const struct bluey_iovec *)msg->msg_iov;
+        if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+        int rc = socket_unix_sendto(socket_id, un->sun_path, iov->iov_base, iov->iov_len);
+        return rc < 0 ? -BLUEY_EIO : rc;
+    }
 
-    iov = (const struct bluey_iovec *)msg->msg_iov;
-    if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+    if (socket_is_inet(socket_id)) {
+        if (!msg->msg_name || msg->msg_namelen < sizeof(k_sockaddr_in_t)) return -BLUEY_EINVAL;
+        const k_sockaddr_in_t *in = (const k_sockaddr_in_t *)msg->msg_name;
+        if (in->sin_family != BLUEY_AF_INET) return -BLUEY_EAFNOSUPPORT;
+        if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+        iov = (const struct bluey_iovec *)msg->msg_iov;
+        if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+        uint16_t port = ntohs(in->sin_port);
+        uint32_t ip   = ntohl(in->sin_addr);
+        int rc = socket_inet_sendto(socket_id, ip, port, iov->iov_base, iov->iov_len);
+        return rc < 0 ? -BLUEY_EIO : rc;
+    }
 
-    int bytes_sent = socket_netctl_send(socket_id, iov->iov_base, iov->iov_len);
-    return bytes_sent < 0 ? -BLUEY_EIO : bytes_sent;
+    return -BLUEY_EPROTONOSUPPORT;
 }
 
 static int32_t sys_recvmsg(int fd, struct bluey_msghdr *msg, int flags) {
@@ -1147,16 +1200,50 @@ static int32_t sys_recvmsg(int fd, struct bluey_msghdr *msg, int flags) {
 
     socket_id = vfs_socket_id(fd);
     if (socket_id < 0) return -BLUEY_EBADF;
-    if (!socket_is_netctl(socket_id)) return -BLUEY_EPROTONOSUPPORT;
+    // Dispatch based on socket domain
+    if (socket_is_netctl(socket_id)) {
+        // Only single-iovec supported for netctl messages
+        if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+        iov = (struct bluey_iovec *)msg->msg_iov;
+        if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+        int bytes_received = socket_netctl_recv(socket_id, iov->iov_base, iov->iov_len);
+        return bytes_received < 0 ? -BLUEY_EIO : bytes_received;
+    }
 
-    // Only single-iovec supported for netctl messages
-    if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+    if (socket_is_unix_dgram(socket_id)) {
+        if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+        iov = (struct bluey_iovec *)msg->msg_iov;
+        if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+        // msg_name may point to a buffer to receive source address
+        char *namebuf = NULL;
+        size_t namebuf_sz = 0;
+        if (msg->msg_name && msg->msg_namelen > 0) {
+            namebuf = (char*)msg->msg_name;
+            namebuf_sz = msg->msg_namelen;
+        }
+        int rc = socket_unix_recvfrom(socket_id, iov->iov_base, iov->iov_len, namebuf, namebuf_sz);
+        return rc < 0 ? -BLUEY_EIO : rc;
+    }
 
-    iov = (struct bluey_iovec *)msg->msg_iov;
-    if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+    if (socket_is_inet(socket_id)) {
+        if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
+        iov = (struct bluey_iovec *)msg->msg_iov;
+        if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
+        uint32_t src_ip = 0;
+        uint16_t src_port = 0;
+        int rc = socket_inet_recvfrom(socket_id, iov->iov_base, iov->iov_len, &src_ip, &src_port);
+        if (rc < 0) return -BLUEY_EIO;
+        // If caller provided msg_name buffer, fill sockaddr_in
+        if (msg->msg_name && msg->msg_namelen >= sizeof(k_sockaddr_in_t)) {
+            k_sockaddr_in_t *in = (k_sockaddr_in_t *)msg->msg_name;
+            in->sin_family = BLUEY_AF_INET;
+            in->sin_port = htons(src_port);
+            in->sin_addr = htonl(src_ip);
+        }
+        return rc;
+    }
 
-    int bytes_received = socket_netctl_recv(socket_id, iov->iov_base, iov->iov_len);
-    return bytes_received < 0 ? -BLUEY_EIO : bytes_received;
+    return -BLUEY_EPROTONOSUPPORT;
 }
 
 static int32_t sys_socketcall(int call, uint32_t *args) {
@@ -2563,7 +2650,31 @@ int32_t syscall_dispatch(registers_t *regs) {
                               (const struct bluey_msghdr*)(uintptr_t)regs->ecx,
                               (int)regs->edx);
             break;
+        /* Compatibility fallbacks for alternate musl i386 syscall numbering
+         * (some musl builds use 369-372 for sendto/sendmsg/recvfrom/recvmsg).
+         */
+        case 369: /* sendto -> treat as sendmsg */
+            ret = sys_sendmsg((int)regs->ebx,
+                              (const struct bluey_msghdr*)(uintptr_t)regs->ecx,
+                              (int)regs->edx);
+            break;
+        case 370: /* sendmsg */
+            ret = sys_sendmsg((int)regs->ebx,
+                              (const struct bluey_msghdr*)(uintptr_t)regs->ecx,
+                              (int)regs->edx);
+            break;
+        
         case SYS_RECVMSG:
+            ret = sys_recvmsg((int)regs->ebx,
+                              (struct bluey_msghdr*)(uintptr_t)regs->ecx,
+                              (int)regs->edx);
+            break;
+        case 371: /* recvfrom -> treat as recvmsg */
+            ret = sys_recvmsg((int)regs->ebx,
+                              (struct bluey_msghdr*)(uintptr_t)regs->ecx,
+                              (int)regs->edx);
+            break;
+        case 372: /* recvmsg */
             ret = sys_recvmsg((int)regs->ebx,
                               (struct bluey_msghdr*)(uintptr_t)regs->ecx,
                               (int)regs->edx);
@@ -2616,12 +2727,20 @@ int32_t syscall_dispatch(registers_t *regs) {
             /* Return success so musl falls through to the GS-load path. */
             ret = 0;
             break;
-        default:
-            // Unknown syscall - don't crash, just return -1
-            kprintf("[SYS]  Unknown syscall %d (Bluey doesn't know that game yet!)\n",
-                    regs->eax);
+        default: {
+            /* Unknown syscall - don't crash. Log caller info to help mapping. */
+            process_t *caller = process_current();
+            if (caller) {
+                kprintf("[SYS] Unknown syscall %d from pid=%d name=%s eip=0x%x args=0x%x,0x%x,0x%x\n",
+                        regs->eax, caller->pid, caller->name, regs->eip,
+                        regs->ebx, regs->ecx, regs->edx);
+            } else {
+                kprintf("[SYS] Unknown syscall %d (no process) eip=0x%x args=0x%x,0x%x,0x%x\n",
+                        regs->eax, regs->eip, regs->ebx, regs->ecx, regs->edx);
+            }
             ret = -BLUEY_ENOSYS;
             break;
+        }
     }
     regs->eax = ret;
     scheduler_handle_trap(regs, 0);

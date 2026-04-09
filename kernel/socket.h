@@ -4,7 +4,9 @@
 
 #define BLUEY_AF_UNIX      1
 #define BLUEY_AF_NETCTL    2  // Network control plane (Netlink-inspired)
+#define BLUEY_AF_INET      3
 #define BLUEY_SOCK_STREAM  1
+#define BLUEY_SOCK_DGRAM   2
 #define BLUEY_SOCK_NETCTL  3  // Message-oriented netctl socket
 
 void socket_init(void);
@@ -24,3 +26,18 @@ int  socket_is_writable(int socket_id);
 int  socket_is_netctl(int socket_id);
 int  socket_netctl_send(int socket_id, const void *msg, size_t len);
 int  socket_netctl_recv(int socket_id, void *buf, size_t len);
+
+// AF_INET datagram helpers (backed by UDP layer)
+int  socket_is_inet(int socket_id);
+int  socket_inet_bind(int socket_id, uint32_t ip, uint16_t port);
+int  socket_inet_sendto(int socket_id, uint32_t dst_ip, uint16_t dst_port,
+						const void *msg, size_t len);
+int  socket_inet_recvfrom(int socket_id, void *buf, size_t len,
+						 uint32_t *src_ip, uint16_t *src_port);
+
+// AF_UNIX datagram helpers
+int  socket_is_unix_dgram(int socket_id);
+int  socket_unix_sendto(int socket_id, const char *dest_path,
+					   const void *msg, size_t len);
+int  socket_unix_recvfrom(int socket_id, void *buf, size_t len,
+						char *src_path, size_t src_path_size);

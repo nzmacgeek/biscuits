@@ -1,6 +1,8 @@
 #include "socket.h"
 #include "netctl.h"
 
+#include "../net/udp.h"
+
 #include "../lib/string.h"
 
 #define SOCKET_MAX_COUNT       16
@@ -26,6 +28,7 @@ typedef struct {
     int      type;
     int      protocol;
     int      state;
+    int      inet_udp_id; // for BLUEY_AF_INET + DGRAM -> udp socket index
     int      peer_id;
     int      listener_id;
     int      peer_closed;
@@ -36,6 +39,7 @@ typedef struct {
     uint32_t pending_count;
     int      netctl_id;    // For BLUEY_AF_NETCTL: underlying netctl socket id; -1 otherwise
     char     path[SOCKET_PATH_LEN];
+    char     rx_src_path[SOCKET_PATH_LEN];
     uint8_t  rx_buf[SOCKET_BUFFER_SIZE];
     uint32_t rx_head;
     uint32_t rx_tail;
@@ -50,6 +54,8 @@ static void socket_reset(bluey_socket_t *sock) {
     sock->peer_id = -1;
     sock->listener_id = -1;
     sock->netctl_id = -1;
+    sock->inet_udp_id = -1;
+    sock->rx_src_path[0] = '\0';
 }
 
 static int socket_valid_id(int socket_id) {
@@ -126,18 +132,35 @@ int socket_create(int domain, int type, int protocol) {
         return socket_id;
     }
 
-    // Handle UNIX domain sockets
-    if (domain != BLUEY_AF_UNIX || type != BLUEY_SOCK_STREAM) return -1;
+    // Handle UNIX domain sockets (stream and datagram)
+    if (domain == BLUEY_AF_UNIX) {
+        if (type != BLUEY_SOCK_STREAM && type != BLUEY_SOCK_DGRAM) return -1;
+        socket_id = socket_alloc();
+        if (socket_id < 0) return -1;
+        sock = &socket_table[socket_id];
+        sock->domain = domain;
+        sock->type = type;
+        sock->protocol = protocol;
+        sock->state = SOCKET_STATE_INIT;
+        return socket_id;
+    }
 
-    socket_id = socket_alloc();
-    if (socket_id < 0) return -1;
-
-    sock = &socket_table[socket_id];
-    sock->domain = domain;
-    sock->type = type;
-    sock->protocol = protocol;
-    sock->state = SOCKET_STATE_INIT;
-    return socket_id;
+    // Handle INET datagram sockets (UDP-backed)
+    if (domain == BLUEY_AF_INET && type == BLUEY_SOCK_DGRAM) {
+        socket_id = socket_alloc();
+        if (socket_id < 0) return -1;
+        sock = &socket_table[socket_id];
+        sock->domain = domain;
+        sock->type = type;
+        sock->protocol = protocol;
+        sock->state = SOCKET_STATE_INIT;
+        sock->inet_udp_id = udp_open(0); // allocate UDP socket (ephemeral port)
+        if (sock->inet_udp_id < 0) {
+            socket_reset(sock);
+            return -1;
+        }
+        return socket_id;
+    }
 }
 
 int socket_add_ref(int socket_id) {
@@ -359,4 +382,91 @@ int socket_netctl_recv(int socket_id, void *buf, size_t len) {
     bluey_socket_t *sock = &socket_table[socket_id];
     if (sock->domain != BLUEY_AF_NETCTL || sock->netctl_id < 0) return -1;
     return netctl_socket_recv(sock->netctl_id, buf, len);
+}
+
+int socket_is_inet(int socket_id) {
+    if (!socket_valid_id(socket_id)) return 0;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    return sock->domain == BLUEY_AF_INET && sock->type == BLUEY_SOCK_DGRAM;
+}
+
+int socket_inet_bind(int socket_id, uint32_t ip, uint16_t port) {
+    if (!socket_valid_id(socket_id)) return -SOCKET_EINVAL;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_INET || sock->type != BLUEY_SOCK_DGRAM) return -SOCKET_EINVAL;
+    if (sock->inet_udp_id >= 0) udp_close(sock->inet_udp_id);
+    sock->inet_udp_id = udp_open(port);
+    return sock->inet_udp_id >= 0 ? 0 : -1;
+}
+
+int socket_inet_sendto(int socket_id, uint32_t dst_ip, uint16_t dst_port,
+                        const void *msg, size_t len) {
+    if (!socket_valid_id(socket_id) || !msg) return -1;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_INET || sock->type != BLUEY_SOCK_DGRAM) return -1;
+    if (sock->inet_udp_id < 0) return -1;
+    return udp_send(sock->inet_udp_id, dst_ip, dst_port, (const uint8_t*)msg, (uint16_t)len);
+}
+
+int socket_inet_recvfrom(int socket_id, void *buf, size_t len,
+                         uint32_t *src_ip, uint16_t *src_port) {
+    if (!socket_valid_id(socket_id) || !buf) return -1;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_INET || sock->type != BLUEY_SOCK_DGRAM) return -1;
+    if (sock->inet_udp_id < 0) return -1;
+    return udp_recv(sock->inet_udp_id, (uint8_t*)buf, (uint16_t)len, src_ip, src_port);
+}
+
+int socket_is_unix_dgram(int socket_id) {
+    if (!socket_valid_id(socket_id)) return 0;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    return sock->domain == BLUEY_AF_UNIX && sock->type == BLUEY_SOCK_DGRAM;
+}
+
+int socket_unix_sendto(int socket_id, const char *dest_path,
+                       const void *msg, size_t len) {
+    if (!socket_valid_id(socket_id) || !dest_path || !msg) return -1;
+    bluey_socket_t *src = &socket_table[socket_id];
+    // Find destination socket bound to dest_path
+    int dest_id = -1;
+    for (int i = 0; i < SOCKET_MAX_COUNT; i++) {
+        if (!socket_table[i].used) continue;
+        if (socket_table[i].domain != BLUEY_AF_UNIX) continue;
+        if (socket_table[i].type != BLUEY_SOCK_DGRAM) continue;
+        if (socket_table[i].state != SOCKET_STATE_BOUND) continue;
+        if (strcmp(socket_table[i].path, dest_path) == 0) { dest_id = i; break; }
+    }
+    if (dest_id < 0) return -1;
+    bluey_socket_t *dst = &socket_table[dest_id];
+    // Copy up to buffer capacity
+    size_t copy_len = len;
+    if (copy_len > SOCKET_BUFFER_SIZE) copy_len = SOCKET_BUFFER_SIZE;
+    memcpy(dst->rx_buf, msg, copy_len);
+    dst->rx_count = (uint32_t)copy_len;
+    // store source path for recvfrom
+    if (src->path[0]) strncpy(dst->rx_src_path, src->path, SOCKET_PATH_LEN - 1);
+    else dst->rx_src_path[0] = '\0';
+    return (int)copy_len;
+}
+
+int socket_unix_recvfrom(int socket_id, void *buf, size_t len,
+                        char *src_path, size_t src_path_size) {
+    if (!socket_valid_id(socket_id) || !buf) return -1;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_UNIX || sock->type != BLUEY_SOCK_DGRAM) return -1;
+    if (sock->rx_count == 0) return -1;
+    size_t copy_len = sock->rx_count;
+    if (copy_len > len) copy_len = len;
+    memcpy(buf, sock->rx_buf, copy_len);
+    if (src_path && src_path_size > 0) {
+        size_t p = strlen(sock->rx_src_path);
+        if (p >= src_path_size) p = src_path_size - 1;
+        if (p > 0) {
+            memcpy(src_path, sock->rx_src_path, p);
+        }
+        src_path[p] = '\0';
+    }
+    sock->rx_count = 0;
+    sock->rx_src_path[0] = '\0';
+    return (int)copy_len;
 }
