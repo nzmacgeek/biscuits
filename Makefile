@@ -205,6 +205,8 @@ I386_C_SOURCES = \
   kernel/sha256.c \
   kernel/password.c \
   kernel/module.c \
+  kernel/module_elf.c \
+  kernel/ksyms.c \
   kernel/rtc.c \
   kernel/multiuser.c \
   kernel/sysinfo.c \

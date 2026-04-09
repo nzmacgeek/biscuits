@@ -40,6 +40,7 @@
 #include "elf.h"
 #include "swap.h"
 #include "module.h"
+#include "ksyms.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/ata.h"
 #include "../drivers/driver.h"
@@ -182,6 +183,8 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 4: Driver framework + module loader
     driver_framework_init();
     module_framework_init();
+    ksym_init();              // Initialize kernel symbol table
+    ksym_export_core();       // Export core kernel symbols for modules
     driver_modules_register();
 
     // Step 5: Keyboard - PS/2, IRQ1 (module)

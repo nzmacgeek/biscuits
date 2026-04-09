@@ -5,7 +5,10 @@
 #include "../include/types.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
+#include "../fs/vfs.h"
 #include "module.h"
+#include "module_elf.h"
+#include "kheap.h"
 
 static module_t *modules[MAX_MODULES];
 static int module_count = 0;
@@ -86,9 +89,196 @@ void module_list(void) {
     kprintf("[MOD]  Modules (%d):\n", module_count);
     for (int i = 0; i < module_count; i++) {
         if (!modules[i]) continue;
-        kprintf("  [%d] %s  %s\n",
+        kprintf("  [%d] %s  %s %s\n",
                 i,
                 modules[i]->name,
-                modules[i]->loaded ? "loaded" : "unloaded");
+                modules[i]->loaded ? "loaded" : "unloaded",
+                modules[i]->is_dynamic ? "(dynamic)" : "(static)");
     }
+}
+
+// Dynamic module loading from memory buffer
+int module_load_from_memory(const char *name, const uint8_t *data, size_t len) {
+    if (!name || !data || len == 0) {
+        kprintf("[MOD]  Invalid parameters for module_load_from_memory\n");
+        return -1;
+    }
+
+    // Check if module already loaded
+    if (module_find(name)) {
+        kprintf("[MOD]  Module '%s' already loaded\n", name);
+        return -1;
+    }
+
+    // Allocate module structure
+    module_t *mod = (module_t*)kheap_alloc(sizeof(module_t), 0);
+    if (!mod) {
+        kprintf("[MOD]  Failed to allocate module structure\n");
+        return -1;
+    }
+
+    memset(mod, 0, sizeof(module_t));
+    mod->is_dynamic = 1;
+
+    // Allocate name copy
+    size_t name_len = strlen(name);
+    char *name_copy = (char*)kheap_alloc(name_len + 1, 0);
+    if (!name_copy) {
+        kheap_free(mod);
+        return -1;
+    }
+    strncpy(name_copy, name, name_len);
+    name_copy[name_len] = '\0';
+    mod->name = name_copy;
+
+    // Load ELF module
+    void *base = NULL;
+    size_t size = 0;
+    module_info_t *info = NULL;
+
+    if (module_elf_load(data, len, &base, &size, &info) != 0) {
+        kprintf("[MOD]  Failed to load ELF module '%s'\n", name);
+        kheap_free((void*)name_copy);
+        kheap_free(mod);
+        return -1;
+    }
+
+    mod->base_addr = base;
+    mod->size = size;
+
+    // If we found module_info, use it
+    if (info) {
+        mod->description = info->description;
+        mod->init = info->init;
+        mod->deinit = info->exit;
+    }
+
+    // Register the module
+    if (module_register(mod) != 0) {
+        module_elf_unload(base, size);
+        kheap_free((void*)name_copy);
+        kheap_free(mod);
+        return -1;
+    }
+
+    // Call init if present
+    if (mod->init) {
+        if (mod->init() != 0) {
+            kprintf("[MOD]  Module '%s' init failed\n", name);
+            // Don't unload, just mark as not loaded
+            return -1;
+        }
+    }
+
+    mod->loaded = 1;
+    kprintf("[MOD]  Dynamically loaded module '%s' at 0x%x\n", name, (uint32_t)base);
+    return 0;
+}
+
+// Load module from file
+int module_load_from_file(const char *path) {
+    if (!path) {
+        kprintf("[MOD]  No path specified\n");
+        return -1;
+    }
+
+    kprintf("[MOD]  Loading module from %s\n", path);
+
+    // Read file
+    int fd = vfs_open(path, VFS_O_RDONLY);
+    if (fd < 0) {
+        kprintf("[MOD]  Failed to open %s\n", path);
+        return -1;
+    }
+
+    // Allocate buffer (max 1MB for a module)
+    size_t max_size = 1024 * 1024;
+    uint8_t *buffer = (uint8_t*)kheap_alloc(max_size, 0);
+    if (!buffer) {
+        vfs_close(fd);
+        return -1;
+    }
+
+    // Read file
+    int total = 0;
+    while (total < (int)max_size) {
+        int n = vfs_read(fd, buffer + total, 4096);
+        if (n <= 0) break;
+        total += n;
+    }
+
+    vfs_close(fd);
+
+    if (total == 0) {
+        kprintf("[MOD]  Empty file %s\n", path);
+        kheap_free(buffer);
+        return -1;
+    }
+
+    // Extract module name from path (last component without .ko)
+    const char *name_start = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') name_start = p + 1;
+    }
+
+    char name[64];
+    int i = 0;
+    while (name_start[i] && name_start[i] != '.' && i < 63) {
+        name[i] = name_start[i];
+        i++;
+    }
+    name[i] = '\0';
+
+    // Load module
+    int result = module_load_from_memory(name, buffer, total);
+    kheap_free(buffer);
+    return result;
+}
+
+// Unload a module
+int module_unload(const char *name) {
+    module_t *mod = module_find(name);
+    if (!mod) {
+        kprintf("[MOD]  Module '%s' not found\n", name);
+        return -1;
+    }
+
+    if (!mod->is_dynamic) {
+        kprintf("[MOD]  Cannot unload static module '%s'\n", name);
+        return -1;
+    }
+
+    if (mod->refcount > 0) {
+        kprintf("[MOD]  Module '%s' is in use (refcount=%d)\n", name, mod->refcount);
+        return -1;
+    }
+
+    // Call cleanup
+    if (mod->deinit) {
+        mod->deinit();
+    }
+
+    // Free module memory
+    if (mod->base_addr) {
+        module_elf_unload(mod->base_addr, mod->size);
+    }
+
+    // Remove from list
+    for (int i = 0; i < module_count; i++) {
+        if (modules[i] == mod) {
+            for (int j = i; j < module_count - 1; j++) {
+                modules[j] = modules[j + 1];
+            }
+            modules[module_count - 1] = NULL;
+            module_count--;
+            break;
+        }
+    }
+
+    // Free module structure
+    if (mod->name) kheap_free((void*)mod->name);
+    kheap_free(mod);
+
+    kprintf("[MOD]  Unloaded module '%s'\n", name);
+    return 0;
 }

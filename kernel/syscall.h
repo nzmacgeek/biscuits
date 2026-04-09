@@ -120,6 +120,10 @@
 /* Legacy 32-bit llseek syscall used by some libc variants */
 #define SYS__llseek        140
 
+// Module loading syscalls (Linux compatible)
+#define SYS_INIT_MODULE    128
+#define SYS_DELETE_MODULE  129
+
 void syscall_init(void);
 // Called from syscall.asm - dispatches based on eax syscall number
 int32_t syscall_dispatch(registers_t *regs);
