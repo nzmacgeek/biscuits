@@ -73,6 +73,9 @@
 #define E1000_NUM_RX_DESC   32
 #define E1000_NUM_TX_DESC   8
 
+// MMIO region size (BAR0): 128KB covers all e1000 registers
+#define E1000_MMIO_SIZE     0x20000
+
 // Receive Descriptor
 typedef struct {
     uint64_t buffer;   // Physical address of buffer

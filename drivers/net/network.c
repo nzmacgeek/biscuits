@@ -20,8 +20,8 @@ void net_register_interface(net_interface_t *iface) {
         return;
     }
 
-    // If interface name is empty or already exists, assign a dynamic name
-    if (iface->name[0] == '\0' || net_get_interface(iface->name)) {
+    // If interface name is empty, assign the next available ethX name dynamically
+    if (iface->name[0] == '\0') {
         // Find next available ethX number
         for (int i = 0; i < NET_MAX_INTERFACES; i++) {
             char candidate[16];
@@ -48,6 +48,10 @@ void net_register_interface(net_interface_t *iface) {
                 break;
             }
         }
+    } else if (net_get_interface(iface->name)) {
+        // Non-empty name that is already registered: reject rather than silently rename
+        kprintf("[NET]  Interface '%s' already registered, skipping!\n", iface->name);
+        return;
     }
 
     ifaces[iface_count++] = iface;

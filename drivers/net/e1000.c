@@ -8,6 +8,7 @@
 #include "../../include/bluey.h"
 #include "../../lib/stdio.h"
 #include "../../lib/string.h"
+#include "../../kernel/paging.h"
 #include "e1000.h"
 #include "network.h"
 
@@ -72,6 +73,15 @@ static void e1000_read_mac(void) {
     e1000_mac[5] = (mac_word >> 8) & 0xFF;
 }
 
+// Map a 128KB MMIO region (typical e1000 BAR0 size) into kernel page tables
+// so that it can be safely accessed without causing a page fault.
+// paging_map() is void; on allocation failure it logs an error internally.
+static void e1000_map_mmio(uint32_t base) {
+    for (uint32_t off = 0; off < E1000_MMIO_SIZE; off += PAGE_SIZE) {
+        paging_map(base + off, base + off, PAGE_PRESENT | PAGE_WRITABLE);
+    }
+}
+
 // Simplified PCI scan for e1000
 // In a full implementation, this would be a proper PCI bus scan
 static int e1000_probe(void) {
@@ -85,6 +95,11 @@ static int e1000_probe(void) {
 
     for (int i = 0; probe_bases[i]; i++) {
         e1000_mmio_base = probe_bases[i];
+
+        // Map the MMIO region into kernel page tables before accessing it.
+        // The kernel only identity-maps the first 4MB; these high addresses
+        // must be explicitly mapped or any register access will page-fault.
+        e1000_map_mmio(e1000_mmio_base);
 
         // Try to read device status register
         uint32_t status = e1000_read32(E1000_REG_STATUS);
