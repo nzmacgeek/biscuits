@@ -28,6 +28,7 @@
 #include "devev.h"
 #include "netctl.h"
 #include "socket.h"
+#include "module.h"
 #include "../net/tcpip.h"
 #include "../fs/vfs.h"
 
@@ -2349,6 +2350,51 @@ static int32_t sys_reboot(uint32_t magic1, uint32_t magic2, uint32_t cmd) {
     return 0;
 }
 
+// Module loading syscalls
+#define MODULE_IMAGE_MAX (1024 * 1024)  // 1 MB max module image size
+
+static int32_t sys_init_module(const void *module_image, uint32_t len, const char *param_values) {
+    (void)param_values; // Parameters not yet implemented
+
+    if (!module_image || len == 0) return -BLUEY_EINVAL;
+
+    // Enforce sane maximum module image size
+    if (len > MODULE_IMAGE_MAX) return -BLUEY_E2BIG;
+
+    // For security, only allow root to load modules
+    if (multiuser_current_uid() != 0) return -BLUEY_EPERM;
+
+    // Allocate temporary buffer to copy from userspace
+    uint8_t *buffer = (uint8_t*)kheap_alloc(len, 0);
+    if (!buffer) return -BLUEY_ENOMEM;
+
+    memcpy(buffer, module_image, len);
+
+    kprintf("[SYS]  Loading module from memory (len=%u)\n", len);
+
+    // Use a placeholder name; module_load_from_memory will update it from module_info
+    int result = module_load_from_memory(NULL, buffer, len);
+
+    kheap_free(buffer);
+
+    if (result < 0) return -BLUEY_EINVAL;
+    return 0;
+}
+
+static int32_t sys_delete_module(const char *name, uint32_t flags) {
+    (void)flags; // Flags not yet implemented
+
+    if (!name) return -BLUEY_EINVAL;
+
+    // For security, only allow root to unload modules
+    if (multiuser_current_uid() != 0) return -BLUEY_EPERM;
+
+    int result = module_unload(name);
+    if (result < 0) return -BLUEY_ENOENT;
+    return 0;
+}
+
+
 // Main syscall dispatch function - called from syscall.asm
 // regs.eax = syscall number, regs.ebx = arg1, regs.ecx = arg2, regs.edx = arg3
 int32_t syscall_dispatch(registers_t *regs) {
@@ -2726,6 +2772,12 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_MODIFY_LDT:
             /* Return success so musl falls through to the GS-load path. */
             ret = 0;
+            break;
+        case SYS_INIT_MODULE:
+            ret = sys_init_module((const void*)regs->ebx, regs->ecx, (const char*)regs->edx);
+            break;
+        case SYS_DELETE_MODULE:
+            ret = sys_delete_module((const char*)regs->ebx, regs->ecx);
             break;
         default: {
             /* Unknown syscall - don't crash. Log caller info to help mapping. */

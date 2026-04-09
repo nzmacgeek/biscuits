@@ -205,6 +205,8 @@ I386_C_SOURCES = \
   kernel/sha256.c \
   kernel/password.c \
   kernel/module.c \
+  kernel/module_elf.c \
+  kernel/ksyms.c \
   kernel/rtc.c \
   kernel/multiuser.c \
   kernel/sysinfo.c \
@@ -222,6 +224,8 @@ I386_C_SOURCES = \
   drivers/driver.c \
   drivers/modules.c \
   drivers/net/ne2000.c \
+  drivers/net/rtl8139.c \
+  drivers/net/3c509.c \
   drivers/net/loopback.c \
   drivers/net/network.c \
     kernel/syscall.c \
@@ -246,6 +250,8 @@ I386_C_SOURCES = \
     drivers/ata.c \
     drivers/driver.c \
     drivers/net/ne2000.c \
+    drivers/net/rtl8139.c \
+    drivers/net/3c509.c \
     drivers/net/network.c \
     fs/vfs.c \
     fs/fat.c \
@@ -468,6 +474,15 @@ $(MOUNT_BLUEYFS): tools/mount_blueyfs.c ; @mkdir -p $(dir $@); \
 
 $(BUILD_USER_DIR)/init.elf: user/init.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
 
+# Module tools (insmod, rmmod)
+$(BUILD_USER_DIR)/insmod: user/insmod.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
+
+$(BUILD_USER_DIR)/rmmod: user/rmmod.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
+
+.PHONY: module-tools
+module-tools: $(BUILD_USER_DIR)/insmod $(BUILD_USER_DIR)/rmmod
+	@echo "  [MODTOOLS] Built insmod and rmmod"
+
 musl-init: $(MUSL_INIT_TARGET)
 
 $(MUSL_INIT_TARGET): tests/musl/init/init.c tests/musl/init/syscalls.c ; @mkdir -p $(dir $@); \
@@ -492,6 +507,27 @@ toolinfo:
 	@printf "  grub-mkrescue: "; if command -v grub-mkrescue >/dev/null 2>&1; then grub-mkrescue --version 2>&1 | head -1; else echo "not installed"; fi
 	@printf "  xorriso     : "; if command -v xorriso >/dev/null 2>&1; then xorriso --version 2>&1 | head -1; else echo "not installed"; fi
 	@echo ""
+
+# ---------------------------------------------------------------------------
+# Kernel Module Building
+# Builds .ko files (kernel modules) that can be dynamically loaded
+# ---------------------------------------------------------------------------
+MODULE_CFLAGS := -m32 -std=gnu11 -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -ffreestanding -c
+MODULE_LDFLAGS := -m elf_i386 -r
+
+# Build a simple test module
+modules/test_module.ko: modules/test_module.c | modules
+	@echo "  [CC]  $< (module)"
+	@$(CC) $(MODULE_CFLAGS) -o modules/test_module.o $<
+	@$(LD) $(MODULE_LDFLAGS) -o $@ modules/test_module.o
+	@echo "  [LD]  $@ (kernel module)"
+
+modules:
+	@mkdir -p modules
+
+.PHONY: test-module
+test-module: modules/test_module.ko
+	@echo "  [MODULE] Test module built at modules/test_module.ko"
 
 help:
 	@echo "BlueyOS Build System - 'Let's Play!' - Bluey"

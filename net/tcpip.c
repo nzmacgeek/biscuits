@@ -19,11 +19,11 @@ static tcpip_config_t cfg;
 static int            tcpip_ready = 0;
 
 void tcpip_init(void) {
-    // Default configuration: QEMU user-mode networking (slirp)
-    cfg.ip      = htonl(TCPIP_CFG_IP_DEFAULT);
-    cfg.gateway = htonl(TCPIP_CFG_GW_DEFAULT);
-    cfg.netmask = htonl(TCPIP_CFG_MASK_DEFAULT);
-    cfg.dns     = htonl(TCPIP_CFG_DNS_DEFAULT);
+    // No default IP configuration - must be configured from userspace
+    cfg.ip      = 0;
+    cfg.gateway = 0;
+    cfg.netmask = 0;
+    cfg.dns     = 0;
     strncpy(cfg.ifname, "eth0", sizeof(cfg.ifname) - 1);
     cfg.loopback_ip = htonl(0x7F000001u);
     cfg.loopback_mask = htonl(0xFF000000u);
@@ -46,11 +46,7 @@ void tcpip_init(void) {
     udp_init();
     tcp_init();
 
-    char ipstr[20], gwstr[20];
-    ip_to_str(cfg.ip,      ipstr);
-    ip_to_str(cfg.gateway, gwstr);
-
-    kprintf("[TCP/IP] IPv4 stack ready. IP: %s  GW: %s\n", ipstr, gwstr);
+    kprintf("[TCP/IP] IPv4 stack ready (no IP configured - use userspace tools)\n");
     tcpip_ready = 1;
 }
 
