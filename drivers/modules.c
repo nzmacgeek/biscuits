@@ -11,12 +11,14 @@
 #include "net/ne2000.h"
 #include "net/rtl8139.h"
 #include "net/3c509.h"
+#include "net/e1000.h"
 
 static int keyboard_driver_init(void) { keyboard_init(); return 0; }
 static int ata_driver_init(void)      { return ata_init(); }
 static int ne2000_driver_init(void)   { ne2000_init(); return 0; }
 static int rtl8139_driver_init(void)  { rtl8139_init(); return 0; }
 static int el3_driver_init(void)      { el3_init(); return 0; }
+static int e1000_driver_init(void)    { e1000_init(); return 0; }
 
 static driver_t keyboard_driver = {
     .name = "keyboard",
@@ -46,6 +48,12 @@ static driver_t el3_driver = {
     .name = "3c509",
     .type = DRIVER_NET,
     .init = el3_driver_init,
+};
+
+static driver_t e1000_driver = {
+    .name = "e1000",
+    .type = DRIVER_NET,
+    .init = e1000_driver_init,
 };
 
 static module_t keyboard_module = {
@@ -78,11 +86,18 @@ static module_t el3_module = {
     .driver = &el3_driver,
 };
 
+static module_t e1000_module = {
+    .name = "e1000",
+    .description = "Intel e1000 Gigabit Ethernet driver",
+    .driver = &e1000_driver,
+};
+
 void driver_modules_register(void) {
     module_register(&keyboard_module);
     module_register(&ata_module);
     module_register(&ne2000_module);
     module_register(&rtl8139_module);
     module_register(&el3_module);
+    module_register(&e1000_module);
     kprintf("[MOD]  Built-in driver modules registered\n");
 }

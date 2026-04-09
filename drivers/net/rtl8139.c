@@ -158,7 +158,7 @@ int rtl8139_ioctl(uint32_t cmd, void *arg) {
 }
 
 static net_interface_t rtl8139_iface = {
-    .name        = "eth0",
+    .name        = "",  // Will be assigned dynamically (eth0, eth1, etc.)
     .mac         = {0},
     .send        = rtl8139_send,
     .recv        = rtl8139_recv,
@@ -211,6 +211,7 @@ void rtl8139_init(void) {
             for (int j = 0; j < 6; j++) rtl8139_iface.mac[j] = rtl_mac[j];
             rtl8139_iface.up = 1;
             net_register_interface(&rtl8139_iface);
+            kprintf("[NET]  Registered as %s\n", rtl8139_iface.name);
             kprintf("%s\n", MSG_RTL8139_INIT);
             return;
         }

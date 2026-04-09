@@ -112,7 +112,7 @@ static int ne2000_recv(uint8_t *buf, uint16_t *len) {
 }
 
 static net_interface_t ne2000_iface = {
-    .name        = "eth0",
+    .name        = "",  // Will be assigned dynamically (eth0, eth1, etc.)
     .mac         = {0},
     .send        = ne2000_send,
     .recv        = ne2000_recv,
@@ -148,6 +148,7 @@ void ne2000_init(void) {
             for (int j = 0; j < 6; j++) ne2000_iface.mac[j] = ne_mac[j];
             ne2000_iface.up = 1;
             net_register_interface(&ne2000_iface);
+            kprintf("[NET]  Registered as %s\n", ne2000_iface.name);
             kprintf("%s\n", MSG_NET_INIT);
             return;
         }

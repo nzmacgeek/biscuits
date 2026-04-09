@@ -19,6 +19,41 @@ void net_register_interface(net_interface_t *iface) {
         kprintf("[NET]  Too many interfaces! Jack needs a bigger snorkel!\n");
         return;
     }
+
+    // If interface name is empty, assign the next available ethX name dynamically
+    if (iface->name[0] == '\0') {
+        // Find next available ethX number
+        for (int i = 0; i < NET_MAX_INTERFACES; i++) {
+            char candidate[16];
+            candidate[0] = 'e'; candidate[1] = 't'; candidate[2] = 'h';
+
+            // Simple integer to string conversion
+            if (i < 10) {
+                candidate[3] = '0' + i;
+                candidate[4] = '\0';
+            } else {
+                candidate[3] = '0' + (i / 10);
+                candidate[4] = '0' + (i % 10);
+                candidate[5] = '\0';
+            }
+
+            // Check if this name is available
+            if (!net_get_interface(candidate)) {
+                // Copy the new name to the interface
+                int j;
+                for (j = 0; candidate[j] && j < 15; j++) {
+                    iface->name[j] = candidate[j];
+                }
+                iface->name[j] = '\0';
+                break;
+            }
+        }
+    } else if (net_get_interface(iface->name)) {
+        // Non-empty name that is already registered: reject rather than silently rename
+        kprintf("[NET]  Interface '%s' already registered, skipping!\n", iface->name);
+        return;
+    }
+
     ifaces[iface_count++] = iface;
 }
 
