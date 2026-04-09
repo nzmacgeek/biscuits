@@ -55,7 +55,7 @@ static int read_file(const char *path, char *buffer, int max_size) {
     }
 
     if (total == max_size) {
-        char extra;
+        char extra = 0;
         int n = syscall3(SYS_READ, fd, (int)&extra, 1);
         if (n > 0) {
             my_write(2, "insmod: module file too large\n");
