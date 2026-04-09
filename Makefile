@@ -226,6 +226,7 @@ I386_C_SOURCES = \
   drivers/net/ne2000.c \
   drivers/net/rtl8139.c \
   drivers/net/3c509.c \
+  drivers/net/e1000.c \
   drivers/net/loopback.c \
   drivers/net/network.c \
     kernel/syscall.c \
@@ -252,6 +253,7 @@ I386_C_SOURCES = \
     drivers/net/ne2000.c \
     drivers/net/rtl8139.c \
     drivers/net/3c509.c \
+    drivers/net/e1000.c \
     drivers/net/network.c \
     fs/vfs.c \
     fs/fat.c \
