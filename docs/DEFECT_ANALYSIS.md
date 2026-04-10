@@ -31,7 +31,7 @@ not yet set up this either crashes or silently corrupts memory.
 ---
 
 ### K-2 🔴 vfork + execve failure → EIP=0x33 page fault crash
-**Status:** OPEN — needs investigation
+**Status:** PARTIALLY FIXED (this PR)
 
 From the log:
 ```
@@ -44,7 +44,7 @@ From the log:
 PID 19 was a `vforked` child of claw (pid 2) attempting to exec
 `dimsim-postinst-walkies` (`/bin/bash`).  After `execve` was logged as
 "preserving shared vfork address space", execution jumped to address `0x33`
-(= the x86 user-mode CS segment selector in typical GDT layouts).
+(= `GDT_TLS_SEL`, the per-thread TLS segment selector).
 
 **Root cause hypothesis:** a return-address slot on the process's user stack
 is being read as `0x33` — either:
@@ -54,15 +54,19 @@ is being read as `0x33` — either:
 - The vfork `execve` error path (when execve fails to locate a binary) does
   not cleanly unwind and leaves a stale register value.
 
-**Next steps:**
-1. Audit `kernel/signal.c` — ensure signal delivery only modifies the target
-   process's saved registers, never `proc_current` when the target differs.
-2. Check that `execve` error paths restore the vfork-shared address space
-   pointer before returning to the child, so the child's `_exit(127)` call
-   succeeds.
-3. Add a guard in the page-fault handler: if EIP < 0x1000 and
-   `syslog_get_verbose() >= 1`, dump the full register state and process
-   credentials before killing the process.
+**Fixes applied:**
+1. `kernel/syscall.c` (`sys_execve` cleanup): when `execve` fails before
+   `process_exec_replace()` is called and the process has
+   `PROC_FLAG_VFORK_SHARED_VM`, now calls `process_vfork_execve_failed()` to
+   unblock the waiting vfork parent.  Previously the parent was stuck in
+   `PROC_WAITING` indefinitely.
+2. `kernel/paging.c` (`page_fault_handler`): when `EIP < 0x1000` and
+   `syslog_get_verbose() >= VERBOSE_INFO`, now dumps the full register frame
+   (EAX–EDI, CS, DS, GS, EFLAGS, TLS base) to aid diagnosis.
+
+**Remaining investigation:**
+- Audit `kernel/signal.c` — ensure signal delivery only modifies the target
+  process's saved registers, never `proc_current` when the target differs.
 
 ---
 
@@ -125,10 +129,13 @@ No such file or directory` on every invocation.  This is likely musl's
 `getcwd()` falling back to manual directory traversal when the kernel syscall
 fails, and the VFS not returning `.` / `..` entries for the root directory.
 
-**Next steps:**
-- Ensure `vfs_readdir("/")` (and all directories) returns `.` and `..` entries.
-- Verify the kernel returns the correct errno and buffer length for `getcwd`
-  on the root directory.
+**Fix applied:** `vfs_readdir()` now prepends synthetic `.` and `..` entries
+(with correct inode numbers from `vfs_stat`) to every directory listing.
+`biscuitfs_stat_cb` now populates `out->inode`.  The `inode` field has been
+added to `vfs_stat_t` for this purpose.
+
+**Remaining:** verify end-to-end `getcwd` via musl's fallback path with the
+new `getdents` entries.
 
 ---
 
@@ -147,7 +154,7 @@ see **K-8** below.
 ---
 
 ### K-8 🟡 `[VFS DBG]`, `[BISCUITFS DBG]`, `[ELF DBG]` not gated on verbose
-**Status:** OPEN
+**Status:** FIXED (this PR)
 
 From the log, every `open()` call produces two kernel debug lines:
 ```
@@ -156,13 +163,17 @@ From the log, every `open()` call produces two kernel debug lines:
 ```
 Every ELF load produces multiple `[ELF DBG]` stack-mapping lines.
 
-These should be gated on `verbose >= VERBOSE_DEBUG` (2) in:
-- `fs/vfs.c` — `[VFS DBG]` lines
-- `fs/biscuitfs.c` — `[BISCUITFS DBG]` lines
-- `kernel/elf_loader.c` — `[ELF DBG]` lines
-
-**Next steps:** wrap each `kprintf("[VFS DBG]...")` / `kprintf("[BISCUITFS DBG]...")`
-/ `kprintf("[ELF DBG]...")` with `if (syslog_get_verbose() >= VERBOSE_DEBUG)`.
+**Fix applied:**
+- `fs/vfs.c`: all `[VFS DBG]` mount and open lines now gated on
+  `syslog_get_verbose() >= VERBOSE_DEBUG`.
+- `fs/blueyfs.c`: `biscuitfs_dbg_log_limited()` now returns 0 when
+  `verbose < VERBOSE_DEBUG`; remaining unconditional debug `kprintf` calls
+  wrapped with the same guard.  Also fixed an inverted `#if !BISCUITFS_DEBUG`
+  on `biscuitfs_dump_dir` (the diagnostic dump was running when debug was
+  *disabled* and doing nothing when debug was *enabled*).
+- `kernel/elf.c`: `[ELF DBG]` stack-mapping lines gated on
+  `VERBOSE_DEBUG`; `[ELF] Loaded segment` / `Stream-loaded segment` /
+  `Entry point` lines gated on `VERBOSE_INFO`.
 
 ---
 
@@ -182,12 +193,17 @@ linux /kernel root=/dev/hda verbose=2   # show DEBUG messages
 ---
 
 ### K-10 🟠 Signal delivery may corrupt wrong process state
-**Status:** OPEN — see K-2
+**Status:** PARTIALLY FIXED (this PR) — see K-2
 
 `[SIG] Sent CHLD to pid=2` appears immediately before the EIP=0x33 crash in
-pid=19.  Investigate `kernel/signal.c` to ensure the signal delivery path
-saves/restores `proc_current` correctly when the signal target is not the
-currently-scheduled process.
+pid=19.  The noisy per-signal log line has been gated behind
+`syslog_get_verbose() >= VERBOSE_INFO` so it no longer obscures other output
+at default verbosity.
+
+The full signal delivery path in `kernel/signal.c` should be audited to
+ensure the signal frame write to user stack only touches the target process's
+virtual address space (which requires the correct page directory to be active).
+This is tracked as part of K-2.
 
 ---
 

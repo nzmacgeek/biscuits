@@ -2243,6 +2243,12 @@ cleanup:
     if (path_copy) kheap_free(path_copy);
     if (argv_copy) syscall_free_string_vector(argv_copy);
     if (envp_copy) syscall_free_string_vector(envp_copy);
+    /* If execve failed before process_exec_replace() ran, the vfork parent is
+     * still blocked in PROC_WAITING.  Release it now so it is not stuck
+     * indefinitely while the child calls _exit(127). */
+    if (result != 0 && process && (process->flags & PROC_FLAG_VFORK_SHARED_VM)) {
+        process_vfork_execve_failed(process);
+    }
     return result;
 }
 

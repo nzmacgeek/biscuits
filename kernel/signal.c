@@ -5,6 +5,7 @@
 #include "paging.h"
 #include "process.h"
 #include "syscall.h"
+#include "syslog.h"
 
 #define SIGNAL_TRAMPOLINE_ADDR 0x7FFF0000u
 #define SIGNAL_FRAME_MAGIC     0x53494746u
@@ -170,7 +171,8 @@ int signal_send_pid(uint32_t pid, int sig) {
         signal_mark_pending(process, sig);
     }
 
-    kprintf("[SIG]  Sent %s to pid=%u\n", signal_name(sig), pid);
+    if (syslog_get_verbose() >= VERBOSE_INFO)
+        kprintf("[SIG]  Sent %s to pid=%u\n", signal_name(sig), pid);
     return 0;
 }
 
