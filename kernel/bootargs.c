@@ -2,11 +2,20 @@
 
 #include "../lib/string.h"
 
+static char boot_args_cmdline_storage[BOOT_ARGS_CMDLINE_LEN];
+
 static const char *boot_args_multiboot_cmdline(const uint32_t *mboot_info) {
     if (!mboot_info) return "";
     if ((mboot_info[0] & 0x4u) == 0) return "";
     if (mboot_info[4] == 0) return "";
     return (const char *)(uintptr_t)mboot_info[4];
+}
+
+static void boot_args_store_cmdline(const uint32_t *mboot_info) {
+    const char *cmdline = boot_args_multiboot_cmdline(mboot_info);
+
+    strncpy(boot_args_cmdline_storage, cmdline, sizeof(boot_args_cmdline_storage) - 1);
+    boot_args_cmdline_storage[sizeof(boot_args_cmdline_storage) - 1] = '\0';
 }
 
 static const char *boot_args_next_token(const char *cursor, const char **end_out) {
@@ -75,7 +84,8 @@ void boot_args_init(boot_args_t *out, const uint32_t *mboot_info) {
     if (!out) return;
 
     memset(out, 0, sizeof(*out));
-    out->cmdline = boot_args_multiboot_cmdline(mboot_info);
+    boot_args_store_cmdline(mboot_info);
+    out->cmdline = boot_args_cmdline_storage;
     out->safe_mode = boot_args_has_flag(out->cmdline, "safe");
     boot_args_get_value(out->cmdline, "root", out->root_device, sizeof(out->root_device));
     boot_args_get_value(out->cmdline, "rootfstype", out->root_fstype, sizeof(out->root_fstype));
@@ -83,4 +93,8 @@ void boot_args_init(boot_args_t *out, const uint32_t *mboot_info) {
         strncpy(out->init_path, "/sbin/init", sizeof(out->init_path) - 1);
         out->init_path[sizeof(out->init_path) - 1] = '\0';
     }
+}
+
+const char *boot_args_cmdline(void) {
+    return boot_args_cmdline_storage;
 }

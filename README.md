@@ -133,7 +133,9 @@ The default disk layout is:
 - `LBA 198656`: swap partition (`/dev/hda3`)
 
 GRUB now boots with `root=/dev/hda2 rootfstype=blueyfs`, and the kernel reads `/etc/fstab`
-after mounting root to enable swap and any additional simple mounts.
+after mounting root to enable swap and any additional simple mounts. The full loader-provided
+kernel command line is also preserved in `/proc/cmdline`, so Claw-specific boot options such as
+`claw.target=multi-user` or `claw.single=1` should be passed directly on the kernel command line.
 
 See [TESTING.md](TESTING.md) for detailed testing instructions and expected output.
 

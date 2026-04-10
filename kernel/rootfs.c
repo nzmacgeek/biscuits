@@ -152,8 +152,10 @@ void rootfs_ensure_layout(void) {
     static const char *dirs[] = {
         "/bin",
         "/boot",
+        "/dev",
         "/etc",
         "/lib",
+        "/proc",
         "/root",
         "/sbin",
         "/tmp",

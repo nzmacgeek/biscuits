@@ -52,6 +52,7 @@
 #include "../fs/vfs.h"
 #include "../fs/fat.h"
 #include "../fs/blueyfs.h"
+#include "../fs/procfs.h"
 #include "../net/tcpip.h"
 #include "../shell/shell.h"
 #include "syslog.h"
@@ -141,6 +142,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     boot_args_t boot_args;
     rootfs_config_t rootfs;
     uint32_t ram_mb = i386_multiboot_ram_mb(mboot_info);
+    bool root_mounted = false;
 
     // Step 1: Screen up first so we can print messages
     vga_init();
@@ -218,16 +220,26 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     vfs_init();
     vfs_register_fs(fat_get_filesystem());
     vfs_register_fs(biscuitfs_get_filesystem());
+    vfs_register_fs(procfs_get_filesystem());
 
     // Step 11: ATA disk driver (module)
     if (module_load("ata") == 0) {
         if (rootfs_mount_config(&rootfs) != 0) {
             kprintf("[VFS]  No recognised filesystem - running diskless\n");
         } else {
+            root_mounted = true;
+            rootfs_ensure_layout();
+        }
+    }
+
+    if (vfs_mount("/proc", "procfs", 0) != 0) {
+        kprintf("[VFS]  Failed to mount procfs at /proc\n");
+    }
+
+    if (root_mounted) {
             rootfs_apply_fstab();
             // Flush early boot log once /var/log is reachable.
             syslog_flush_to_fs();
-        }
     }
 
     /* Debug: if /bin/init cannot be opened after mounting root, dump

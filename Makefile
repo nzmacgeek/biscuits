@@ -258,6 +258,7 @@ I386_C_SOURCES = \
     fs/vfs.c \
     fs/fat.c \
     fs/blueyfs.c \
+    fs/procfs.c \
     net/tcpip.c \
     net/arp.c \
     net/ip.c \
