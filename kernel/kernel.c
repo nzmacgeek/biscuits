@@ -61,48 +61,6 @@
 
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002u
 #define MULTIBOOT_INFO_MEMORY 0x00000001u
-#define MULTIBOOT_INFO_FRAMEBUFFER_INFO 0x00001000u
-
-typedef struct __attribute__((packed)) {
-    uint8_t red_field_position;
-    uint8_t red_mask_size;
-    uint8_t green_field_position;
-    uint8_t green_mask_size;
-    uint8_t blue_field_position;
-    uint8_t blue_mask_size;
-} multiboot_rgb_info_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t flags;
-    uint32_t mem_lower;
-    uint32_t mem_upper;
-    uint32_t boot_device;
-    uint32_t cmdline;
-    uint32_t mods_count;
-    uint32_t mods_addr;
-    uint32_t syms[4];
-    uint32_t mmap_length;
-    uint32_t mmap_addr;
-    uint32_t drives_length;
-    uint32_t drives_addr;
-    uint32_t config_table;
-    uint32_t boot_loader_name;
-    uint32_t apm_table;
-    uint32_t vbe_control_info;
-    uint32_t vbe_mode_info;
-    uint16_t vbe_mode;
-    uint16_t vbe_interface_seg;
-    uint16_t vbe_interface_off;
-    uint16_t vbe_interface_len;
-    uint64_t framebuffer_addr;
-    uint32_t framebuffer_pitch;
-    uint32_t framebuffer_width;
-    uint32_t framebuffer_height;
-    uint8_t framebuffer_bpp;
-    uint8_t framebuffer_type;
-    multiboot_rgb_info_t framebuffer_rgb;
-} multiboot_info_t;
-
 // Kernel end symbol from linker script
 extern uint32_t kernel_end;
 
@@ -116,32 +74,6 @@ static uint32_t i386_multiboot_ram_mb(const uint32_t *mboot_info) {
     }
 
     return (mboot_info[2] + 1024u) / 1024u;
-}
-
-static int i386_multiboot_framebuffer(const uint32_t *mboot_info, bootfb_mode_t *out) {
-    const multiboot_info_t *info = (const multiboot_info_t *)(const void *)mboot_info;
-
-    if (!mboot_info || !out) return 0;
-    if ((mboot_info[0] & MULTIBOOT_INFO_FRAMEBUFFER_INFO) == 0) return 0;
-    if (info->framebuffer_type != 1) return 0;
-    if (info->framebuffer_addr == 0 || info->framebuffer_pitch == 0 ||
-        info->framebuffer_width == 0 || info->framebuffer_height == 0) {
-        return 0;
-    }
-
-    out->address = (uintptr_t)info->framebuffer_addr;
-    out->pitch = info->framebuffer_pitch;
-    out->width = info->framebuffer_width;
-    out->height = info->framebuffer_height;
-    out->bpp = info->framebuffer_bpp;
-    out->type = info->framebuffer_type;
-    out->red_field_position = info->framebuffer_rgb.red_field_position;
-    out->red_mask_size = info->framebuffer_rgb.red_mask_size;
-    out->green_field_position = info->framebuffer_rgb.green_field_position;
-    out->green_mask_size = info->framebuffer_rgb.green_mask_size;
-    out->blue_field_position = info->framebuffer_rgb.blue_field_position;
-    out->blue_mask_size = info->framebuffer_rgb.blue_mask_size;
-    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +140,6 @@ static int kernel_bootstrap_first_user(const char *init_path) {
 void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     boot_args_t boot_args;
     rootfs_config_t rootfs;
-    bootfb_mode_t framebuffer;
     uint32_t ram_mb = i386_multiboot_ram_mb(mboot_info);
 
     // Step 1: Screen up first so we can print messages
@@ -220,12 +151,9 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
         bluey_panic("Not booted by a Multiboot-compliant bootloader! (Bandit: 'What?!')");
     }
 
-    if (!i386_multiboot_framebuffer(mboot_info, &framebuffer)) {
-        memset(&framebuffer, 0, sizeof(framebuffer));
-    }
-
-    bluey_boot_show_splash("I386", ram_mb, framebuffer.address ? &framebuffer : NULL);
     boot_args_init(&boot_args, mboot_info);
+
+    bluey_boot_show_splash("I386", ram_mb);
     rootfs_config_init(&rootfs);
     rootfs_apply_boot_args(&rootfs, &boot_args);
 

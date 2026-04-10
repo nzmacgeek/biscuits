@@ -2,7 +2,6 @@
 // Episode ref: "Flat Pack" - everything starts from nothing, even pixels
 #include "../include/types.h"
 #include "../include/ports.h"
-#include "bootfb.h"
 #include "vga.h"
 
 #define VGA_MEM    ((uint16_t*)0xB8000)
@@ -10,15 +9,9 @@
 static int vga_row, vga_col;
 static uint8_t vga_color;
 static int vga_protected_rows;
-static uint16_t vga_shadow[VGA_TEXT_WIDTH * VGA_TEXT_HEIGHT];
 
 static inline uint16_t vga_entry(char c, uint8_t color) {
     return (uint16_t)(uint8_t)c | ((uint16_t)color << 8);
-}
-
-static inline void vga_store_entry(int index, uint16_t entry) {
-    vga_shadow[index] = entry;
-    VGA_MEM[index] = entry;
 }
 
 static void vga_update_cursor(void) {
@@ -34,11 +27,10 @@ static void vga_scroll(void) {
     if (start_row < 0) start_row = 0;
     if (start_row >= VGA_TEXT_HEIGHT) start_row = VGA_TEXT_HEIGHT - 1;
     for (i = start_row * VGA_TEXT_WIDTH; i < (VGA_TEXT_HEIGHT - 1) * VGA_TEXT_WIDTH; i++)
-        vga_store_entry(i, vga_shadow[i + VGA_TEXT_WIDTH]);
+        VGA_MEM[i] = VGA_MEM[i + VGA_TEXT_WIDTH];
     for (i = (VGA_TEXT_HEIGHT - 1) * VGA_TEXT_WIDTH; i < VGA_TEXT_HEIGHT * VGA_TEXT_WIDTH; i++)
-        vga_store_entry(i, blank);
+        VGA_MEM[i] = blank;
     vga_row = VGA_TEXT_HEIGHT - 1;
-    bootfb_sync_vga_buffer(vga_shadow, VGA_TEXT_WIDTH, VGA_TEXT_HEIGHT);
 }
 
 void vga_init(void) {
@@ -51,9 +43,8 @@ void vga_init(void) {
 void vga_clear(void) {
     uint16_t blank = vga_entry(' ', vga_color);
     int i;
-    for (i = 0; i < VGA_TEXT_WIDTH * VGA_TEXT_HEIGHT; i++) vga_store_entry(i, blank);
+    for (i = 0; i < VGA_TEXT_WIDTH * VGA_TEXT_HEIGHT; i++) VGA_MEM[i] = blank;
     vga_protected_rows = 0;
-    bootfb_clear_console();
     vga_row = 0; vga_col = 0;
     vga_update_cursor();
 }
@@ -69,13 +60,10 @@ void vga_set_cursor(int x, int y) {
 
 void vga_write_cell(int x, int y, char c, uint8_t fg, uint8_t bg) {
     uint8_t color;
-    uint16_t entry;
 
     if (x < 0 || x >= VGA_TEXT_WIDTH || y < 0 || y >= VGA_TEXT_HEIGHT) return;
     color = (uint8_t)((bg << 4) | (fg & 0x0F));
-    entry = vga_entry(c, color);
-    vga_store_entry(y * VGA_TEXT_WIDTH + x, entry);
-    bootfb_sync_vga_cell(x, y, c, fg, bg);
+    VGA_MEM[y * VGA_TEXT_WIDTH + x] = vga_entry(c, color);
 }
 
 void vga_set_protected_rows(int rows) {
@@ -95,8 +83,7 @@ void vga_putchar(char c) {
     else if (c == '\t') { vga_col = (vga_col + 8) & ~7; }
     else if (c == '\b') { if (vga_col > 0) vga_col--; }
     else {
-        vga_store_entry(vga_row * VGA_TEXT_WIDTH + vga_col, vga_entry(c, vga_color));
-        bootfb_sync_vga_cell(vga_col, vga_row, c, (uint8_t)(vga_color & 0x0F), (uint8_t)(vga_color >> 4));
+        VGA_MEM[vga_row * VGA_TEXT_WIDTH + vga_col] = vga_entry(c, vga_color);
         vga_col++;
     }
     if (vga_col >= VGA_TEXT_WIDTH) { vga_col = 0; vga_row++; }

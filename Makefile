@@ -217,7 +217,6 @@ I386_C_SOURCES = \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \
-  drivers/bootfb.c \
   drivers/vga.c \
   drivers/vt100.c \
   drivers/keyboard.c \

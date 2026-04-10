@@ -218,9 +218,13 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: in
         "biosdisk",
         "part_msdos",
         "ext2",
+        "configfile",
+        "normal",
         "multiboot",
         "serial",
         "terminal",
+        "video",
+        "vbe",
         "echo",
     ]
 
@@ -273,7 +277,13 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: in
         "set timeout=1\n"
         "set default=0\n"
         "menuentry \"BlueyOS - Hard Disk Boot\" {\n"
+        "    set gfxpayload=text\n"
         f"    multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
+        "    boot\n"
+        "}\n"
+        "menuentry \"BlueyOS - Safe Mode\" {\n"
+        "    set gfxpayload=text\n"
+        f"    multiboot /boot/blueyos.elf safe root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
         "    boot\n"
         "}\n"
     )
@@ -283,8 +293,8 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: in
         "serial --unit=0 --speed=115200\n"
         "terminal_output --append serial\n"
         "set root=(hd0,msdos1)\n"
-        f"multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
-        "boot\n"
+        "set prefix=(hd0,msdos1)/boot/grub\n"
+        "configfile /boot/grub/grub.cfg\n"
     )
     early_cfg.write_text(early_grub_cfg, encoding="ascii")
 
