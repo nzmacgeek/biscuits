@@ -104,7 +104,6 @@ void boot_args_init(boot_args_t *out, const uint32_t *mboot_info) {
                 v = v * 10 + (*p - '0');
                 p++;
             }
-            if (v < 0) v = 0;
             if (v > 2) v = 2;
             out->verbose = v;
         } else {

@@ -1931,10 +1931,10 @@ static int32_t sys_getcwd(char *buf, size_t size) {
     const char *cwd = process_get_cwd();
     size_t len = strlen(cwd);
 
-    /* Linux getcwd: when buf is NULL and size is 0 musl passes a real buffer,
-     * but some callers may pass NULL/0 expecting kernel allocation.
-     * Return EFAULT for NULL buf with non-zero size; for size==0 with a valid
-     * buf pointer we return EINVAL (Linux behaviour). */
+    /* Linux getcwd error priority: EFAULT (bad pointer) before EINVAL (bad
+     * size), so check buf first.  buf==NULL is always EFAULT regardless of
+     * size.  size==0 with a valid buf is EINVAL (Linux behaviour).
+     * When both are violated (buf==NULL, size==0) we return EFAULT. */
     if (!buf) return -BLUEY_EFAULT;
     if (size == 0) return -BLUEY_EINVAL;
     if (len + 1 > size) return -BLUEY_ERANGE;
