@@ -207,6 +207,29 @@ This is tracked as part of K-2.
 
 ---
 
+### K-11 🟠 Linux i386 credential syscalls collide with BlueyOS extensions
+**Status:** FIXED (this PR)
+
+BlueyOS reused syscall numbers 200-203 for `setpgid`, `getpgid`, `getpgrp`,
+and `devev_open`. On i386 Linux, that same range is used by musl for
+`getgid32`, `geteuid32`, `getegid32`, and `setreuid32`, with adjacent calls
+through 216 covering `setregid32`, `getgroups32`, `setgroups32`, `getres*`,
+and `setfs*`.
+
+That mismatch breaks libc-facing credential paths used by bash and admin tools
+such as `groupadd`, and makes the generated musl syscall table internally
+inconsistent.
+
+**Fix applied:** preserve the Linux i386 numbers for the 32-bit credential
+syscalls and `fchdir`, move BlueyOS-only process-group and device-event calls
+to extension numbers outside the Linux range, and implement the missing kernel
+handlers (`fchdir`, `setreuid32`, `setregid32`, `getgroups32`, `setgroups32`,
+`getresuid32`, `getresgid32`, `setfsuid32`, `setfsgid32`).
+
+**Important:** kernel and musl must be rebuilt together after this ABI change.
+
+---
+
 ## claw (nzmacgeek/claw)
 
 ### C-1 🟡 No `chdir("/")` at startup
@@ -451,10 +474,11 @@ includes an entry for signal 18.
 | 1 | kernel | K-2: EIP=0x33 crash after vfork+execve | 🔴 CRITICAL |
 | 2 | dimsim | D-1: run-postinst written with passwd content | 🔴 CRITICAL |
 | 3 | kernel | K-8: VFS/ELF debug lines not gated on verbose | 🟠 HIGH |
-| 4 | kernel | K-6: getcwd fails → bash can't find cwd | 🟡 MEDIUM |
-| 5 | dimsim | D-2: getent not available | 🟠 HIGH |
-| 6 | claw | C-1: no chdir("/") at startup | 🟡 MEDIUM |
-| 7 | kernel | K-10: signal delivery may corrupt wrong process | 🟠 HIGH |
-| 8 | musl | ML-1: getcwd fallback fails without . / .. entries | 🟡 MEDIUM |
-| 9 | bash | BB-2: SIGCONT (18) logged as "Unknown signal" | 🟡 MEDIUM |
-| 10 | matey | M-1: login not available at first boot | 🟡 MEDIUM |
+| 4 | kernel | K-11: syscall ABI collision breaks musl credential calls | 🟠 HIGH |
+| 5 | kernel | K-6: getcwd fails → bash can't find cwd | 🟡 MEDIUM |
+| 6 | dimsim | D-2: getent not available | 🟠 HIGH |
+| 7 | claw | C-1: no chdir("/") at startup | 🟡 MEDIUM |
+| 8 | kernel | K-10: signal delivery may corrupt wrong process | 🟠 HIGH |
+| 9 | musl | ML-1: getcwd fallback fails without . / .. entries | 🟡 MEDIUM |
+| 10 | bash | BB-2: SIGCONT (18) logged as "Unknown signal" | 🟡 MEDIUM |
+| 11 | matey | M-1: login not available at first boot | 🟡 MEDIUM |

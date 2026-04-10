@@ -1459,6 +1459,88 @@ static int32_t sys_setgid32(uint32_t gid) {
     return sys_setresgid32(gid, gid, 0xFFFFFFFFu);
 }
 
+static int32_t sys_setreuid32(uint32_t ruid, uint32_t euid) {
+    return sys_setresuid32(ruid, euid, 0xFFFFFFFFu);
+}
+
+static int32_t sys_setregid32(uint32_t rgid, uint32_t egid) {
+    return sys_setresgid32(rgid, egid, 0xFFFFFFFFu);
+}
+
+static int32_t sys_getgroups32(int size, uint32_t *list) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+    if (size < 0) return -BLUEY_EINVAL;
+    if (size == 0) return (int32_t)process->group_count;
+    if (!list) return -BLUEY_EFAULT;
+    if ((uint32_t)size < process->group_count) return -BLUEY_EINVAL;
+
+    for (uint32_t index = 0; index < process->group_count; index++) {
+        list[index] = process->groups[index];
+    }
+    return (int32_t)process->group_count;
+}
+
+static int32_t sys_setgroups32(size_t size, const uint32_t *list) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+    if (!multiuser_is_root()) return -BLUEY_EPERM;
+    if (size > PROC_MAX_GROUPS) return -BLUEY_EINVAL;
+    if (size > 0 && !list) return -BLUEY_EFAULT;
+
+    process->group_count = (uint32_t)size;
+    for (uint32_t index = 0; index < process->group_count; index++) {
+        process->groups[index] = list[index];
+    }
+    return 0;
+}
+
+static int32_t sys_getresuid32(uint32_t *ruid, uint32_t *euid, uint32_t *suid) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+    if (!ruid || !euid || !suid) return -BLUEY_EFAULT;
+
+    *ruid = process->uid;
+    *euid = process->euid;
+    *suid = process->euid;
+    return 0;
+}
+
+static int32_t sys_getresgid32(uint32_t *rgid, uint32_t *egid, uint32_t *sgid) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+    if (!rgid || !egid || !sgid) return -BLUEY_EFAULT;
+
+    *rgid = process->gid;
+    *egid = process->egid;
+    *sgid = process->egid;
+    return 0;
+}
+
+static int32_t sys_setfsuid32(uint32_t uid) {
+    process_t *process = process_current();
+
+    (void)uid;
+    if (!process) return -BLUEY_EPERM;
+
+    /* BlueyOS does not yet track a separate fsuid; report the current euid. */
+    return (int32_t)process->euid;
+}
+
+static int32_t sys_setfsgid32(uint32_t gid) {
+    process_t *process = process_current();
+
+    (void)gid;
+    if (!process) return -BLUEY_EPERM;
+
+    /* BlueyOS does not yet track a separate fsgid; report the current egid. */
+    return (int32_t)process->egid;
+}
+
 static int32_t sys_pselect6(int nfds,
                             void *readfds,
                             void *writefds,
@@ -1924,6 +2006,21 @@ static int32_t sys_chdir(const char *path) {
     if (vfs_stat(abs_path, &st) != 0) return -BLUEY_ENOENT;
     if (!st.is_dir) return -BLUEY_ENOTDIR;
     process_set_cwd(abs_path);
+    return 0;
+}
+
+static int32_t sys_fchdir(int fd) {
+    vfs_stat_t st;
+    const char *path;
+
+    if (fd < 0) return -BLUEY_EBADF;
+    if (vfs_fstat(fd, &st) != 0) return -BLUEY_EBADF;
+    if (!st.is_dir) return -BLUEY_ENOTDIR;
+
+    path = vfs_fd_get_path(fd);
+    if (!path || path[0] == '\0') return -BLUEY_EBADF;
+
+    process_set_cwd(path);
     return 0;
 }
 
@@ -2557,6 +2654,15 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_GETGID:
             ret = (int32_t)process_get_gid();
             break;
+        case SYS_GETGID32:
+            ret = (int32_t)process_get_gid();
+            break;
+        case SYS_GETEUID32:
+            ret = (int32_t)process_get_euid();
+            break;
+        case SYS_GETEGID32:
+            ret = (int32_t)process_get_egid();
+            break;
         case SYS_UNAME:
             ret = sys_uname((utsname_t*)regs->ebx);
             break;
@@ -2654,6 +2760,9 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_WRITEV:
             ret = sys_writev((int)regs->ebx, (const k_iovec_t*)regs->ecx, regs->edx);
+            break;
+        case SYS_FCHDIR:
+            ret = sys_fchdir((int)regs->ebx);
             break;
         case SYS_SET_TID_ADDRESS:
             ret = sys_set_tid_address((void*)regs->ebx);
@@ -2768,10 +2877,27 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_DEVEV_OPEN:
             ret = sys_devev_open();
             break;
+        case SYS_SETREUID32:
+            ret = sys_setreuid32((uint32_t)regs->ebx, (uint32_t)regs->ecx);
+            break;
+        case SYS_SETREGID32:
+            ret = sys_setregid32((uint32_t)regs->ebx, (uint32_t)regs->ecx);
+            break;
+        case SYS_GETGROUPS32:
+            ret = sys_getgroups32((int)regs->ebx, (uint32_t*)regs->ecx);
+            break;
+        case SYS_SETGROUPS32:
+            ret = sys_setgroups32((size_t)regs->ebx, (const uint32_t*)regs->ecx);
+            break;
         case SYS_SETRESUID32:
             ret = sys_setresuid32((uint32_t)regs->ebx,
                                   (uint32_t)regs->ecx,
                                   (uint32_t)regs->edx);
+            break;
+        case SYS_GETRESUID32:
+            ret = sys_getresuid32((uint32_t*)regs->ebx,
+                                  (uint32_t*)regs->ecx,
+                                  (uint32_t*)regs->edx);
             break;
         case SYS_SETUID32:
             ret = sys_setuid32((uint32_t)regs->ebx);
@@ -2781,8 +2907,19 @@ int32_t syscall_dispatch(registers_t *regs) {
                                   (uint32_t)regs->ecx,
                                   (uint32_t)regs->edx);
             break;
+        case SYS_GETRESGID32:
+            ret = sys_getresgid32((uint32_t*)regs->ebx,
+                                  (uint32_t*)regs->ecx,
+                                  (uint32_t*)regs->edx);
+            break;
         case SYS_SETGID32:
             ret = sys_setgid32((uint32_t)regs->ebx);
+            break;
+        case SYS_SETFSUID32:
+            ret = sys_setfsuid32((uint32_t)regs->ebx);
+            break;
+        case SYS_SETFSGID32:
+            ret = sys_setfsgid32((uint32_t)regs->ebx);
             break;
         /* ---- Reboot / poweroff ----------------------------------------- */
         case SYS_REBOOT:
