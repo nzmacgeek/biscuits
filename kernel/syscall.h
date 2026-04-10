@@ -124,6 +124,12 @@
 #define SYS_INIT_MODULE    128
 #define SYS_DELETE_MODULE  129
 
+// pipe2 — like pipe() but accepts O_CLOEXEC / O_NONBLOCK flags (bash uses this)
+#define SYS_PIPE2          331
+
+// faccessat2 — extended access check (bash uses this for path resolution)
+#define SYS_FACCESSAT2     439
+
 void syscall_init(void);
 // Called from syscall.asm - dispatches based on eax syscall number
 int32_t syscall_dispatch(registers_t *regs);

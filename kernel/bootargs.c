@@ -93,6 +93,24 @@ void boot_args_init(boot_args_t *out, const uint32_t *mboot_info) {
         strncpy(out->init_path, "/sbin/init", sizeof(out->init_path) - 1);
         out->init_path[sizeof(out->init_path) - 1] = '\0';
     }
+
+    /* verbose=N — kernel logging verbosity level (0=quiet, 1=info, 2=debug) */
+    {
+        char vbuf[4] = {0};
+        if (boot_args_get_value(out->cmdline, "verbose", vbuf, sizeof(vbuf))) {
+            int v = 0;
+            const char *p = vbuf;
+            while (*p >= '0' && *p <= '9') {
+                v = v * 10 + (*p - '0');
+                p++;
+            }
+            if (v < 0) v = 0;
+            if (v > 2) v = 2;
+            out->verbose = v;
+        } else {
+            out->verbose = 0;
+        }
+    }
 }
 
 const char *boot_args_cmdline(void) {

@@ -292,7 +292,7 @@ static int32_t sys_clone(const registers_t *regs) {
         return -BLUEY_ENOSYS;
     }
 
-    if (exit_signal != SIGCHLD) {
+    if (exit_signal != SIGCHLD && exit_signal != 0u) {
         kprintf("[SYS] clone unsupported exit signal=%u flags=0x%x\n", exit_signal, flags);
         return -BLUEY_ENOSYS;
     }
@@ -1690,6 +1690,33 @@ static int32_t sys_pipe_impl(int *fds) {
     return r < 0 ? r : 0;
 }
 
+/* pipe2(fds, flags) — identical to pipe() for our purposes.
+ * We accept but ignore O_CLOEXEC (0x80000) and O_NONBLOCK (0x800).
+ * Bash uses pipe2 when it is available; the kernel simply creates a
+ * plain pipe and the flags are a best-effort advisory only. */
+static int32_t sys_pipe2(int *fds, int flags) {
+    (void)flags;   /* O_CLOEXEC / O_NONBLOCK: accepted, not yet enforced */
+    if (!fds) return -BLUEY_EFAULT;
+    int r = vfs_pipe(fds);
+    return r < 0 ? r : 0;
+}
+
+/* faccessat2(dirfd, path, mode, flags) — check file accessibility.
+ * We map this to a simple vfs_stat existence check; full permission
+ * checking against uid/gid is a future enhancement.
+ * Bash calls this to probe PATH entries during command lookup. */
+static int32_t sys_faccessat2(int dirfd, const char *path, int mode, int flags) {
+    (void)dirfd;   /* AT_FDCWD assumed; relative paths not yet supported */
+    (void)flags;
+    (void)mode;
+    if (!path) return -BLUEY_EFAULT;
+    vfs_stat_t st;
+    /* F_OK (0) just checks existence; X_OK (1) / R_OK (4) / W_OK (2):
+     * we return success whenever the path exists in the VFS. */
+    if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
+    return 0;
+}
+
 /* Minimal fcntl: F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL */
 #define FCNTL_F_DUPFD   0
 #define FCNTL_F_GETFD   1
@@ -1901,9 +1928,15 @@ static int32_t sys_chdir(const char *path) {
 }
 
 static int32_t sys_getcwd(char *buf, size_t size) {
-    if (!buf || size == 0) return -BLUEY_EFAULT;
     const char *cwd = process_get_cwd();
     size_t len = strlen(cwd);
+
+    /* Linux getcwd: when buf is NULL and size is 0 musl passes a real buffer,
+     * but some callers may pass NULL/0 expecting kernel allocation.
+     * Return EFAULT for NULL buf with non-zero size; for size==0 with a valid
+     * buf pointer we return EINVAL (Linux behaviour). */
+    if (!buf) return -BLUEY_EFAULT;
+    if (size == 0) return -BLUEY_EINVAL;
     if (len + 1 > size) return -BLUEY_ERANGE;
     strncpy(buf, cwd, size - 1);
     buf[size - 1] = '\0';
@@ -2778,6 +2811,13 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_DELETE_MODULE:
             ret = sys_delete_module((const char*)regs->ebx, regs->ecx);
+            break;
+        case SYS_PIPE2:
+            ret = sys_pipe2((int*)regs->ebx, (int)regs->ecx);
+            break;
+        case SYS_FACCESSAT2:
+            ret = sys_faccessat2((int)regs->ebx, (const char*)regs->ecx,
+                                 (int)regs->edx, (int)regs->esi);
             break;
         default: {
             /* Unknown syscall - don't crash. Log caller info to help mapping. */
