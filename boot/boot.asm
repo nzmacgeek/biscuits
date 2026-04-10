@@ -5,7 +5,7 @@
 ; with no affiliation to Ludo Studio or the BBC.
 
 MBOOT_MAGIC    equ 0x1BADB002
-MBOOT_FLAGS    equ 0x00000003   ; page-align modules + provide memory map
+MBOOT_FLAGS    equ 0x00000007   ; page-align modules + memory map + video mode
 MBOOT_CHECKSUM equ -(MBOOT_MAGIC + MBOOT_FLAGS)
 
 section .multiboot
@@ -13,6 +13,15 @@ align 4
     dd MBOOT_MAGIC
     dd MBOOT_FLAGS
     dd MBOOT_CHECKSUM
+    dd 0                    ; header_addr (unused for ELF)
+    dd 0                    ; load_addr
+    dd 0                    ; load_end_addr
+    dd 0                    ; bss_end_addr
+    dd 0                    ; entry_addr
+    dd 0                    ; mode_type: linear graphics
+    dd 1024                 ; preferred width
+    dd 768                  ; preferred height
+    dd 32                   ; preferred depth
 
 section .bss
 align 16

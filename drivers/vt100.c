@@ -82,11 +82,8 @@ static inline void vga_write_space_at(int row, int col) {
     if (row < 0 || row >= VT_HEIGHT || col < 0 || col >= VT_WIDTH) {
         return;
     }
-    uint16_t *vga_buffer = (uint16_t *)0xB8000;
     uint8_t fg = sgr_bold ? (sgr_fg | 0x08) : sgr_fg;
-    uint8_t color = (uint8_t)((sgr_bg << 4) | (fg & 0x0F));
-    int index = row * VT_WIDTH + col;
-    vga_buffer[index] = ((uint16_t)color << 8) | (uint8_t)' ';
+    vga_write_cell(col, row, ' ', fg, sgr_bg);
 }
 
 // Erase from (r0,c0) inclusive to (r1,c1) exclusive with current background.

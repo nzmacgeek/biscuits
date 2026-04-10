@@ -16,6 +16,8 @@
 #define VGA_LIGHT_MAGENTA 13
 #define VGA_LIGHT_BROWN   14
 #define VGA_WHITE         15
+#define VGA_TEXT_WIDTH    80
+#define VGA_TEXT_HEIGHT   25
 #define BLUEY_BLUE   VGA_LIGHT_BLUE
 #define BINGO_ORANGE VGA_LIGHT_BROWN
 void vga_init(void);
@@ -25,3 +27,5 @@ void vga_puts(const char *s);
 void vga_flush(void);
 void vga_set_color(uint8_t fg, uint8_t bg);
 void vga_set_cursor(int x, int y);
+void vga_write_cell(int x, int y, char c, uint8_t fg, uint8_t bg);
+void vga_set_protected_rows(int rows);
