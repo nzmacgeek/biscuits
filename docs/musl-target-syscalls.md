@@ -50,6 +50,7 @@ The following is a snippet from the `kernel/syscall/syscall.h` file, which defin
 #define SYS_ACCESS        85
 #define SYS_FCHMOD        94
 #define SYS_FCHOWN        95
+#define SYS_FCHDIR        133
 #define SYS_LSTAT         107
 #define SYS_FCNTL         55
 #define SYS_GETPPID       64
@@ -62,18 +63,33 @@ The following is a snippet from the `kernel/syscall/syscall.h` file, which defin
 #define SYS_GETRANDOM     355
 // chown/fchown/lchown 32-bit uid variants (used by musl on i386)
 #define SYS_LCHOWN32      198
+#define SYS_GETGID32      200
+#define SYS_GETEUID32     201
+#define SYS_GETEGID32     202
+#define SYS_SETREUID32    203
+#define SYS_SETREGID32    204
+#define SYS_GETGROUPS32   205
+#define SYS_SETGROUPS32   206
 #define SYS_FCHOWN32      207
+#define SYS_SETRESUID32   208
+#define SYS_GETRESUID32   209
+#define SYS_SETRESGID32   210
+#define SYS_GETRESGID32   211
 #define SYS_CHOWN32       212
+#define SYS_SETUID32      213
+#define SYS_SETGID32      214
+#define SYS_SETFSUID32    215
+#define SYS_SETFSGID32    216
 // Process groups
-#define SYS_SETPGID       200
-#define SYS_GETPGID       201
-#define SYS_GETPGRP       202
+#define SYS_SETPGID       1000
+#define SYS_GETPGID       1001
+#define SYS_GETPGRP       1002
 // Mount / unmount
 #define SYS_UMOUNT2       52
 // Poll (event multiplexing for supervision and sockets)
 #define SYS_POLL          168
 // Device event channel
-#define SYS_DEVEV_OPEN    203
+#define SYS_DEVEV_OPEN    1003
 // Reboot / poweroff
 #define SYS_REBOOT        88
 ```

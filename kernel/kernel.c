@@ -161,7 +161,8 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 1b: Syslog — initialise ring buffer before any other subsystem
     syslog_init();
-    syslog_info("KERN", "BlueyOS kernel starting up");
+    syslog_set_verbose(boot_args.verbose);
+    syslog_info("KERN", "BlueyOS kernel starting up (verbose=%d)", boot_args.verbose);
 
     kprintf("  %s\n", BLUEYOS_VERSION_STRING);
     kprintf("  Codename : %s\n", BLUEYOS_CODENAME);
@@ -194,12 +195,14 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     ksym_export_net();        // Export networking symbols
     driver_modules_register();
 
-    // Step 5: Keyboard - PS/2, IRQ1 (module)
-    module_load("keyboard");
-
-    // Step 6: Heap - uses memory just after kernel image
+    // Step 5: Heap - uses memory just after kernel image
+    // Must be initialised before any module is loaded, as modules call
+    // kheap_alloc() during their probe/init routines.
     kheap_init((uint32_t)&kernel_end, 0x100000);  // 1MB heap
     kprintf("%s\n", MSG_HEAP_INIT);
+
+    // Step 6: Keyboard - PS/2, IRQ1 (module)
+    module_load("keyboard");
 
     // Step 7: Paging / virtual memory
     paging_init();
@@ -242,10 +245,10 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
             syslog_flush_to_fs();
     }
 
-    /* Debug: if /bin/init cannot be opened after mounting root, dump
-     * the mount table, list the root directory and /bin to help diagnose
-     * missing init payloads created by the host mkfs tool. */
-    {
+    /* Debug: if verbose>=1, dump the mount table, root directory and /bin
+     * to help diagnose missing init payloads created by the host mkfs tool.
+     * Pass verbose=1 on the kernel cmdline to enable. */
+    if (syslog_get_verbose() >= VERBOSE_INFO) {
         const int rootdbg_max_entries = 16;
         vfs_dirent_t *entries = (vfs_dirent_t *)kheap_alloc(sizeof(vfs_dirent_t) * rootdbg_max_entries, 0);
 

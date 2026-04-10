@@ -454,6 +454,16 @@ process_t *process_vfork_current(const registers_t *regs, int32_t *error_out) {
     return child;
 }
 
+void process_vfork_execve_failed(process_t *child) {
+    /* Called when execve() fails for a vfork child before process_exec_replace
+     * has had a chance to run.  The parent is still blocked in PROC_WAITING;
+     * we must unblock it here so it does not wait forever.  We do NOT clear
+     * PROC_FLAG_VFORK_SHARED_VM because the child is about to call _exit(),
+     * and we need the flag to prevent the shared page directory from being
+     * destroyed when the child is reaped. */
+    process_release_vfork_parent(child, 0);
+}
+
 void process_exec_replace(process_t *process, const char *name,
                           uint32_t entry, uint32_t user_esp,
                           uint32_t user_stack_base, uint32_t user_stack_top,

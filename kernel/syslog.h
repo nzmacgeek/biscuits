@@ -79,3 +79,22 @@ uint32_t syslog_count(void);
 // (e.g. __builtin_return_address(0)). This is useful for short-lived
 // instrumentation while debugging corruption sources.
 void syslog_record_caller(void *caller);
+
+// ---------------------------------------------------------------------------
+// Boot-time verbosity control
+// ---------------------------------------------------------------------------
+// verbose=0 (default): only EMERG/ALERT/CRIT/ERR echoed to VGA console
+// verbose=1           : also echo WARNING, NOTICE, INFO to console
+// verbose=2           : echo all messages including DEBUG to console
+//
+// The in-RAM ring buffer always stores every message regardless of level.
+// Verbosity only governs what appears on the VGA console during boot.
+//
+// Set from boot_args.verbose immediately after syslog_init().
+
+#define VERBOSE_QUIET  0   /* default — errors only on console */
+#define VERBOSE_INFO   1   /* errors + warnings + informational */
+#define VERBOSE_DEBUG  2   /* all messages including debug      */
+
+void syslog_set_verbose(int level);
+int  syslog_get_verbose(void);

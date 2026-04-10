@@ -12,6 +12,7 @@
 #include "process.h"
 #include "signal.h"
 #include "gdt.h"
+#include "syslog.h"
 
 // Physical memory manager: bitmap of frames (each bit = one 4KB page)
 // We support up to 128MB (32768 frames)
@@ -113,6 +114,26 @@ void page_fault_handler(registers_t *regs) {
     if (regs->err_code & 0x2) kprintf(", write");  else kprintf(", read");
     if (regs->err_code & 0x4) kprintf(", user");   else kprintf(", supervisor");
     kprintf(")\n[PGF]  EIP: 0x%x\n", regs->eip);
+
+    /* Extra diagnostic dump when EIP is in the low-address null region —
+     * these faults often indicate a corrupted code pointer (e.g. EIP set to
+     * a segment selector value such as 0x33).  Emit a full register frame
+     * so the developer can correlate with the signal/scheduling logs. */
+    if (regs->eip < 0x1000 && syslog_get_verbose() >= VERBOSE_INFO) {
+        process_t *dbg_proc = process_current();
+        kprintf("[PGF]  *** Low-address EIP fault (likely corrupted code pointer) ***\n");
+        kprintf("[PGF]  EAX=0x%08x EBX=0x%08x ECX=0x%08x EDX=0x%08x\n",
+                regs->eax, regs->ebx, regs->ecx, regs->edx);
+        kprintf("[PGF]  ESI=0x%08x EDI=0x%08x EBP=0x%08x ESP=0x%08x\n",
+                regs->esi, regs->edi, regs->ebp, regs->useresp);
+        kprintf("[PGF]  CS=0x%04x DS=0x%04x GS=0x%04x EFLAGS=0x%08x\n",
+                regs->cs, regs->ds, regs->gs, regs->eflags);
+        if (dbg_proc) {
+            kprintf("[PGF]  pid=%u uid=%u euid=%u name=%s tls_base=0x%08x\n",
+                    dbg_proc->pid, dbg_proc->uid, dbg_proc->euid,
+                    dbg_proc->name, dbg_proc->tls_base);
+        }
+    }
 
     /* Attempt grow-on-demand for user stack faults. */
     process_t *proc = process_current();

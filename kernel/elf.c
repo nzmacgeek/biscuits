@@ -10,6 +10,7 @@
 #include "kheap.h"
 #include "paging.h"
 #include "multiuser.h"
+#include "syslog.h"
 
 #define ELF_READ_CHUNK_SIZE   512u
 #define ELF_MAX_IMAGE_SIZE    (1024u * 1024u)
@@ -116,8 +117,9 @@ static int elf_map_stack_pages(uint32_t page_dir, uint32_t stack_base, uint32_t 
         pages_to_map = (stack_size / PAGE_SIZE) - 1u;
     }
 
-    kprintf("[ELF DBG] Mapping %u initial stack pages for page_dir=0x%08x top=0x%08x\n",
-            pages_to_map, page_dir, stack_top - PAGE_SIZE);
+    if (syslog_get_verbose() >= VERBOSE_DEBUG)
+        kprintf("[ELF DBG] Mapping %u initial stack pages for page_dir=0x%08x top=0x%08x\n",
+                pages_to_map, page_dir, stack_top - PAGE_SIZE);
 
     for (uint32_t page = 0; page < pages_to_map; page++) {
         uint32_t va = stack_top - ((page + 1u) * PAGE_SIZE);
@@ -131,7 +133,8 @@ static int elf_map_stack_pages(uint32_t page_dir, uint32_t stack_base, uint32_t 
             }
             return -1;
         }
-        kprintf("[ELF DBG]  map stack va=0x%08x -> phys=0x%08x\n", va, phys);
+        if (syslog_get_verbose() >= VERBOSE_DEBUG)
+            kprintf("[ELF DBG]  map stack va=0x%08x -> phys=0x%08x\n", va, phys);
         paging_map_in_directory(page_dir, va, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
     return 0;
@@ -248,8 +251,9 @@ int elf_load(const uint8_t *data, size_t len, uint32_t *entry_out) {
                    ph->p_memsz - ph->p_filesz);
         }
         loaded++;
-        kprintf("[ELF] Loaded segment %d: vaddr=0x%x size=%d\n",
-                i, ph->p_vaddr, ph->p_filesz);
+        if (syslog_get_verbose() >= VERBOSE_INFO)
+            kprintf("[ELF] Loaded segment %d: vaddr=0x%x size=%d\n",
+                    i, ph->p_vaddr, ph->p_filesz);
     }
 
     if (loaded == 0) {
@@ -258,7 +262,8 @@ int elf_load(const uint8_t *data, size_t len, uint32_t *entry_out) {
     }
 
     *entry_out = hdr->e_entry;
-    kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", hdr->e_entry);
+    if (syslog_get_verbose() >= VERBOSE_INFO)
+        kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", hdr->e_entry);
     return 0;
 }
 
@@ -276,7 +281,8 @@ int elf_build_initial_stack(uint32_t page_dir,
     uint32_t old_page_dir = paging_current_directory();
 
     if (elf_map_stack_pages(page_dir, stack_base, ELF_USER_STACK_SIZE) != 0) return -1;
-    kprintf("[ELF DBG] stack_base=0x%08x stack_top=0x%08x\n", stack_base, stack_top);
+    if (syslog_get_verbose() >= VERBOSE_DEBUG)
+        kprintf("[ELF DBG] stack_base=0x%08x stack_top=0x%08x\n", stack_base, stack_top);
     paging_switch_directory(page_dir);
     if (elf_zero_stack_pages(stack_base, ELF_USER_STACK_SIZE) != 0) {
         paging_switch_directory(old_page_dir);
@@ -351,7 +357,8 @@ int elf_build_initial_stack(uint32_t page_dir,
     if (stack_base_out) *stack_base_out = stack_base;
     if (stack_top_out) *stack_top_out = stack_top;
     if (stack_pointer_out) *stack_pointer_out = (uint32_t)(uintptr_t)stack_ptr;
-    kprintf("[ELF DBG] final user stack pointer = 0x%08x\n", (uint32_t)(uintptr_t)stack_ptr);
+    if (syslog_get_verbose() >= VERBOSE_DEBUG)
+        kprintf("[ELF DBG] final user stack pointer = 0x%08x\n", (uint32_t)(uintptr_t)stack_ptr);
     return 0;
 }
 
@@ -412,8 +419,9 @@ static int elf_load_into_address_space(uint32_t page_dir,
         }
 
         loaded++;
-        kprintf("[ELF] Loaded segment %d: vaddr=0x%x size=%d\n",
-                i, ph->p_vaddr, ph->p_filesz);
+        if (syslog_get_verbose() >= VERBOSE_INFO)
+            kprintf("[ELF] Loaded segment %d: vaddr=0x%x size=%d\n",
+                    i, ph->p_vaddr, ph->p_filesz);
     }
 
     paging_switch_directory(old_page_dir);
@@ -425,7 +433,8 @@ static int elf_load_into_address_space(uint32_t page_dir,
 
     *entry_out = hdr->e_entry;
     if (image_end_out) *image_end_out = image_end;
-    kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", hdr->e_entry);
+    if (syslog_get_verbose() >= VERBOSE_INFO)
+        kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", hdr->e_entry);
     return 0;
 }
 
@@ -529,8 +538,9 @@ int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_le
         }
 
         loaded++;
-        kprintf("[ELF] Stream-loaded segment %d: vaddr=0x%x size=%d\n",
-                i, ph->p_vaddr, ph->p_filesz);
+        if (syslog_get_verbose() >= VERBOSE_INFO)
+            kprintf("[ELF] Stream-loaded segment %d: vaddr=0x%x size=%d\n",
+                    i, ph->p_vaddr, ph->p_filesz);
     }
 
     paging_switch_directory(old_page_dir);
@@ -543,7 +553,8 @@ int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_le
 
     *entry_out = hdr.e_entry;
     if (image_end_out) *image_end_out = image_end;
-    kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", hdr.e_entry);
+    if (syslog_get_verbose() >= VERBOSE_INFO)
+        kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", hdr.e_entry);
     return 0;
 }
 
