@@ -70,6 +70,13 @@ Quick build (i386)
 
 7. Run the image in QEMU:
 
+   `make run`
+
+   - The i386 launcher now writes guest serial output to `build/qemu-serial.log` by default, which captures kernel `kprintf()` output and early boot diagnostics.
+   - To force the old stdio behavior instead, run: `SERIAL_MODE=stdio bash tools/qemu-run.sh`
+   - To extract the persisted kernel syslog from the built disk image after a boot that reached the root filesystem, run: `make extract-kernel-log > build/kernel.log`
+   - For non-default images or alternate destinations, use: `python3 tools/extract_kernel_log.py --output build/kernel.log build/blueyos-disk.img`
+
 Default init choice
 -------------------
 - The build system now prefers the musl-backed test init as the default `/bin/init` when available.
@@ -113,7 +120,7 @@ Advanced
 If something fails
 ------------------
 - Check that required cross compilers exist (e.g. `i686-linux-gnu-gcc`) and that the `MUSL_PREFIX` used by the helpers points at an installed musl sysroot.
-- Look at the `build/` tree and the QEMU serial logs in `/tmp/*` (helpers write QEMU logs there).
+- Look at the `build/` tree, especially `build/qemu-serial.log`, or extract `/var/log/kernel.log` from the image with `make extract-kernel-log`.
 
 Contributing
 ------------

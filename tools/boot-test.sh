@@ -14,7 +14,7 @@ echo "Boot test: runs=$RUNS timeout=${TIMEOUT}s BUILD_DIR=${BUILD_DIR}"
 for i in $(seq 1 $RUNS); do
   echo "=== boot $i ==="
   OUT=${TMP_PREFIX}-$i.log
-  BUILD_DIR=$BUILD_DIR timeout ${TIMEOUT}s bash tools/qemu-run.sh -display none -monitor none > "$OUT" 2>&1 || true
+  BUILD_DIR=$BUILD_DIR SERIAL_MODE=stdio timeout ${TIMEOUT}s bash tools/qemu-run.sh -display none -monitor none > "$OUT" 2>&1 || true
   if grep -q "*** OOPS" "$OUT"; then
     echo "OOPS detected on run $i: see $OUT"
     tail -n 120 "$OUT"

@@ -79,6 +79,7 @@ add a verbosity guard if the message is debug-only.
 - Kernel is C11 (`-std=gnu11`), freestanding, no libc.
 - Userspace daemons are C11 (`-std=gnu11`) with musl libc, statically linked.
 - 4-space indentation.  No tabs except in Makefiles.
+- Correctly use tabs in Makefiles for recipe lines. This is a common source of build breakage.
 - All new kernel syscalls must be added to **both** `kernel/syscall.h`
   (the `#define SYS_*` number) **and** the `syscall_dispatch` switch in
   `kernel/syscall.c`.

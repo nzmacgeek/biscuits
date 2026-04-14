@@ -382,7 +382,7 @@ endif
 
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: all iso disk disk-musl fat-log-disk musl-init run run-m68k version clean full-clean help tools-host toolinfo FORCE
+.PHONY: all iso disk disk-musl fat-log-disk musl-init run run-m68k extract-kernel-log version clean full-clean help tools-host toolinfo FORCE
 
 all: $(TARGET)
 	@echo ""
@@ -433,6 +433,9 @@ run: disk ; @if [ "$(ARCH)" != "i386" ]; then echo "  [RUN]  QEMU run is only su
 
 run-m68k: $(BUILD_DIR)/blueyos-m68k.elf
 	@bash tools/qemu-run-m68k.sh
+
+extract-kernel-log:
+	@$(PYTHON) tools/extract_kernel_log.py $(DISK_IMAGE)
 
 version:
 	@echo "BlueyOS v0.1.0 (Codename: $(shell grep CODENAME include/version.h | head -1 | sed 's/.*\"\(.*\)\".*/\1/'))"
@@ -541,10 +544,11 @@ help:
 	@echo "  make iso              - create bootable ISO (i386 only)"
 	@echo "  make disk             - create a partitioned BlueyOS disk image (root auto-sized from sysroot +30%)"
 	@echo "  make fat-log-disk     - create an optional FAT16 log disk image at $(LOG_DISK_IMAGE)"
+	@echo "  make extract-kernel-log - dump /var/log/kernel.log from $(DISK_IMAGE)"
 	@echo "  make $(MOUNT_BLUEYFS) - build the read-only Linux FUSE BiscuitFS mounter"
 	@echo "  make musl-init        - build static musl test init at $(MUSL_INIT_TARGET)"
 	@echo "  make disk-musl        - create a disk image using the musl test init (root auto-sized from sysroot +30%)"
-	@echo "  make run              - build ISO and launch in QEMU (i386 only)"
+	@echo "  make run              - build ISO and launch in QEMU with serial logged to $(BUILD_DIR)/qemu-serial.log"
 	@echo "  make run-m68k         - launch M68K QEMU with detached serial capture"
 	@echo "  make tools-host       - build host-side mkfs/mkswap/fsck tools"
 	@echo "  make version          - print version information"
