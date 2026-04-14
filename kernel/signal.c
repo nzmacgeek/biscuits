@@ -33,6 +33,9 @@ static const signal_name_map_t signal_names[] = {
     { SIGCHLD, "CHLD" },
     { SIGCONT, "CONT" },
     { SIGSTOP, "STOP" },
+    { SIGTSTP, "TSTP" },
+    { SIGTTIN, "TTIN" },
+    { SIGTTOU, "TTOU" },
 };
 
 static int signal_trampoline_ready = 0;
@@ -103,7 +106,7 @@ static int signal_apply_default_action(process_t *process, int sig) {
 
     if (signal_is_ignored_by_default(sig)) return 0;
 
-    if (sig == SIGSTOP) {
+    if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
         process->state = PROC_STOPPED;
         return 1;
     }
@@ -160,7 +163,7 @@ int signal_send_pid(uint32_t pid, int sig) {
 
     if (sig == SIGKILL) {
         process_mark_exited(process, 128 + sig);
-    } else if (sig == SIGSTOP) {
+    } else if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
         process->state = PROC_STOPPED;
     } else if (sig == SIGCONT) {
         process->pending_signals &= ~signal_bit(sig);

@@ -711,7 +711,22 @@ int vfs_readdir(const char *path, vfs_dirent_t *out, int max) {
 
     int real = m->fs->readdir(path, out + 2, max - 2);
     if (real < 0) return 2; /* synthetic entries still valid */
-    return real + 2;
+
+    /* Compact the real entries to remove any on-disk "." / ".." entries that
+     * the underlying filesystem (e.g. biscuitfs) already stores — we've
+     * synthesised canonical ones above with correct VFS-level inode numbers.
+     * This prevents duplicate dot entries confusing musl's getcwd traversal. */
+    int j = 0;
+    for (int i = 0; i < real; i++) {
+        const char *n = out[2 + i].name;
+        if ((n[0] == '.' && n[1] == '\0') ||
+            (n[0] == '.' && n[1] == '.' && n[2] == '\0'))
+            continue;
+        if (j != i)
+            out[2 + j] = out[2 + i];
+        j++;
+    }
+    return j + 2;
 }
 
 int vfs_mkdir(const char *path) {

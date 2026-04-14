@@ -63,6 +63,25 @@ is being read as `0x33` — either:
 2. `kernel/paging.c` (`page_fault_handler`): when `EIP < 0x1000` and
    `syslog_get_verbose() >= VERBOSE_INFO`, now dumps the full register frame
    (EAX–EDI, CS, DS, GS, EFLAGS, TLS base) to aid diagnosis.
+3. `kernel/syscall.c` (`sys_sigreturn`): the signal return trampoline eax
+   clobber is now fixed — `signal_sigreturn()` restores `*regs` from the
+   saved frame (including eax), and `sys_sigreturn` now returns the restored
+   eax so `syscall_dispatch`'s final `regs->eax = ret` preserves it instead
+   of resetting it to 0.  This was causing processes to return from signal
+   handlers with eax=0 instead of the pre-signal value.
+4. `kernel/signal.h` / `kernel/signal.c`: Added `SIGTSTP` (20), `SIGTTIN`
+   (21), and `SIGTTOU` (22) signal numbers.  SIGTTOU/SIGTTIN/SIGTSTP stop
+   the process by default; they can be caught or blocked unlike SIGKILL/SIGSTOP.
+5. `kernel/syscall.c` (`sys_write`): POSIX background-write (`SIGTTOU`)
+   enforcement implemented for fd 1/2.  When the TTY foreground process group
+   is set and the writer is not in it, SIGTTOU is sent and `-EINTR` is
+   returned — unless the process has SIGTTOU blocked or ignored.  This
+   prevents backgrounded vfork children from interleaving output with the
+   foreground script stream.
+6. `kernel/paging.c` (`page_fault_handler`): PMM allocation failure during
+   stack growth no longer causes an infinite fault retry loop.  Changed from
+   `signal_send_pid(SIGSEGV) + return` to `process_mark_exited() + sti + hlt`.
+   Also gated the successful stack-growth log at `VERBOSE_INFO`.
 
 **Remaining investigation:**
 - Audit `kernel/signal.c` — ensure signal delivery only modifies the target
@@ -118,24 +137,22 @@ same as `SIGCHLD` for the purposes of routing to `sys_fork()`.
 ---
 
 ### K-6 🟡 `getcwd` ERANGE / EFAULT for some calling patterns
-**Status:** PARTIALLY FIXED (this PR)
+**Status:** FIXED (this PR)
 
 The original `sys_getcwd` returned `EFAULT` when `size==0`.  POSIX/Linux
 returns `EINVAL` for `size==0`.  Also clarified that `buf==NULL` is always
 `EFAULT` (musl should never pass NULL, but the error mapping was wrong).
 
-**Remaining issue:** Bash prints `getcwd: cannot access parent directories:
-No such file or directory` on every invocation.  This is likely musl's
-`getcwd()` falling back to manual directory traversal when the kernel syscall
-fails, and the VFS not returning `.` / `..` entries for the root directory.
-
-**Fix applied:** `vfs_readdir()` now prepends synthetic `.` and `..` entries
-(with correct inode numbers from `vfs_stat`) to every directory listing.
-`biscuitfs_stat_cb` now populates `out->inode`.  The `inode` field has been
-added to `vfs_stat_t` for this purpose.
-
-**Remaining:** verify end-to-end `getcwd` via musl's fallback path with the
-new `getdents` entries.
+**All fixes applied:**
+- `sys_getcwd` error codes corrected (`EINVAL` for size=0).
+- `vfs_readdir()` now prepends synthetic `.` and `..` entries for all
+  filesystems.  `vfs_stat_t` gained an `inode` field; `biscuitfs_stat_cb`
+  populates it.
+- `vfs_readdir()` now deduplicates `.`/`..` entries: on-disk dot entries
+  returned by the underlying filesystem (biscuitfs stores them natively) are
+  removed after the underlying readdir call, so the caller only ever sees one
+  `.` and one `..` with canonical VFS-level inode numbers.  This fixed musl's
+  `getcwd()` fallback traversal which was confused by duplicate entries.
 
 ---
 

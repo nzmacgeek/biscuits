@@ -151,11 +151,17 @@ void page_fault_handler(registers_t *regs) {
                 uint32_t phys = pmm_alloc_frame();
                 if (!phys) {
                     kprintf("[PGF]  Out of physical frames while growing stack for pid=%u\n", proc->pid);
-                    signal_send_pid(proc->pid, SIGSEGV);
-                    return;
+                    /* Do NOT return here: the faulting instruction would be
+                     * retried, causing an infinite fault loop.  Mark the
+                     * process as exited (SIGSEGV) and halt until the
+                     * scheduler context-switches away. */
+                    process_mark_exited(proc, 128 + SIGSEGV);
+                    __asm__ volatile("sti");
+                    for (;;) __asm__ volatile("hlt");
                 }
-                kprintf("[PGF]  Growing user stack: pid=%u va=0x%08x -> phys=0x%08x\n",
-                        proc->pid, page_aligned, phys);
+                if (syslog_get_verbose() >= VERBOSE_INFO)
+                    kprintf("[PGF]  Growing user stack: pid=%u va=0x%08x -> phys=0x%08x\n",
+                            proc->pid, page_aligned, phys);
                 paging_map_in_directory(proc->page_dir, page_aligned, phys,
                                         PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
                 /* Zero the newly mapped page in the process address space. */

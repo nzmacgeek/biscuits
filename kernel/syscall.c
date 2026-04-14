@@ -50,6 +50,7 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_EINVAL 22
 #define BLUEY_E2BIG   7
 #define BLUEY_EAGAIN 11
+#define BLUEY_EINTR   4
 #define BLUEY_ENOTDIR 20
 #define BLUEY_EBADF   9
 #define BLUEY_EISDIR 21
@@ -813,7 +814,13 @@ static int32_t sys_fstat(int fd, void *buf) {
 static int32_t sys_sigreturn(registers_t *regs, void *frame_ptr) {
     process_t *process = process_current();
     if (!process || !regs) return -BLUEY_EPERM;
-    return signal_sigreturn(process, regs, frame_ptr);
+    int32_t r = signal_sigreturn(process, regs, frame_ptr);
+    if (r < 0) return r;
+    /* signal_sigreturn() has already restored *regs from the saved frame
+     * (including regs->eax).  Return the restored eax so that
+     * syscall_dispatch's final "regs->eax = ret" preserves the original
+     * eax value instead of clobbering it with 0. */
+    return (int32_t)regs->eax;
 }
 
 /* ---- stat / lstat / access / unlink / mkdir / rmdir -------------------- */
@@ -2197,6 +2204,28 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
         if (len == 0) return 0;
         // Bounds check: refuse oversized writes to avoid flooding
         if (len > 4096) len = 4096;
+
+        /* POSIX background-process write suppression: if the TTY has a
+         * foreground process group set AND the current process is not in it,
+         * it is a background write.  Send SIGTTOU (default: stop the process)
+         * unless the signal is blocked or the process is ignoring it; in
+         * those cases let the write proceed.  This prevents backgrounded
+         * vfork children from corrupting script output streams. */
+        process_t *writer = process_current();
+        int fg_pgid = tty_get_pgrp();
+        if (fg_pgid != 0 && writer && (uint32_t)fg_pgid != writer->pgid) {
+            /* Check if SIGTTOU is blocked or ignored for this process */
+            int sigttou_index = SIGTTOU - 1;
+            uint32_t sigttou_bit = 1u << sigttou_index;
+            int sigttou_blocked = (writer->blocked_signals & sigttou_bit) != 0;
+            int sigttou_ignored = (writer->signal_actions[sigttou_index].handler == SIG_IGN);
+            if (!sigttou_blocked && !sigttou_ignored) {
+                signal_send_pid(writer->pid, SIGTTOU);
+                return -BLUEY_EINTR;
+            }
+            /* Blocked/ignored: fall through and allow the write */
+        }
+
         tty_write(buf, len);
         tty_flush();
         return (int32_t)len;
