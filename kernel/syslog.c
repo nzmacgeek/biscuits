@@ -157,6 +157,34 @@ static int syslog_snprintf(char *out, size_t sz, const char *fmt, ...) {
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// Verbosity level (set from boot args via syslog_set_verbose)
+// ---------------------------------------------------------------------------
+static int g_verbose_level = VERBOSE_QUIET;
+
+void syslog_set_verbose(int level) {
+    if (level < VERBOSE_QUIET) level = VERBOSE_QUIET;
+    if (level > VERBOSE_DEBUG) level = VERBOSE_DEBUG;
+    g_verbose_level = level;
+}
+
+int syslog_get_verbose(void) {
+    return g_verbose_level;
+}
+
+// Determine the minimum LOG_* level printed to the VGA console based on
+// the current verbosity level.
+//   verbose=0 (QUIET) : LOG_ERR and more severe (0–3)
+//   verbose=1 (INFO)  : LOG_INFO and more severe (0–6)
+//   verbose=2 (DEBUG) : everything (0–7)
+static int verbose_console_threshold(void) {
+    switch (g_verbose_level) {
+        case VERBOSE_INFO:  return LOG_INFO;
+        case VERBOSE_DEBUG: return LOG_DEBUG;
+        default:            return LOG_ERR;
+    }
+}
+
 void syslog_write(int level, const char *tag, const char *fmt, ...) {
     if (!syslog_ready) return;
 
@@ -177,6 +205,16 @@ void syslog_write(int level, const char *tag, const char *fmt, ...) {
 
     syslog_head++;
     if (syslog_count_val < SYSLOG_RING_ENTRIES) syslog_count_val++;
+
+    // Echo to VGA console if the message meets the verbosity threshold.
+    if (level <= verbose_console_threshold()) {
+        if (level <= LOG_ERR)           vga_set_color(VGA_LIGHT_RED,   VGA_BLACK);
+        else if (level == LOG_WARNING)  vga_set_color(VGA_LIGHT_BROWN, VGA_BLACK);
+        else if (level == LOG_DEBUG)    vga_set_color(VGA_DARK_GREY,   VGA_BLACK);
+        else                            vga_set_color(VGA_WHITE,       VGA_BLACK);
+        kprintf("[%s] %s\n", entry->tag, entry->msg);
+        vga_set_color(VGA_WHITE, VGA_BLACK);
+    }
 }
 
 uint32_t syslog_count(void) {

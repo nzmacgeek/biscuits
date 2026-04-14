@@ -151,7 +151,7 @@ int vfs_mount(const char *path, const char *fs_name, uint32_t start_lba) {
     static int dbg_calls;
     if (mount_count >= VFS_MAX_MOUNTS) return -1;
 
-    if (vfs_dbg_log_limited(&dbg_calls, 32)) {
+    if (syslog_get_verbose() >= VERBOSE_DEBUG && vfs_dbg_log_limited(&dbg_calls, 32)) {
         kprintf("[VFS DBG] mount enter path_ptr=%p fs_name_ptr=%p start_lba=%u caller=%p\n",
                 path, fs_name, start_lba, __builtin_return_address(0));
         if (path) kprintf("[VFS DBG] mount path='%s'\n", path);
@@ -167,7 +167,7 @@ int vfs_mount(const char *path, const char *fs_name, uint32_t start_lba) {
     }
     if (!fs) { kprintf("[VFS]  Unknown filesystem: %s\n", fs_name); return -1; }
 
-    if (vfs_dbg_log_limited(&dbg_calls, 32)) {
+    if (syslog_get_verbose() >= VERBOSE_DEBUG && vfs_dbg_log_limited(&dbg_calls, 32)) {
         kprintf("[VFS DBG] mount dispatch fs=%p mount_cb=%p path_ptr=%p start_lba=%u\n",
                 (void *)fs, (void *)fs->mount, path, start_lba);
     }
@@ -177,7 +177,7 @@ int vfs_mount(const char *path, const char *fs_name, uint32_t start_lba) {
         return -1;
     }
 
-    if (vfs_dbg_log_limited(&dbg_calls, 32)) {
+    if (syslog_get_verbose() >= VERBOSE_DEBUG && vfs_dbg_log_limited(&dbg_calls, 32)) {
         kprintf("[VFS DBG] mount return fs='%s' path='%s' start_lba=%u\n",
                 fs_name, path, start_lba);
     }
@@ -319,12 +319,14 @@ int vfs_open(const char *path, int flags) {
         return -1;
     }
     /* Debug: show which filesystem and whether it exposes an open() callback */
-    if (m->fs) {
-        kprintf("[VFS DBG] open request path=%s -> mount=%s fs=%p open=%p\n",
-                path, m->mountpoint, (void *)m->fs, (void *)m->fs->open);
-    } else {
-        kprintf("[VFS DBG] open request path=%s -> mount=%s fs=NULL\n",
-                path, m->mountpoint);
+    if (syslog_get_verbose() >= VERBOSE_DEBUG) {
+        if (m->fs) {
+            kprintf("[VFS DBG] open request path=%s -> mount=%s fs=%p open=%p\n",
+                    path, m->mountpoint, (void *)m->fs, (void *)m->fs->open);
+        } else {
+            kprintf("[VFS DBG] open request path=%s -> mount=%s fs=NULL\n",
+                    path, m->mountpoint);
+        }
     }
     if (!m->fs->open) {
         kprintf("[VFS] Open miss path=%s mount=1 (no open callback)\n", path);
@@ -663,7 +665,76 @@ int vfs_readdir(const char *path, vfs_dirent_t *out, int max) {
     vfs_mount_t *m = vfs_find_mount(path);
     if (!m || !m->fs->readdir) return -1;
     if (vfs_access(path, VFS_ACCESS_READ | VFS_ACCESS_EXEC) != 0) return -1;
-    return m->fs->readdir(path, out, max);
+
+    /* Reserve the first two slots for "." and ".." so all directories behave
+     * consistently regardless of the underlying filesystem (musl's getcwd
+     * fallback scans for these entries).  The real entries follow. */
+    if (max < 2) return -1;
+
+    vfs_stat_t st;
+    uint32_t self_ino = 0;
+    uint32_t parent_ino = 0;
+
+    if (m->fs->stat && m->fs->stat(path, &st) == 0) {
+        self_ino = st.inode;
+    }
+
+    /* Determine parent inode */
+    char parent_path[VFS_PATH_LEN];
+    if (vfs_parent_path(path, parent_path, sizeof(parent_path)) == 0) {
+        vfs_stat_t pst;
+        if (m->fs->stat && m->fs->stat(parent_path, &pst) == 0) {
+            parent_ino = pst.inode;
+        } else {
+            vfs_mount_t *pm = vfs_find_mount(parent_path);
+            if (pm && pm->fs->stat && pm->fs->stat(parent_path, &pst) == 0) {
+                parent_ino = pst.inode;
+            }
+        }
+    }
+    if (!parent_ino) parent_ino = self_ino; /* root: .. == . */
+
+    /* Synthesise "." */
+    memset(&out[0], 0, sizeof(vfs_dirent_t));
+    out[0].name[0] = '.';
+    out[0].name[1] = '\0';
+    out[0].inode  = self_ino ? self_ino : 1u;
+    out[0].is_dir = 1;
+
+    /* Synthesise ".." */
+    memset(&out[1], 0, sizeof(vfs_dirent_t));
+    out[1].name[0] = '.';
+    out[1].name[1] = '.';
+    out[1].name[2] = '\0';
+    out[1].inode  = parent_ino ? parent_ino : 1u;
+    out[1].is_dir = 1;
+
+    int real = m->fs->readdir(path, out + 2, max - 2);
+    if (real < 0) {
+        /* Underlying readdir failed.  When the caller only asked for the two
+         * dot entries (max == 2), they just want inode numbers — return
+         * synthetic entries.  Otherwise propagate the real error so callers
+         * like getdents/ls can distinguish a genuine I/O failure from an
+         * empty directory. */
+        if (max == 2) return 2;
+        return -1;
+    }
+
+    /* Compact the real entries to remove any on-disk "." / ".." entries that
+     * the underlying filesystem (e.g. biscuitfs) already stores — we've
+     * synthesised canonical ones above with correct VFS-level inode numbers.
+     * This prevents duplicate dot entries confusing musl's getcwd traversal. */
+    int j = 0;
+    for (int i = 0; i < real; i++) {
+        const char *n = out[2 + i].name;
+        if ((n[0] == '.' && n[1] == '\0') ||
+            (n[0] == '.' && n[1] == '.' && n[2] == '\0'))
+            continue;
+        if (j != i)
+            out[2 + j] = out[2 + i];
+        j++;
+    }
+    return j + 2;
 }
 
 int vfs_mkdir(const char *path) {

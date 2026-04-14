@@ -1,0 +1,27 @@
+# BlueyOS EditorConfig
+# "Let's play nicely!" — ensures consistent formatting across all editors.
+# See https://editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h,asm,S,ld}]
+indent_style = space
+indent_size = 4
+
+[Makefile]
+# GNU make requires hard tabs for recipe lines — always use tabs in Makefiles.
+indent_style = tab
+tab_width = 8
+
+[*.mk]
+indent_style = tab
+tab_width = 8
+
+[*.md]
+trim_trailing_whitespace = false

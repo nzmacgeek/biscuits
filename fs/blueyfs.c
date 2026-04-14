@@ -85,6 +85,7 @@ static uint8_t biscuitfs_block_buf_pool[BISCUITFS_BLOCK_BUF_POOL_SIZE][BISCUITFS
 static uint8_t biscuitfs_block_buf_used[BISCUITFS_BLOCK_BUF_POOL_SIZE];
 
 static int biscuitfs_dbg_log_limited(int *counter, int limit) {
+    if (syslog_get_verbose() < VERBOSE_DEBUG) return 0;
     if (*counter >= limit) return 0;
     (*counter)++;
     return 1;
@@ -588,11 +589,7 @@ static uint32_t path_to_inode(const char *path) {
 
 // Diagnostic helper: dump a directory's raw entries
 static void biscuitfs_dump_dir(uint32_t dir_ino, const char *label) {
-#if !BISCUITFS_DEBUG
-    (void)dir_ino;
-    (void)label;
-    return;
-#else
+#if BISCUITFS_DEBUG
     static int dbg_calls;
     biscuitfs_inode_t din;
     uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
@@ -644,6 +641,9 @@ static void biscuitfs_dump_dir(uint32_t dir_ino, const char *label) {
         offset += de->rec_len;
     }
     biscuitfs_free_block_buf(blkbuf);
+#else
+    (void)dir_ino;
+    (void)label;
 #endif
 }
 
@@ -978,8 +978,9 @@ static int biscuitfs_read_cb(int fd, uint8_t *buf, size_t len) {
 
     while (done < len) {
         if (fs_block_size == 0) {
-            kprintf("[BISCUITFS DBG] read fs_block_size=0 fd=%d done=%u offset=%u size=%u ino=%u\n",
-                    fd, done, f->offset, f->size, f->inode_no);
+            if (syslog_get_verbose() >= VERBOSE_DEBUG)
+                kprintf("[BISCUITFS DBG] read fs_block_size=0 fd=%d done=%u offset=%u size=%u ino=%u\n",
+                        fd, done, f->offset, f->size, f->inode_no);
             biscuitfs_free_block_buf(blkbuf);
             return (int)done;
         }
@@ -1035,8 +1036,9 @@ static int biscuitfs_read_at_cb(int fd, uint8_t *buf, size_t len, uint32_t offse
     uint32_t local_off = offset;
     while (done < len) {
         if (fs_block_size == 0) {
-            kprintf("[BISCUITFS DBG] read_at fs_block_size=0 fd=%d done=%u local_off=%u size=%u ino=%u\n",
-                    fd, done, local_off, f->size, f->inode_no);
+            if (syslog_get_verbose() >= VERBOSE_DEBUG)
+                kprintf("[BISCUITFS DBG] read_at fs_block_size=0 fd=%d done=%u local_off=%u size=%u ino=%u\n",
+                        fd, done, local_off, f->size, f->inode_no);
             biscuitfs_free_block_buf(blkbuf);
             return (int)done;
         }
@@ -1336,6 +1338,7 @@ static int biscuitfs_stat_cb(const char *path, vfs_stat_t *out) {
     if (read_inode(ino, &inode) != 0) return -1;
 
     memset(out, 0, sizeof(*out));
+    out->inode = ino;
     out->mode = inode.mode;
     out->uid = inode.uid;
     out->gid = inode.gid;

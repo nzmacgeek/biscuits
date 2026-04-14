@@ -50,6 +50,7 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_EINVAL 22
 #define BLUEY_E2BIG   7
 #define BLUEY_EAGAIN 11
+#define BLUEY_EINTR   4
 #define BLUEY_ENOTDIR 20
 #define BLUEY_EBADF   9
 #define BLUEY_EISDIR 21
@@ -292,7 +293,7 @@ static int32_t sys_clone(const registers_t *regs) {
         return -BLUEY_ENOSYS;
     }
 
-    if (exit_signal != SIGCHLD) {
+    if (exit_signal != SIGCHLD && exit_signal != 0u) {
         kprintf("[SYS] clone unsupported exit signal=%u flags=0x%x\n", exit_signal, flags);
         return -BLUEY_ENOSYS;
     }
@@ -620,6 +621,10 @@ typedef struct {
 #define AT_FDCWD ((int32_t)-100)
 #define AT_EMPTY_PATH 0x1000
 #define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_EACCESS 0x200
+
+#define O_NONBLOCK 0x800
+#define O_CLOEXEC  0x80000
 
 #define BLUEY_CLOCK_REALTIME           0
 #define BLUEY_CLOCK_MONOTONIC          1
@@ -813,7 +818,13 @@ static int32_t sys_fstat(int fd, void *buf) {
 static int32_t sys_sigreturn(registers_t *regs, void *frame_ptr) {
     process_t *process = process_current();
     if (!process || !regs) return -BLUEY_EPERM;
-    return signal_sigreturn(process, regs, frame_ptr);
+    int32_t r = signal_sigreturn(process, regs, frame_ptr);
+    if (r < 0) return r;
+    /* signal_sigreturn() has already restored *regs from the saved frame
+     * (including regs->eax).  Return the restored eax so that
+     * syscall_dispatch's final "regs->eax = ret" preserves the original
+     * eax value instead of clobbering it with 0. */
+    return (int32_t)regs->eax;
 }
 
 /* ---- stat / lstat / access / unlink / mkdir / rmdir -------------------- */
@@ -1459,6 +1470,88 @@ static int32_t sys_setgid32(uint32_t gid) {
     return sys_setresgid32(gid, gid, 0xFFFFFFFFu);
 }
 
+static int32_t sys_setreuid32(uint32_t ruid, uint32_t euid) {
+    return sys_setresuid32(ruid, euid, 0xFFFFFFFFu);
+}
+
+static int32_t sys_setregid32(uint32_t rgid, uint32_t egid) {
+    return sys_setresgid32(rgid, egid, 0xFFFFFFFFu);
+}
+
+static int32_t sys_getgroups32(int size, uint32_t *list) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+    if (size < 0) return -BLUEY_EINVAL;
+    if (size == 0) return (int32_t)process->group_count;
+    if (!list) return -BLUEY_EFAULT;
+    if ((uint32_t)size < process->group_count) return -BLUEY_EINVAL;
+
+    for (uint32_t index = 0; index < process->group_count; index++) {
+        list[index] = process->groups[index];
+    }
+    return (int32_t)process->group_count;
+}
+
+static int32_t sys_setgroups32(size_t size, const uint32_t *list) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+    if (!multiuser_is_root()) return -BLUEY_EPERM;
+    if (size > PROC_MAX_GROUPS) return -BLUEY_EINVAL;
+    if (size > 0 && !list) return -BLUEY_EFAULT;
+
+    process->group_count = (uint32_t)size;
+    for (uint32_t index = 0; index < process->group_count; index++) {
+        process->groups[index] = list[index];
+    }
+    return 0;
+}
+
+static int32_t sys_getresuid32(uint32_t *ruid, uint32_t *euid, uint32_t *suid) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+    if (!ruid || !euid || !suid) return -BLUEY_EFAULT;
+
+    *ruid = process->uid;
+    *euid = process->euid;
+    *suid = process->euid;
+    return 0;
+}
+
+static int32_t sys_getresgid32(uint32_t *rgid, uint32_t *egid, uint32_t *sgid) {
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EPERM;
+    if (!rgid || !egid || !sgid) return -BLUEY_EFAULT;
+
+    *rgid = process->gid;
+    *egid = process->egid;
+    *sgid = process->egid;
+    return 0;
+}
+
+static int32_t sys_setfsuid32(uint32_t uid) {
+    process_t *process = process_current();
+
+    (void)uid;
+    if (!process) return -BLUEY_EPERM;
+
+    /* BlueyOS does not yet track a separate fsuid; report the current euid. */
+    return (int32_t)process->euid;
+}
+
+static int32_t sys_setfsgid32(uint32_t gid) {
+    process_t *process = process_current();
+
+    (void)gid;
+    if (!process) return -BLUEY_EPERM;
+
+    /* BlueyOS does not yet track a separate fsgid; report the current egid. */
+    return (int32_t)process->egid;
+}
+
 static int32_t sys_pselect6(int nfds,
                             void *readfds,
                             void *writefds,
@@ -1690,6 +1783,48 @@ static int32_t sys_pipe_impl(int *fds) {
     return r < 0 ? r : 0;
 }
 
+/* pipe2(fds, flags) — identical to pipe() for our purposes.
+ * O_CLOEXEC and O_NONBLOCK are the only defined flags.
+ * We accept them but do not yet enforce them.  Unknown flag bits are
+ * rejected with EINVAL to match Linux behaviour and catch caller bugs. */
+static int32_t sys_pipe2(int *fds, int flags) {
+    /* Validate: only O_CLOEXEC and O_NONBLOCK are permitted */
+#define PIPE2_VALID_FLAGS (O_CLOEXEC | O_NONBLOCK)
+    if (flags & ~PIPE2_VALID_FLAGS) return -BLUEY_EINVAL;
+#undef PIPE2_VALID_FLAGS
+    if (!fds) return -BLUEY_EFAULT;
+    int r = vfs_pipe(fds);
+    return r < 0 ? r : 0;
+}
+
+/* faccessat2(dirfd, path, mode, flags) — check file accessibility.
+ * mode bits: F_OK(0), X_OK(1), W_OK(2), R_OK(4).
+ * Only AT_FDCWD is supported for dirfd; relative paths are not yet
+ * resolved against an open directory fd.
+ * AT_SYMLINK_NOFOLLOW and AT_EACCESS are accepted silently as we don't
+ * implement symlinks or effective-vs-real uid distinction yet.
+ * Any other flag bits are rejected with EINVAL. */
+#define FACCESSAT2_VALID_FLAGS (AT_SYMLINK_NOFOLLOW | AT_EACCESS)
+static int32_t sys_faccessat2(int dirfd, const char *path, int mode, int flags) {
+    if (!path) return -BLUEY_EFAULT;
+    /* Reject unknown flag bits */
+    if (flags & ~FACCESSAT2_VALID_FLAGS) return -BLUEY_EINVAL;
+    /* Only AT_FDCWD is supported; a real dirfd requires relative-path lookup */
+    if (dirfd != AT_FDCWD) {
+        if (path[0] != '/') return -BLUEY_EBADF;
+        /* absolute path: dirfd is irrelevant, proceed */
+    }
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
+    if (mode == 0) return 0; /* F_OK: existence only */
+    uint8_t need = 0;
+    if (mode & 4) need |= VFS_ACCESS_READ;
+    if (mode & 2) need |= VFS_ACCESS_WRITE;
+    if (mode & 1) need |= VFS_ACCESS_EXEC;
+    return vfs_access(path, need) == 0 ? 0 : -BLUEY_EPERM;
+}
+#undef FACCESSAT2_VALID_FLAGS
+
 /* Minimal fcntl: F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL */
 #define FCNTL_F_DUPFD   0
 #define FCNTL_F_GETFD   1
@@ -1900,10 +2035,31 @@ static int32_t sys_chdir(const char *path) {
     return 0;
 }
 
+static int32_t sys_fchdir(int fd) {
+    vfs_stat_t st;
+    const char *path;
+
+    if (fd < 0) return -BLUEY_EBADF;
+    if (vfs_fstat(fd, &st) != 0) return -BLUEY_EBADF;
+    if (!st.is_dir) return -BLUEY_ENOTDIR;
+
+    path = vfs_fd_get_path(fd);
+    if (!path || path[0] == '\0') return -BLUEY_EBADF;
+
+    process_set_cwd(path);
+    return 0;
+}
+
 static int32_t sys_getcwd(char *buf, size_t size) {
-    if (!buf || size == 0) return -BLUEY_EFAULT;
     const char *cwd = process_get_cwd();
     size_t len = strlen(cwd);
+
+    /* Linux getcwd error priority: EFAULT (bad pointer) before EINVAL (bad
+     * size), so check buf first.  buf==NULL is always EFAULT regardless of
+     * size.  size==0 with a valid buf is EINVAL (Linux behaviour).
+     * When both are violated (buf==NULL, size==0) we return EFAULT. */
+    if (!buf) return -BLUEY_EFAULT;
+    if (size == 0) return -BLUEY_EINVAL;
     if (len + 1 > size) return -BLUEY_ERANGE;
     strncpy(buf, cwd, size - 1);
     buf[size - 1] = '\0';
@@ -2067,6 +2223,28 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
         if (len == 0) return 0;
         // Bounds check: refuse oversized writes to avoid flooding
         if (len > 4096) len = 4096;
+
+        /* POSIX background-process write suppression: if the TTY has a
+         * foreground process group set AND the current process is not in it,
+         * it is a background write.  Send SIGTTOU (default: stop the process)
+         * unless the signal is blocked or the process is ignoring it; in
+         * those cases let the write proceed.  This prevents backgrounded
+         * vfork children from corrupting script output streams. */
+        process_t *writer = process_current();
+        int fg_pgid = tty_get_pgrp();
+        if (fg_pgid != 0 && writer && (uint32_t)fg_pgid != writer->pgid) {
+            /* Check if SIGTTOU is blocked or ignored for this process */
+            int sigttou_index = SIGTTOU - 1;
+            uint32_t sigttou_bit = 1u << sigttou_index;
+            int sigttou_blocked = (writer->blocked_signals & sigttou_bit) != 0;
+            int sigttou_ignored = (writer->signal_actions[sigttou_index].handler == SIG_IGN);
+            if (!sigttou_blocked && !sigttou_ignored) {
+                signal_send_pid(writer->pid, SIGTTOU);
+                return -BLUEY_EINTR;
+            }
+            /* Blocked/ignored: fall through and allow the write */
+        }
+
         tty_write(buf, len);
         tty_flush();
         return (int32_t)len;
@@ -2210,6 +2388,12 @@ cleanup:
     if (path_copy) kheap_free(path_copy);
     if (argv_copy) syscall_free_string_vector(argv_copy);
     if (envp_copy) syscall_free_string_vector(envp_copy);
+    /* If execve failed before process_exec_replace() ran, the vfork parent is
+     * still blocked in PROC_WAITING.  Release it now so it is not stuck
+     * indefinitely while the child calls _exit(127). */
+    if (result != 0 && process && (process->flags & PROC_FLAG_VFORK_SHARED_VM)) {
+        process_vfork_execve_failed(process);
+    }
     return result;
 }
 
@@ -2518,6 +2702,15 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_GETGID:
             ret = (int32_t)process_get_gid();
             break;
+        case SYS_GETGID32:
+            ret = (int32_t)process_get_gid();
+            break;
+        case SYS_GETEUID32:
+            ret = (int32_t)process_get_euid();
+            break;
+        case SYS_GETEGID32:
+            ret = (int32_t)process_get_egid();
+            break;
         case SYS_UNAME:
             ret = sys_uname((utsname_t*)regs->ebx);
             break;
@@ -2615,6 +2808,9 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_WRITEV:
             ret = sys_writev((int)regs->ebx, (const k_iovec_t*)regs->ecx, regs->edx);
+            break;
+        case SYS_FCHDIR:
+            ret = sys_fchdir((int)regs->ebx);
             break;
         case SYS_SET_TID_ADDRESS:
             ret = sys_set_tid_address((void*)regs->ebx);
@@ -2729,10 +2925,27 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_DEVEV_OPEN:
             ret = sys_devev_open();
             break;
+        case SYS_SETREUID32:
+            ret = sys_setreuid32((uint32_t)regs->ebx, (uint32_t)regs->ecx);
+            break;
+        case SYS_SETREGID32:
+            ret = sys_setregid32((uint32_t)regs->ebx, (uint32_t)regs->ecx);
+            break;
+        case SYS_GETGROUPS32:
+            ret = sys_getgroups32((int)regs->ebx, (uint32_t*)regs->ecx);
+            break;
+        case SYS_SETGROUPS32:
+            ret = sys_setgroups32((size_t)regs->ebx, (const uint32_t*)regs->ecx);
+            break;
         case SYS_SETRESUID32:
             ret = sys_setresuid32((uint32_t)regs->ebx,
                                   (uint32_t)regs->ecx,
                                   (uint32_t)regs->edx);
+            break;
+        case SYS_GETRESUID32:
+            ret = sys_getresuid32((uint32_t*)regs->ebx,
+                                  (uint32_t*)regs->ecx,
+                                  (uint32_t*)regs->edx);
             break;
         case SYS_SETUID32:
             ret = sys_setuid32((uint32_t)regs->ebx);
@@ -2742,8 +2955,19 @@ int32_t syscall_dispatch(registers_t *regs) {
                                   (uint32_t)regs->ecx,
                                   (uint32_t)regs->edx);
             break;
+        case SYS_GETRESGID32:
+            ret = sys_getresgid32((uint32_t*)regs->ebx,
+                                  (uint32_t*)regs->ecx,
+                                  (uint32_t*)regs->edx);
+            break;
         case SYS_SETGID32:
             ret = sys_setgid32((uint32_t)regs->ebx);
+            break;
+        case SYS_SETFSUID32:
+            ret = sys_setfsuid32((uint32_t)regs->ebx);
+            break;
+        case SYS_SETFSGID32:
+            ret = sys_setfsgid32((uint32_t)regs->ebx);
             break;
         /* ---- Reboot / poweroff ----------------------------------------- */
         case SYS_REBOOT:
@@ -2778,6 +3002,13 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_DELETE_MODULE:
             ret = sys_delete_module((const char*)regs->ebx, regs->ecx);
+            break;
+        case SYS_PIPE2:
+            ret = sys_pipe2((int*)regs->ebx, (int)regs->ecx);
+            break;
+        case SYS_FACCESSAT2:
+            ret = sys_faccessat2((int)regs->ebx, (const char*)regs->ecx,
+                                 (int)regs->edx, (int)regs->esi);
             break;
         default: {
             /* Unknown syscall - don't crash. Log caller info to help mapping. */

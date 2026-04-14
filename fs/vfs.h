@@ -54,6 +54,7 @@ typedef struct {
     uint32_t uid;
     uint32_t gid;
     uint32_t size;
+    uint32_t inode;
     uint8_t  is_dir;
 } vfs_stat_t;
 

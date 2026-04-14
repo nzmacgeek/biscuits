@@ -88,6 +88,7 @@ process_t *process_create_image(const char *name, uint32_t entry, uint32_t user_
                                 uint32_t uid, uint32_t gid);
 process_t *process_fork_current(const registers_t *regs, int32_t *error_out);
 process_t *process_vfork_current(const registers_t *regs, int32_t *error_out);
+void       process_vfork_execve_failed(process_t *child);
 void       process_exec_replace(process_t *process, const char *name,
                                 uint32_t entry, uint32_t user_esp,
                                 uint32_t user_stack_base, uint32_t user_stack_top,
