@@ -162,13 +162,14 @@ void page_fault_handler(registers_t *regs) {
                 if (syslog_get_verbose() >= VERBOSE_INFO)
                     kprintf("[PGF]  Growing user stack: pid=%u va=0x%08x -> phys=0x%08x\n",
                             proc->pid, page_aligned, phys);
+                /* Map the page into the process address space.  The fault always
+                 * happens in the context of the current process, so proc->page_dir
+                 * is the active directory.  paging_map_in_directory emits invlpg
+                 * for us since the target dir is the current one; we can then
+                 * zero the page directly without a context switch. */
                 paging_map_in_directory(proc->page_dir, page_aligned, phys,
                                         PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
-                /* Zero the newly mapped page in the process address space. */
-                uint32_t old_dir = paging_current_directory();
-                paging_switch_directory(proc->page_dir);
                 memset((void*)page_aligned, 0, PAGE_SIZE);
-                paging_switch_directory(old_dir);
                 if (proc->tls_base) regs->gs = GDT_TLS_SEL;
                 else if (!regs->gs) regs->gs = GDT_USER_DATA;
                 return; /* return to userland; instruction will be retried */
@@ -234,10 +235,11 @@ void paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phy
 
     page_table[pt_idx] = new_entry;
 
+    /* Use invlpg to shoot down only this TLB entry when the mapping is in
+     * the currently-active address space.  A full CR3 reload is unnecessary
+     * and flushes all global entries. */
     if (page_dir == current_page_dir) {
-        paging_refresh_active_directory(page_dir);
-    } else if (old_entry & PAGE_PRESENT) {
-        paging_refresh_active_directory(page_dir);
+        __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
     }
 }
 

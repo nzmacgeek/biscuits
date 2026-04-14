@@ -1,4 +1,4 @@
-// BlueyOS Round-Robin Scheduler
+// BlueyOS CFS Scheduler
 // "Bandit's Homework Scheduler - fair turns for everyone!"
 // Episode ref: "Takeaway" - managing everything at once, somehow
 // Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
@@ -17,30 +17,87 @@
 static process_t *run_queue   = NULL;   // circular linked list of runnable processes
 static process_t *sched_current = NULL;
 
+/* ---------------------------------------------------------------------------
+ * Completely Fair Scheduler (CFS)
+ *
+ * Each process has a vruntime that increments at a rate inversely proportional
+ * to its weight.  Priority 1..10 maps to weights derived from Linux's nice
+ * table centred on nice=0 (priority 5, weight 1024 = NICE_0_WEIGHT).
+ *
+ * vruntime_delta = delta_ticks * NICE_0_WEIGHT / task_weight
+ *
+ * The scheduler always picks the runnable process with the smallest vruntime.
+ * ---------------------------------------------------------------------------*/
+#define CFS_NICE0_WEIGHT  1024u
+
+/* Weights for priority 1..10 sampled from Linux's sched_prio_to_weight table
+ * (nice +4 down to nice -5). */
+static const uint32_t cfs_weight_table[10] = {
+    423u,   /* priority  1  (nice +4) */
+    526u,   /* priority  2  (nice +3) */
+    655u,   /* priority  3  (nice +2) */
+    820u,   /* priority  4  (nice +1) */
+    1024u,  /* priority  5  (nice  0) — baseline */
+    1277u,  /* priority  6  (nice -1) */
+    1586u,  /* priority  7  (nice -2) */
+    1991u,  /* priority  8  (nice -3) */
+    2501u,  /* priority  9  (nice -4) */
+    3121u,  /* priority 10  (nice -5) */
+};
+
+static uint32_t cfs_get_weight(const process_t *p) {
+    uint32_t pri = p->priority;
+    if (pri < 1u)  pri = 1u;
+    if (pri > 10u) pri = 10u;
+    return cfs_weight_table[pri - 1u];
+}
+
+/* Smallest vruntime among all runnable user processes (wrapping-safe). */
+static uint64_t cfs_min_vruntime(void) {
+    process_t *p = run_queue;
+    uint64_t min_vr = 0;
+    int first = 1;
+
+    if (!p) return 0;
+    do {
+        if ((p->flags & PROC_FLAG_USER_MODE) &&
+            (p->state == PROC_READY || p->state == PROC_RUNNING)) {
+            if (first || p->vruntime < min_vr) {
+                min_vr = p->vruntime;
+                first = 0;
+            }
+        }
+        p = p->sched_next;
+    } while (p && p != run_queue);
+
+    return min_vr;
+}
+
 static void scheduler_idle_fallback(void) {
     for (;;) __asm__ volatile("sti; hlt");
 }
 
+/* Pick the runnable user process with the smallest vruntime.
+ * When rotate=0 the current process is also a candidate (voluntary yield
+ * only switches if another process has strictly smaller vruntime). */
 static process_t *scheduler_pick_next_user(process_t *current, int rotate) {
-    process_t *start;
-    process_t *process;
+    process_t *p = run_queue;
+    process_t *best = NULL;
 
-    if (!run_queue) return NULL;
+    if (!p) return NULL;
 
-    if (current && current->sched_next) {
-        start = rotate ? current->sched_next : current;
-    } else {
-        start = run_queue;
-    }
-
-    process = start;
     do {
-        int runnable = (process->state == PROC_READY) || (!rotate && process == current && process->state == PROC_RUNNING);
-        if ((process->flags & PROC_FLAG_USER_MODE) && runnable) return process;
-        process = process->sched_next;
-    } while (process && process != start);
+        int runnable = (p->state == PROC_READY) ||
+                       (!rotate && p == current && p->state == PROC_RUNNING);
+        if ((p->flags & PROC_FLAG_USER_MODE) && runnable) {
+            if (!best || p->vruntime < best->vruntime) {
+                best = p;
+            }
+        }
+        p = p->sched_next;
+    } while (p && p != run_queue);
 
-    return NULL;
+    return best;
 }
 
 static void scheduler_prepare_fallback_frame(registers_t *regs) {
@@ -106,17 +163,26 @@ void scheduler_remove(uint32_t pid) {
     }
 }
 
-// Called from timer IRQ (IRQ0) every tick
-// Simple round-robin: advance to next READY process
+// Called from timer IRQ (IRQ0) every tick.
+// Wake sleeping processes; normalise vruntime of newly-woken processes so
+// they do not get a huge burst of CPU time after sleeping.
 void scheduler_tick(void) {
+    uint64_t min_vr;
+    process_t *p;
+
     if (!run_queue) return;
 
-    // Wake sleeping processes whose time has come
-    process_t *p = run_queue;
+    min_vr = cfs_min_vruntime();
+
+    p = run_queue;
     do {
         if (p->state == PROC_SLEEPING &&
             timer_get_ticks() >= p->sleep_until) {
             p->state = PROC_READY;
+            /* Clamp the waking process's vruntime to at least min_vruntime so
+             * it does not immediately starve everyone else. */
+            if (p->vruntime < min_vr)
+                p->vruntime = min_vr;
         }
         p = p->sched_next;
     } while (p != run_queue);
@@ -144,12 +210,19 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
     }
 
     if (current) {
-        /* Update CPU accounting for the outgoing process: accumulate ticks
-         * spent since it was scheduled in. */
+        /* Update CPU accounting and CFS vruntime for the outgoing process. */
         uint32_t now = timer_get_ticks();
         if (current->state == PROC_RUNNING) {
             if (now >= current->cpu_last_tick) {
-                current->cpu_ticks += (now - current->cpu_last_tick);
+                uint32_t delta = now - current->cpu_last_tick;
+                current->cpu_ticks += delta;
+                /* vruntime += delta * NICE_0_WEIGHT / task_weight
+                 * Compute in 32-bit to avoid __udivdi3 (unavailable in
+                 * freestanding kernel).  delta is small (1-20 ticks), so
+                 * delta * NICE_0_WEIGHT fits comfortably in uint32_t. */
+                uint32_t delta_vr = (delta * CFS_NICE0_WEIGHT) /
+                                    cfs_get_weight(current);
+                current->vruntime += (uint64_t)delta_vr;
             }
             current->state = PROC_READY;
         }

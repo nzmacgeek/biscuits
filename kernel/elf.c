@@ -15,9 +15,9 @@
 #define ELF_READ_CHUNK_SIZE   512u
 #define ELF_MAX_IMAGE_SIZE    (1024u * 1024u)
 #define ELF_USER_STACK_BASE   0x70000000u
-#define ELF_USER_STACK_SIZE   (1024u * 1024u)
+#define ELF_USER_STACK_SIZE   (8u * 1024u * 1024u)   /* 8 MiB soft limit, matching Linux default */
 #define ELF_USER_STACK_PREFAULT_PAGES 4u
-#define ELF_USER_STACK_STRIDE 0x00200000u
+#define ELF_USER_STACK_STRIDE 0x00A00000u             /* 10 MiB between process stacks */
 
 static uint32_t elf_next_stack_base = ELF_USER_STACK_BASE;
 

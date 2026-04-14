@@ -48,3 +48,7 @@ int         signal_sigprocmask(process_t *process, int how,
 							   uint32_t *oldset);
 int         signal_sigreturn(process_t *process, registers_t *regs, void *frame_ptr);
 void        signal_reset_on_exec(process_t *process);
+/* Map the signal trampoline into the currently-active page directory.
+ * Must be called after switching to a new address space (e.g. after execve)
+ * so that every process has the trampoline accessible at the well-known VA. */
+void        signal_map_trampoline_in_current_dir(void);

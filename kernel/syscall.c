@@ -2428,6 +2428,8 @@ static int32_t sys_execve(registers_t *regs,
                          image.stack_base, image.stack_top, image.page_dir);
     process_set_memory_layout(process, image.image_end);
     paging_switch_directory(image.page_dir);
+    /* Ensure the signal trampoline is mapped in the new address space. */
+    signal_map_trampoline_in_current_dir();
     process_set_current(process);
     syscall_prepare_user_return(regs, process);
     if (stat.mode & VFS_S_ISUID || stat.mode & VFS_S_ISGID) {

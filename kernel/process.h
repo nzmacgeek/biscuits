@@ -57,6 +57,7 @@ typedef struct process {
     /* CPU accounting: cumulative ticks and last-start tick for this process/thread */
     uint32_t      cpu_ticks;     /* accumulated timer ticks spent on CPU */
     uint32_t      cpu_last_tick; /* tick value when this process was scheduled in */
+    uint64_t      vruntime;      /* CFS virtual runtime (weighted tick accumulator) */
     int           exit_code;
     uint32_t      sleep_until;   // timer tick to wake at (0 = not sleeping)
     uint32_t      priority;      // 1 (low) .. 10 (high) - Bluey always gets priority :)

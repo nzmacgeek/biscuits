@@ -88,6 +88,13 @@ static void signal_ensure_trampoline(void) {
     paging_map(SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_phys, PAGE_PRESENT | PAGE_USER);
 }
 
+void signal_map_trampoline_in_current_dir(void) {
+    /* Force a fresh map check against the currently-active page directory.
+     * Called after paging_switch_directory() in execve so the new address
+     * space always has the trampoline mapped at SIGNAL_TRAMPOLINE_ADDR. */
+    signal_ensure_trampoline();
+}
+
 static int signal_next_pending(process_t *process) {
     uint32_t pending;
 
@@ -202,6 +209,11 @@ int signal_dispatch_pending(process_t *process, registers_t *regs) {
     if (!process || !regs) return 0;
     if ((regs->cs & 0x3u) != 0x3u) return 0;
     if (process->flags & PROC_FLAG_SIGNAL_ACTIVE) return 0;
+
+    /* Vfork children share the parent's address space.  Writing a signal
+     * frame onto the stack would corrupt the parent's stack.  Leave all
+     * signals pending; they are delivered once exec() clears this flag. */
+    if (process->flags & PROC_FLAG_VFORK_SHARED_VM) return 0;
 
     sig = signal_next_pending(process);
     if (!sig) return 0;

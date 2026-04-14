@@ -853,7 +853,8 @@ static uint32_t dir_lookup_host(uint32_t dir_ino, const char *name) {
     return 0;
 }
 
-static int create_dir_host(uint32_t parent_ino, const char *name, uint32_t now, uint32_t *ino_out) {
+static int create_dir_host(uint32_t parent_ino, const char *name, uint32_t now, uint32_t *ino_out,
+                           mode_t host_mode, uint32_t host_uid, uint32_t host_gid) {
     uint32_t ino = alloc_inode_host();
     uint32_t data_blk = alloc_block_host();
     biscuitfs_inode_t inode;
@@ -865,9 +866,9 @@ static int create_dir_host(uint32_t parent_ino, const char *name, uint32_t now, 
     if (!ino || !data_blk) return -1;
 
     memset(&inode, 0, sizeof(inode));
-    inode.mode = BISCUITFS_IFDIR | 0755;
-    inode.uid = 0;
-    inode.gid = 0;
+    inode.mode = (uint16_t)(BISCUITFS_IFDIR | (host_mode & 07777));
+    inode.uid = (uint16_t)host_uid;
+    inode.gid = (uint16_t)host_gid;
     inode.links_count = 2;
     inode.atime = now;
     inode.ctime = now;
@@ -909,7 +910,8 @@ static int create_dir_host(uint32_t parent_ino, const char *name, uint32_t now, 
 }
 
 static int create_file_host(uint32_t parent_ino, const char *name,
-                            const uint8_t *data, size_t len, uint32_t now) {
+                            const uint8_t *data, size_t len, uint32_t now,
+                            mode_t host_mode, uint32_t host_uid, uint32_t host_gid) {
     uint32_t ino = alloc_inode_host();
     biscuitfs_inode_t inode;
     size_t remaining = len;
@@ -919,9 +921,9 @@ static int create_file_host(uint32_t parent_ino, const char *name,
     if (!ino) return -1;
 
     memset(&inode, 0, sizeof(inode));
-    inode.mode = BISCUITFS_IFREG | 0755;
-    inode.uid = 0;
-    inode.gid = 0;
+    inode.mode = (uint16_t)(BISCUITFS_IFREG | (host_mode & 07777));
+    inode.uid = (uint16_t)host_uid;
+    inode.gid = (uint16_t)host_gid;
     inode.links_count = 1;
     inode.atime = now;
     inode.ctime = now;
@@ -1006,12 +1008,12 @@ static int populate_standard_layout(const char *init_path, const char *fstab_pat
     load_superblock(&sb);
     now = sb.wtime;
 
-    if (create_dir_host(BISCUITFS_ROOT_INO, "bin", now, &bin_ino) != 0) return -1;
-    if (create_dir_host(BISCUITFS_ROOT_INO, "etc", now, &etc_ino) != 0) return -1;
+    if (create_dir_host(BISCUITFS_ROOT_INO, "bin", now, &bin_ino, 0755, 0, 0) != 0) return -1;
+    if (create_dir_host(BISCUITFS_ROOT_INO, "etc", now, &etc_ino, 0755, 0, 0) != 0) return -1;
 
     if (init_path) {
         if (read_host_file(init_path, &data, &size) != 0) return -1;
-        if (create_file_host(bin_ino, "init", data, size, now) != 0) {
+        if (create_file_host(bin_ino, "init", data, size, now, 0755, 0, 0) != 0) {
             free(data);
             return -1;
         }
@@ -1021,7 +1023,7 @@ static int populate_standard_layout(const char *init_path, const char *fstab_pat
 
     if (fstab_path) {
         if (read_host_file(fstab_path, &data, &size) != 0) return -1;
-        if (create_file_host(etc_ino, "fstab", data, size, now) != 0) {
+        if (create_file_host(etc_ino, "fstab", data, size, now, 0644, 0, 0) != 0) {
             free(data);
             return -1;
         }
@@ -1112,10 +1114,20 @@ static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base
             /* Reuse existing directory if present */
             child_ino = dir_lookup_host(parent_ino, de->d_name);
             if (!child_ino) {
-                if (create_dir_host(parent_ino, de->d_name, now, &child_ino) != 0) {
+                if (create_dir_host(parent_ino, de->d_name, now, &child_ino,
+                                    st.st_mode, (uint32_t)st.st_uid, (uint32_t)st.st_gid) != 0) {
                     fprintf(stderr, "mkfs: create_dir_host failed for '%s' under parent ino %u\n", relchild, parent_ino);
                     closedir(d);
                     return -1;
+                }
+            } else {
+                /* Directory already exists — update its mode/ownership to match host. */
+                biscuitfs_inode_t existing;
+                if (read_inode_host(child_ino, &existing) == 0) {
+                    existing.mode = (uint16_t)(BISCUITFS_IFDIR | (st.st_mode & 07777));
+                    existing.uid  = (uint16_t)st.st_uid;
+                    existing.gid  = (uint16_t)st.st_gid;
+                    write_inode_host(child_ino, &existing);
                 }
             }
             if (populate_from_dir_recursive(child_ino, src_base, relchild, now) != 0) {
@@ -1131,7 +1143,8 @@ static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base
                 closedir(d);
                 return -1;
             }
-            if (create_file_host(parent_ino, de->d_name, data, size, now) != 0) {
+            if (create_file_host(parent_ino, de->d_name, data, size, now,
+                                  st.st_mode, (uint32_t)st.st_uid, (uint32_t)st.st_gid) != 0) {
                 fprintf(stderr, "mkfs: create_file_host failed for '%s' under parent ino %u\n", relchild, parent_ino);
                 free(data);
                 closedir(d);
