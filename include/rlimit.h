@@ -8,3 +8,4 @@ typedef struct {
 } rlimit_t;
 
 #define RLIMIT_STACK 3
+#define RLIMIT_NOFILE 7

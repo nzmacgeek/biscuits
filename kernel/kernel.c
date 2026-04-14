@@ -53,6 +53,7 @@
 #include "../fs/fat.h"
 #include "../fs/blueyfs.h"
 #include "../fs/procfs.h"
+#include "../fs/devfs.h"
 #include "../net/tcpip.h"
 #include "../shell/shell.h"
 #include "syslog.h"
@@ -224,6 +225,13 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     vfs_register_fs(fat_get_filesystem());
     vfs_register_fs(biscuitfs_get_filesystem());
     vfs_register_fs(procfs_get_filesystem());
+    vfs_register_fs(devfs_get_filesystem());
+
+    // Mount /dev immediately — before any ATA/root so device nodes are
+    // available even in diskless boot.
+    if (vfs_mount("/dev", "devfs", 0) != 0) {
+        kprintf("[VFS]  Failed to mount devfs at /dev\n");
+    }
 
     // Step 11: ATA disk driver (module)
     if (module_load("ata") == 0) {

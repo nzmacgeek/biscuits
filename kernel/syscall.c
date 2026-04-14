@@ -58,6 +58,7 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_EPIPE  32
 #define BLUEY_EIO     5
 #define BLUEY_EMFILE 24
+#define BLUEY_ENFILE 23
 #define BLUEY_ENOTSOCK 88
 #define BLUEY_EADDRINUSE 98
 #define BLUEY_EAFNOSUPPORT 97
@@ -90,6 +91,12 @@ static int syscall_is_kernel_mode(const registers_t *regs) {
 
 static int32_t sys_write(uint32_t fd, const char *buf, size_t len);
 static int32_t resolve_normalize_path(const char *path, char *out, size_t out_size);
+
+static int32_t syscall_map_vfs_fd_error(int vfs_err) {
+    if (vfs_err == VFS_ERR_EMFILE) return -BLUEY_EMFILE;
+    if (vfs_err == VFS_ERR_ENFILE) return -BLUEY_ENFILE;
+    return -BLUEY_EBADF;
+}
 
 static int syscall_map_user_pages(process_t *process,
                                   uint32_t start,
@@ -352,7 +359,7 @@ static int32_t sys_setrlimit(uint32_t resource, uint32_t user_rlim_ptr) {
     uint32_t old_dir;
 
     if (!p) return -BLUEY_EPERM;
-    if (resource != RLIMIT_STACK) return -BLUEY_EINVAL;
+    if (resource != RLIMIT_STACK && resource != RLIMIT_NOFILE) return -BLUEY_EINVAL;
     if (!user_rlim_ptr) return -BLUEY_EFAULT;
 
     /* Copy from user memory */
@@ -366,8 +373,14 @@ static int32_t sys_setrlimit(uint32_t resource, uint32_t user_rlim_ptr) {
     /* Basic validation */
     if (rlim.rlim_cur > rlim.rlim_max) return -BLUEY_EINVAL;
 
-    p->rlimit_stack_cur = rlim.rlim_cur;
-    p->rlimit_stack_max = rlim.rlim_max;
+    if (resource == RLIMIT_STACK) {
+        p->rlimit_stack_cur = rlim.rlim_cur;
+        p->rlimit_stack_max = rlim.rlim_max;
+    } else {
+        if (rlim.rlim_cur < 3u) return -BLUEY_EINVAL;
+        p->rlimit_nofile_cur = rlim.rlim_cur;
+        p->rlimit_nofile_max = rlim.rlim_max;
+    }
     return 0;
 }
 
@@ -376,14 +389,19 @@ static int32_t sys_getrlimit(uint32_t resource, uint32_t user_rlim_ptr) {
     uint32_t old_dir;
 
     if (!p) return -BLUEY_EPERM;
-    if (resource != RLIMIT_STACK) return -BLUEY_EINVAL;
+    if (resource != RLIMIT_STACK && resource != RLIMIT_NOFILE) return -BLUEY_EINVAL;
     if (!user_rlim_ptr) return -BLUEY_EFAULT;
 
     old_dir = paging_current_directory();
     paging_switch_directory(p->page_dir);
     rlimit_t *u = (rlimit_t*)(uintptr_t)user_rlim_ptr;
-    u->rlim_cur = p->rlimit_stack_cur;
-    u->rlim_max = p->rlimit_stack_max;
+    if (resource == RLIMIT_STACK) {
+        u->rlim_cur = p->rlimit_stack_cur;
+        u->rlim_max = p->rlimit_stack_max;
+    } else {
+        u->rlim_cur = p->rlimit_nofile_cur;
+        u->rlim_max = p->rlimit_nofile_max;
+    }
     paging_switch_directory(old_dir);
     return 0;
 }
@@ -517,10 +535,39 @@ static int32_t sys_mprotect(registers_t *regs) {
     return 0;
 }
 
-static int32_t sys_rt_sigaction(int sig, const bluey_sigaction_t *act, bluey_sigaction_t *oldact) {
+static int32_t sys_rt_sigaction(int sig, const bluey_sigaction_t *act,
+                                bluey_sigaction_t *oldact, uint32_t sigsetsize) {
     process_t *process = process_current();
+    bluey_sigaction_t kact;
+    bluey_sigaction_t koldact;
+    int32_t result;
+
     if (!process) return -BLUEY_EPERM;
-    return signal_sigaction(process, sig, act, oldact);
+    /* Linux rt_sigaction requires sigsetsize == sizeof(kernel_sigset_t).
+     * We support 4-byte signal masks (signals 1-31). */
+    if (sigsetsize != sizeof(uint32_t)) return -BLUEY_EINVAL;
+
+    /* Copy act from user memory before calling signal_sigaction so that
+     * any corruption in user memory doesn't reach kernel internals via
+     * a live user pointer. */
+    if (act) {
+        uint32_t old_dir = paging_current_directory();
+        paging_switch_directory(process->page_dir);
+        kact = *act;
+        paging_switch_directory(old_dir);
+    }
+
+    result = signal_sigaction(process, sig, act ? &kact : NULL,
+                              oldact ? &koldact : NULL);
+    if (result != 0) return result;
+
+    if (oldact) {
+        uint32_t old_dir = paging_current_directory();
+        paging_switch_directory(process->page_dir);
+        *oldact = koldact;
+        paging_switch_directory(old_dir);
+    }
+    return 0;
 }
 
 static int32_t sys_rt_sigprocmask(int how, const uint32_t *set, uint32_t *oldset) {
@@ -1084,7 +1131,7 @@ static int32_t sys_socket_open(int domain, int type, int protocol) {
     fd = vfs_socket_open(socket_id);
     if (fd < 0) {
         socket_close(socket_id);
-        return -BLUEY_EMFILE;
+        return syscall_map_vfs_fd_error(vfs_get_last_error());
     }
 
     return fd;
@@ -1162,7 +1209,7 @@ static int32_t sys_socket_accept4(int fd, void *addr, uint32_t *addrlen, int fla
     newfd = vfs_socket_open(socket_id);
     if (newfd < 0) {
         socket_close(socket_id);
-        return -BLUEY_EMFILE;
+        return syscall_map_vfs_fd_error(vfs_get_last_error());
     }
     return newfd;
 }
@@ -1354,7 +1401,7 @@ static int32_t sys_select(int nfds,
             else if (vfs_fd_is_devev(fd)) is_ready = devev_pending();
             else if (vfs_fd_is_tty(fd)) is_ready = 1;
             else if (vfs_fd_is_socket(fd)) is_ready = socket_is_readable(vfs_socket_id(fd));
-            else if (fd >= 3 && fd < VFS_MAX_OPEN) is_ready = 1;
+            else if (fd >= 3 && vfs_fd_is_open(fd)) is_ready = 1;
 
             if (is_ready) {
                 ready_read[word] |= mask;
@@ -1367,7 +1414,7 @@ static int32_t sys_select(int nfds,
             if (fd == 1 || fd == 2) is_ready = 1;
             else if (vfs_fd_is_tty(fd)) is_ready = 1;
             else if (vfs_fd_is_socket(fd)) is_ready = socket_is_writable(vfs_socket_id(fd));
-            else if (fd >= 3 && fd < VFS_MAX_OPEN) is_ready = 1;
+            else if (fd >= 3 && vfs_fd_is_open(fd)) is_ready = 1;
 
             if (is_ready) {
                 ready_write[word] |= mask;
@@ -1606,7 +1653,7 @@ static int32_t sys_prlimit64(uint32_t pid,
     uint32_t old_dir;
 
     if (!caller) return -BLUEY_EPERM;
-    if (resource != RLIMIT_STACK) return -BLUEY_EINVAL;
+    if (resource != RLIMIT_STACK && resource != RLIMIT_NOFILE) return -BLUEY_EINVAL;
 
     if (pid == 0 || pid == caller->pid) {
         target = caller;
@@ -1636,17 +1683,30 @@ static int32_t sys_prlimit64(uint32_t pid,
         else if (requested.rlim_max <= 0xFFFFFFFFull) new_max = (uint32_t)requested.rlim_max;
         else return -BLUEY_EINVAL;
 
-        target->rlimit_stack_cur = new_cur;
-        target->rlimit_stack_max = new_max;
+        if (resource == RLIMIT_STACK) {
+            target->rlimit_stack_cur = new_cur;
+            target->rlimit_stack_max = new_max;
+        } else {
+            if (new_cur < 3u) return -BLUEY_EINVAL;
+            target->rlimit_nofile_cur = new_cur;
+            target->rlimit_nofile_max = new_max;
+        }
     }
 
     if (old_limit_ptr) {
         compat_rlimit64_t current;
 
-        current.rlim_cur = (target->rlimit_stack_cur == 0xFFFFFFFFu)
-            ? ~0ull : (uint64_t)target->rlimit_stack_cur;
-        current.rlim_max = (target->rlimit_stack_max == 0xFFFFFFFFu)
-            ? ~0ull : (uint64_t)target->rlimit_stack_max;
+        if (resource == RLIMIT_STACK) {
+            current.rlim_cur = (target->rlimit_stack_cur == 0xFFFFFFFFu)
+                ? ~0ull : (uint64_t)target->rlimit_stack_cur;
+            current.rlim_max = (target->rlimit_stack_max == 0xFFFFFFFFu)
+                ? ~0ull : (uint64_t)target->rlimit_stack_max;
+        } else {
+            current.rlim_cur = (target->rlimit_nofile_cur == 0xFFFFFFFFu)
+                ? ~0ull : (uint64_t)target->rlimit_nofile_cur;
+            current.rlim_max = (target->rlimit_nofile_max == 0xFFFFFFFFu)
+                ? ~0ull : (uint64_t)target->rlimit_nofile_max;
+        }
 
         old_dir = paging_current_directory();
         paging_switch_directory(caller->page_dir);
@@ -1809,19 +1869,19 @@ static int32_t sys__llseek(uint32_t fd, uint32_t offset_hi, uint32_t offset_lo,
 static int32_t sys_dup(int oldfd) {
     if (oldfd < 0) return -BLUEY_EBADF;
     int r = vfs_dup(oldfd);
-    return r < 0 ? -BLUEY_EBADF : r;
+    return r < 0 ? syscall_map_vfs_fd_error(vfs_get_last_error()) : r;
 }
 
 static int32_t sys_dup2_impl(int oldfd, int newfd) {
     if (oldfd < 0 || newfd < 0) return -BLUEY_EBADF;
     int r = vfs_dup2(oldfd, newfd);
-    return r < 0 ? -BLUEY_EBADF : r;
+    return r < 0 ? syscall_map_vfs_fd_error(vfs_get_last_error()) : r;
 }
 
 static int32_t sys_pipe_impl(int *fds) {
     if (!fds) return -BLUEY_EFAULT;
     int r = vfs_pipe(fds);
-    return r < 0 ? r : 0;
+    return r < 0 ? syscall_map_vfs_fd_error(vfs_get_last_error()) : 0;
 }
 
 /* pipe2(fds, flags) — identical to pipe() for our purposes.
@@ -1835,7 +1895,7 @@ static int32_t sys_pipe2(int *fds, int flags) {
 #undef PIPE2_VALID_FLAGS
     if (!fds) return -BLUEY_EFAULT;
     int r = vfs_pipe(fds);
-    return r < 0 ? r : 0;
+    return r < 0 ? syscall_map_vfs_fd_error(vfs_get_last_error()) : 0;
 }
 
 /* faccessat2(dirfd, path, mode, flags) — check file accessibility.
@@ -1884,10 +1944,8 @@ static int32_t sys_fcntl(int fd, int cmd, int arg) {
             int r = vfs_dup_above(fd, arg);
             if (r < 0) {
                 /* Preserve EBADF for invalid input fds; map other failures to EMFILE */
-                if (r == -BLUEY_EBADF) {
-                    return r;
-                }
-                return -BLUEY_EMFILE;
+                if (vfs_get_last_error() == VFS_ERR_EBADF) return -BLUEY_EBADF;
+                return syscall_map_vfs_fd_error(vfs_get_last_error());
             }
             return r;
         }
@@ -2120,6 +2178,18 @@ typedef struct {
     char     d_name[1]; /* variable length */
 } k_dirent_t;
 
+typedef struct {
+    uint64_t d_ino;
+    uint64_t d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;
+    char     d_name[1]; /* variable length */
+} k_dirent64_t;
+
+#define K_DT_UNKNOWN 0
+#define K_DT_DIR     4
+#define K_DT_REG     8
+
 static int32_t sys_getdents(int fd, void *buf, uint32_t count) {
     if (!buf) return -BLUEY_EFAULT;
     if (fd < 0) return -BLUEY_EBADF;
@@ -2153,6 +2223,44 @@ static int32_t sys_getdents(int fd, void *buf, uint32_t count) {
         memcpy(de->d_name, entries[i].name, namelen + 1);
 
         out     += reclen;
+        written += reclen;
+    }
+
+    return (int32_t)written;
+}
+
+static int32_t sys_getdents64(int fd, void *buf, uint32_t count) {
+    if (!buf) return -BLUEY_EFAULT;
+    if (fd < 0) return -BLUEY_EBADF;
+
+    vfs_stat_t fst;
+    if (vfs_fstat(fd, &fst) != 0) return -BLUEY_EBADF;
+    if (!fst.is_dir) return -BLUEY_ENOTDIR;
+
+    const char *fdpath = vfs_fd_get_path(fd);
+    const char *dirpath = fdpath ? fdpath : process_get_cwd();
+    vfs_dirent_t entries[32];
+    int nent = vfs_readdir(dirpath, entries, 32);
+    if (nent < 0) return -BLUEY_EINVAL;
+
+    uint8_t *out = (uint8_t *)buf;
+    uint32_t written = 0;
+
+    for (int i = 0; i < nent; i++) {
+        size_t namelen = strlen(entries[i].name);
+        uint16_t reclen = (uint16_t)((sizeof(uint64_t) + sizeof(uint64_t) +
+                                      sizeof(uint16_t) + sizeof(uint8_t) +
+                                      namelen + 1 + 7) & ~7u);
+        if (written + reclen > count) break;
+
+        k_dirent64_t *de = (k_dirent64_t *)out;
+        de->d_ino = entries[i].inode ? (uint64_t)entries[i].inode : (uint64_t)(i + 1);
+        de->d_off = (uint64_t)(written + reclen);
+        de->d_reclen = reclen;
+        de->d_type = entries[i].is_dir ? K_DT_DIR : K_DT_REG;
+        memcpy(de->d_name, entries[i].name, namelen + 1);
+
+        out += reclen;
         written += reclen;
     }
 
@@ -2293,7 +2401,7 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
         tty_flush();
         return (int32_t)len;
     }
-    if (fd < VFS_MAX_OPEN && vfs_fd_is_tty((int)fd)) {
+    if (vfs_fd_is_tty((int)fd)) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
         if (len > 4096) len = 4096;
@@ -2329,6 +2437,10 @@ static int32_t sys_open(const char *path, int flags) {
 
     fd = vfs_open(path, vfs_flags);
     if (fd >= 0) return fd;
+
+    if (vfs_get_last_error() == VFS_ERR_EMFILE || vfs_get_last_error() == VFS_ERR_ENFILE) {
+        return syscall_map_vfs_fd_error(vfs_get_last_error());
+    }
 
     if (vfs_stat(path, &stat) != 0) return -BLUEY_ENOENT;
     if (stat.is_dir) return -BLUEY_EISDIR;
@@ -2469,7 +2581,7 @@ static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
         if (len == 0) return 0;
         return tty_read(buf, len);
     }
-    if (fd < VFS_MAX_OPEN && vfs_fd_is_tty((int)fd)) {
+    if (vfs_fd_is_tty((int)fd)) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
         return vfs_read((int)fd, (uint8_t *)buf, len);
@@ -2515,6 +2627,16 @@ static int32_t sys_gethostname(char *buf, size_t len) {
 
 static int32_t sys_setpgid(uint32_t pid, uint32_t pgid) {
     return process_setpgid(pid, pgid);
+}
+
+static int32_t sys_setsid(void) {
+    process_t *p = process_current();
+
+    if (!p) return -BLUEY_EPERM;
+    if (p->pgid == p->pid) return -BLUEY_EPERM;
+
+    p->pgid = p->pid;
+    return (int32_t)p->pid;
 }
 
 static int32_t sys_getpgid(uint32_t pid) {
@@ -2742,6 +2864,9 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_GETDENTS:
             ret = sys_getdents((int)regs->ebx, (void*)regs->ecx, regs->edx);
             break;
+        case SYS_GETDENTS64:
+            ret = sys_getdents64((int)regs->ebx, (void*)regs->ecx, regs->edx);
+            break;
         case SYS_KILL:
             ret = sys_kill((int32_t)regs->ebx, (int)regs->ecx);
             break;
@@ -2848,7 +2973,8 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_RT_SIGACTION:
             ret = sys_rt_sigaction((int)regs->ebx,
                                    (const bluey_sigaction_t*)regs->ecx,
-                                   (bluey_sigaction_t*)regs->edx);
+                                   (bluey_sigaction_t*)regs->edx,
+                                   (uint32_t)regs->esi);
             break;
         case SYS_RT_SIGPROCMASK:
             ret = sys_rt_sigprocmask((int)regs->ebx,
@@ -2908,6 +3034,9 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_GETPGRP:
             ret = sys_getpgrp();
+            break;
+        case SYS_SETSID:
+            ret = sys_setsid();
             break;
         /* ---- Mount / umount -------------------------------------------- */
         case SYS_MOUNT:

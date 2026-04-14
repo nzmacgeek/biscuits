@@ -40,6 +40,8 @@ typedef struct process {
     uint32_t      user_stack_limit; // soft limit for stack growth (grow-on-demand)
     uint32_t      rlimit_stack_cur;
     uint32_t      rlimit_stack_max;
+    uint32_t      rlimit_nofile_cur;
+    uint32_t      rlimit_nofile_max;
     uint32_t      tls_base;          // thread-local storage base for GDT entry 6
     uint32_t      robust_list_head;  // userspace head for set_robust_list(2)
     uint32_t      robust_list_len;

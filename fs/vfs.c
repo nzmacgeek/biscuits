@@ -8,6 +8,7 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../kernel/devev.h"
+#include "../kernel/kheap.h"
 #include "../kernel/socket.h"
 #include "../kernel/tty.h"
 #include "vfs.h"
@@ -39,7 +40,10 @@ typedef struct {
     uint32_t offset;        // current seek position (for lseek / sequential reads)
 } vfs_fd_t;
 
-static vfs_fd_t fd_table[VFS_MAX_OPEN];
+static vfs_fd_t fd_table_static[VFS_MAX_OPEN];
+static vfs_fd_t *fd_table = fd_table_static;
+static int vfs_fd_capacity = VFS_MAX_OPEN;
+static int vfs_last_error = VFS_ERR_NONE;
 
 // Pipe buffer pool
 #define VFS_PIPE_BUF_SIZE 4096
@@ -56,6 +60,53 @@ typedef struct {
 } vfs_pipe_t;
 
 static vfs_pipe_t pipe_pool[VFS_MAX_PIPES];
+
+int vfs_get_last_error(void) {
+    return vfs_last_error;
+}
+
+static void vfs_set_last_error(int err) {
+    vfs_last_error = err;
+}
+
+static int vfs_effective_fd_limit(void) {
+    process_t *current = process_current();
+    uint32_t limit = current ? current->rlimit_nofile_cur : VFS_MAX_OPEN;
+
+    if (limit == 0xFFFFFFFFu || limit > (uint32_t)VFS_MAX_OPEN_HARD) {
+        limit = (uint32_t)VFS_MAX_OPEN_HARD;
+    }
+    if (limit < 3u) limit = 3u;
+    return (int)limit;
+}
+
+static int vfs_grow_fd_capacity(int min_capacity) {
+    int new_capacity = vfs_fd_capacity;
+    vfs_fd_t *new_table;
+
+    if (new_capacity <= 0) new_capacity = VFS_MAX_OPEN;
+    while (new_capacity < min_capacity) {
+        if (new_capacity >= VFS_MAX_OPEN_HARD) {
+            new_capacity = VFS_MAX_OPEN_HARD;
+            break;
+        }
+        new_capacity *= 2;
+        if (new_capacity > VFS_MAX_OPEN_HARD) new_capacity = VFS_MAX_OPEN_HARD;
+    }
+
+    if (new_capacity <= vfs_fd_capacity) return 0;
+
+    new_table = (vfs_fd_t*)kheap_alloc(sizeof(vfs_fd_t) * (size_t)new_capacity, 0);
+    if (!new_table) return 0;
+
+    memset(new_table, 0, sizeof(vfs_fd_t) * (size_t)new_capacity);
+    memcpy(new_table, fd_table, sizeof(vfs_fd_t) * (size_t)vfs_fd_capacity);
+
+    if (fd_table != fd_table_static) kheap_free(fd_table);
+    fd_table = new_table;
+    vfs_fd_capacity = new_capacity;
+    return 1;
+}
 
 // Allocate a free pipe slot; returns index or -1
 static int vfs_pipe_alloc(void) {
@@ -130,7 +181,13 @@ static int vfs_parent_path(const char *path, char *out, size_t out_len) {
 void vfs_init(void) {
     fs_count    = 0;
     mount_count = 0;
-    for (int i = 0; i < VFS_MAX_OPEN;   i++) fd_table[i].used = 0;
+    if (fd_table != fd_table_static) {
+        kheap_free(fd_table);
+        fd_table = fd_table_static;
+    }
+    vfs_fd_capacity = VFS_MAX_OPEN;
+    vfs_last_error = VFS_ERR_NONE;
+    for (int i = 0; i < vfs_fd_capacity; i++) fd_table[i].used = 0;
     for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
         fs_registry[i] = NULL;
         mounts[i].active = 0;
@@ -238,10 +295,27 @@ static vfs_mount_t *vfs_find_mount(const char *path) {
 
 // Allocate a VFS file descriptor
 static int vfs_alloc_fd(void) {
-    for (int i = 3; i < VFS_MAX_OPEN; i++) {  // 0,1,2 = stdin/stdout/stderr
-        if (!fd_table[i].used) return i;
+    int limit = vfs_effective_fd_limit();
+
+    for (;;) {
+        int search_limit = vfs_fd_capacity < limit ? vfs_fd_capacity : limit;
+        for (int i = 3; i < search_limit; i++) {  // 0,1,2 = stdin/stdout/stderr
+            if (!fd_table[i].used) {
+                vfs_set_last_error(VFS_ERR_NONE);
+                return i;
+            }
+        }
+
+        if (search_limit >= limit) {
+            vfs_set_last_error(VFS_ERR_EMFILE);
+            return -1;
+        }
+
+        if (!vfs_grow_fd_capacity(limit)) {
+            vfs_set_last_error(VFS_ERR_ENFILE);
+            return -1;
+        }
     }
-    return -1;
 }
 
 int vfs_devev_open(void) {
@@ -260,7 +334,10 @@ int vfs_devev_open(void) {
 int vfs_socket_open(int socket_id) {
     int fd = vfs_alloc_fd();
     if (fd < 0) return -1;
-    if (socket_add_ref(socket_id) != 0) return -1;
+    if (socket_add_ref(socket_id) != 0) {
+        vfs_set_last_error(VFS_ERR_EBADF);
+        return -1;
+    }
 
     fd_table[fd].used = 1;
     fd_table[fd].fd_type = VFS_FD_TYPE_SOCKET;
@@ -273,18 +350,23 @@ int vfs_socket_open(int socket_id) {
 }
 
 int vfs_fd_is_devev(int fd) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return 0;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return 0;
     return fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV;
 }
 
 int vfs_fd_is_tty(int fd) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return 0;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return 0;
     return fd_table[fd].fd_type == VFS_FD_TYPE_TTY;
 }
 
 int vfs_fd_is_socket(int fd) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return 0;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return 0;
     return fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET;
+}
+
+int vfs_fd_is_open(int fd) {
+    if (fd < 0 || fd >= vfs_fd_capacity) return 0;
+    return fd_table[fd].used;
 }
 
 int vfs_socket_id(int fd) {
@@ -295,6 +377,8 @@ int vfs_socket_id(int fd) {
 int vfs_open(const char *path, int flags) {
     int tty_kind;
     int fd;
+
+    vfs_set_last_error(VFS_ERR_NONE);
 
     if (!path) return -1;
 
@@ -406,7 +490,7 @@ int vfs_open(const char *path, int flags) {
 }
 
 int vfs_read(int fd, uint8_t *buf, size_t len) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV)
         return devev_read_bytes(buf, len);
     if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET)
@@ -444,7 +528,7 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
 }
 
 int vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) return -1;
@@ -459,7 +543,7 @@ int vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
 }
 
 int vfs_write(int fd, const uint8_t *buf, size_t len) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) {
         return socket_write(fd_table[fd].fs_fd, buf, len);
     }
@@ -499,7 +583,7 @@ int vfs_write(int fd, const uint8_t *buf, size_t len) {
 }
 
 int vfs_close(int fd) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_FILE) {
         vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
         if (m->fs->close) m->fs->close(fd_table[fd].fs_fd);
@@ -522,7 +606,7 @@ int vfs_close(int fd) {
 }
 
 int32_t vfs_lseek(int fd, int32_t offset, int whence) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
     if (fd_table[fd].fd_type != VFS_FD_TYPE_FILE) return -1;
 
     uint32_t new_offset;
@@ -549,7 +633,10 @@ int32_t vfs_lseek(int fd, int32_t offset, int whence) {
 }
 
 int vfs_dup(int oldfd) {
-    if (oldfd < 0 || oldfd >= VFS_MAX_OPEN || !fd_table[oldfd].used) return -1;
+    if (oldfd < 0 || oldfd >= vfs_fd_capacity || !fd_table[oldfd].used) {
+        vfs_set_last_error(VFS_ERR_EBADF);
+        return -1;
+    }
     int newfd = vfs_alloc_fd();
     if (newfd < 0) return -1;
     fd_table[newfd] = fd_table[oldfd];
@@ -566,12 +653,25 @@ int vfs_dup(int oldfd) {
                 pipe_pool[pipe_idx].read_refcount++;
         }
     }
+    vfs_set_last_error(VFS_ERR_NONE);
     return newfd;
 }
 
 int vfs_dup2(int oldfd, int newfd) {
-    if (oldfd < 0 || oldfd >= VFS_MAX_OPEN || !fd_table[oldfd].used) return -1;
-    if (newfd < 0 || newfd >= VFS_MAX_OPEN) return -1;
+    int limit = vfs_effective_fd_limit();
+
+    if (oldfd < 0 || oldfd >= vfs_fd_capacity || !fd_table[oldfd].used) {
+        vfs_set_last_error(VFS_ERR_EBADF);
+        return -1;
+    }
+    if (newfd < 0 || newfd >= limit) {
+        vfs_set_last_error(VFS_ERR_EBADF);
+        return -1;
+    }
+    if (newfd >= vfs_fd_capacity && !vfs_grow_fd_capacity(newfd + 1)) {
+        vfs_set_last_error(VFS_ERR_ENFILE);
+        return -1;
+    }
     if (oldfd == newfd) return newfd;
     if (fd_table[newfd].used) vfs_close(newfd);
     fd_table[newfd] = fd_table[oldfd];
@@ -588,12 +688,18 @@ int vfs_dup2(int oldfd, int newfd) {
                 pipe_pool[pipe_idx].read_refcount++;
         }
     }
+    vfs_set_last_error(VFS_ERR_NONE);
     return newfd;
 }
 
 int vfs_pipe(int fds[2]) {
+    vfs_set_last_error(VFS_ERR_NONE);
+
     int pipe_idx = vfs_pipe_alloc();
-    if (pipe_idx < 0) return -1;
+    if (pipe_idx < 0) {
+        vfs_set_last_error(VFS_ERR_ENFILE);
+        return -1;
+    }
 
     int rfd = vfs_alloc_fd();
     if (rfd < 0) { pipe_pool[pipe_idx].used = 0; return -1; }
@@ -628,19 +734,31 @@ int vfs_pipe(int fds[2]) {
 
     fds[0] = rfd;
     fds[1] = wfd;
+    vfs_set_last_error(VFS_ERR_NONE);
     return 0;
 }
 
 const char *vfs_fd_get_path(int fd) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return NULL;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return NULL;
     if (fd_table[fd].fd_type != VFS_FD_TYPE_FILE) return NULL;
     return fd_table[fd].path;
 }
 
 /* Allocate the lowest free fd >= min_fd; used for F_DUPFD semantics */
 int vfs_dup_above(int oldfd, int min_fd) {
-    if (oldfd < 0 || oldfd >= VFS_MAX_OPEN || !fd_table[oldfd].used) return -1;
-    for (int i = min_fd; i < VFS_MAX_OPEN; i++) {
+    int limit = vfs_effective_fd_limit();
+
+    if (oldfd < 0 || oldfd >= vfs_fd_capacity || !fd_table[oldfd].used) {
+        vfs_set_last_error(VFS_ERR_EBADF);
+        return -1;
+    }
+    if (min_fd < 0 || min_fd >= limit) {
+        vfs_set_last_error(VFS_ERR_EMFILE);
+        return -1;
+    }
+    if (limit > vfs_fd_capacity) vfs_grow_fd_capacity(limit);
+
+    for (int i = min_fd; i < limit && i < vfs_fd_capacity; i++) {
         if (!fd_table[i].used) {
             fd_table[i] = fd_table[oldfd];
             if (fd_table[i].fd_type == VFS_FD_TYPE_SOCKET) {
@@ -655,9 +773,11 @@ int vfs_dup_above(int oldfd, int min_fd) {
                         pipe_pool[pipe_idx].read_refcount++;
                 }
             }
+            vfs_set_last_error(VFS_ERR_NONE);
             return i;
         }
     }
+    vfs_set_last_error(VFS_ERR_EMFILE);
     return -1; /* EMFILE */
 }
 
@@ -782,7 +902,7 @@ int vfs_stat(const char *path, vfs_stat_t *out) {
 }
 
 int vfs_fstat(int fd, vfs_stat_t *out) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN) return -1;
+    if (fd < 0 || fd >= vfs_fd_capacity) return -1;
     if (!fd_table[fd].used) return -1;
     if (!out) return -1;
     if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) {
@@ -868,7 +988,7 @@ int vfs_chmod(const char *path, uint16_t mode) {
 }
 
 int vfs_fchmod(int fd, uint16_t mode) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
     const char *path = fd_table[fd].path;
     if (!path || !path[0]) return -1;
     return vfs_chmod(path, mode);
@@ -896,7 +1016,7 @@ int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
 }
 
 int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
-    if (fd < 0 || fd >= VFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
     const char *path = fd_table[fd].path;
     if (!path || !path[0]) return -1;
     return vfs_chown(path, uid, gid);

@@ -8,8 +8,14 @@
 
 #define VFS_MAX_MOUNTS   8
 #define VFS_MAX_OPEN     32
+#define VFS_MAX_OPEN_HARD 4096
 #define VFS_NAME_LEN     64
 #define VFS_PATH_LEN     256
+
+#define VFS_ERR_NONE   0
+#define VFS_ERR_EBADF  9
+#define VFS_ERR_ENFILE 23
+#define VFS_ERR_EMFILE 24
 
 // Open flags (POSIX-compatible)
 #define VFS_O_RDONLY  0
@@ -24,6 +30,7 @@
 #define VFS_S_IFREG  0x8000
 #define VFS_S_IFDIR  0x4000
 #define VFS_S_IFCHR  0x2000
+#define VFS_S_IFBLK  0x6000
 #define VFS_S_ISUID  04000
 #define VFS_S_ISGID  02000
 #define VFS_S_IRUSR  0400
@@ -115,7 +122,9 @@ int  vfs_socket_open(int socket_id); // attach a kernel socket to a VFS fd
 int  vfs_fd_is_devev(int fd);        // 1 if the fd is a device event channel
 int  vfs_fd_is_tty(int fd);          // 1 if the fd is a tty/console device
 int  vfs_fd_is_socket(int fd);       // 1 if the fd is a socket endpoint
+int  vfs_fd_is_open(int fd);         // 1 if descriptor exists and is open
 int  vfs_socket_id(int fd);          // backend socket id for a socket fd
+int  vfs_get_last_error(void);       // last VFS fd-allocation related errno code
 int  vfs_read(int fd, uint8_t *buf, size_t len);
 int  vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset);
 int  vfs_write(int fd, const uint8_t *buf, size_t len);

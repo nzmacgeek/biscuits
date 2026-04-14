@@ -264,14 +264,16 @@ int signal_sigaction(process_t *process, int sig,
 
     slot = &process->signal_actions[sig - 1];
     if (oldact) {
-        oldact->sa_handler = slot->handler;
-        oldact->sa_flags = slot->flags;
-        oldact->sa_mask = slot->mask;
+        oldact->sa_handler  = slot->handler;
+        oldact->sa_flags    = slot->flags;
+        oldact->sa_restorer = 0;   /* kernel owns the trampoline — no user restorer */
+        oldact->sa_mask     = slot->mask;
     }
     if (act) {
         slot->handler = act->sa_handler;
-        slot->flags = act->sa_flags;
-        slot->mask = act->sa_mask & ~(signal_bit(SIGKILL) | signal_bit(SIGSTOP));
+        slot->flags   = act->sa_flags;
+        /* sa_restorer is accepted but ignored: we always use our own trampoline. */
+        slot->mask    = act->sa_mask & ~(signal_bit(SIGKILL) | signal_bit(SIGSTOP));
     }
     return 0;
 }

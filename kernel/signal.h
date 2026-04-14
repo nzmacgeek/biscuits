@@ -15,7 +15,8 @@ typedef struct process process_t;
 typedef struct {
 	uint32_t sa_handler;
 	uint32_t sa_flags;
-	uint32_t sa_mask;
+	uint32_t sa_restorer;  /* Linux i386 ABI: restorer function pointer (offset +8) */
+	uint32_t sa_mask;      /* signal mask (offset +12, matching Linux i386 layout)   */
 } bluey_sigaction_t;
 
 #define SIGHUP    1

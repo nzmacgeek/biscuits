@@ -446,8 +446,8 @@ def main() -> int:
     slack_sectors = sectors_from_mb(args.slack_mb)
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="ascii", newline="\n") as fstab_fp:
         fstab_fp.write("# BlueyOS mount table - Chilli keeps it organised\n")
-        fstab_fp.write("/dev/hda2 / blueyfs defaults 0 1\n")
-        fstab_fp.write("/dev/hda3 none swap defaults 0 0\n")
+        fstab_fp.write("/dev/disk0s2 / blueyfs defaults 0 1\n")
+        fstab_fp.write("/dev/disk0s3 none swap defaults 0 0\n")
         fstab_name = fstab_fp.name
     fstab_path = Path(fstab_name)
     root_sectors, root_size_details = estimate_root_partition_sectors(
@@ -489,7 +489,7 @@ def main() -> int:
         else:
             print(f"[DISK] Root partition using fallback size: {args.root_mb} MiB")
 
-        build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/hda2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'))
+        build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/disk0s2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'))
 
         mkfs_cmd = [str(mkfs_tool), "-F", "-L", args.root_label, "-o", str(root_start), "-n", str(root_sectors), "-I", str(init_path), "-T", fstab_name]
         if effective_root_extra_dir:

@@ -58,7 +58,7 @@ typedef struct __attribute__((packed)) {
 
 // Returns 0 on success, -1 on error. Sets *entry_out to entry point.
 int elf_load(const uint8_t *data, size_t len, uint32_t *entry_out);
-int elf_validate(const uint8_t *data, size_t len);
+int elf_validate(const uint8_t *data, size_t len, const char *name);
 int elf_build_initial_stack(uint32_t page_dir,
                             const char *const argv[], const char *const envp[],
                             uint32_t *stack_base_out, uint32_t *stack_top_out,

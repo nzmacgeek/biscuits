@@ -4,7 +4,7 @@
 #include "../kernel/bootargs.h"
 #include "../lib/string.h"
 
-#define PROCFS_MAX_OPEN 8
+#define PROCFS_MAX_OPEN 1024
 #define PROCFS_NODE_NONE 0
 #define PROCFS_NODE_CMDLINE 1
 

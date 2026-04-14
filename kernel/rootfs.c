@@ -25,7 +25,8 @@ static bool rootfs_map_device_lba(const char *device, uint32_t *start_lba) {
         return true;
     }
 
-    if (strcmp(device, "/dev/hda") == 0 ||
+    if (strcmp(device, "/dev/disk0") == 0 ||
+        strcmp(device, "/dev/hda") == 0 ||
         strcmp(device, "/dev/hda0") == 0 ||
         strcmp(device, "/dev/sda") == 0 ||
         strcmp(device, "/dev/sda0") == 0 ||
@@ -35,21 +36,24 @@ static bool rootfs_map_device_lba(const char *device, uint32_t *start_lba) {
         return true;
     }
 
-    if (strcmp(device, "/dev/hda1") == 0 ||
+    if (strcmp(device, "/dev/disk0s1") == 0 ||
+        strcmp(device, "/dev/hda1") == 0 ||
         strcmp(device, "/dev/sda1") == 0 ||
         strcmp(device, "/dev/ata0p1") == 0) {
         *start_lba = BLUEYOS_BOOT_PARTITION_LBA;
         return true;
     }
 
-    if (strcmp(device, "/dev/hda2") == 0 ||
+    if (strcmp(device, "/dev/disk0s2") == 0 ||
+        strcmp(device, "/dev/hda2") == 0 ||
         strcmp(device, "/dev/sda2") == 0 ||
         strcmp(device, "/dev/ata0p2") == 0) {
         *start_lba = BLUEYOS_ROOT_PARTITION_LBA;
         return true;
     }
 
-    if (strcmp(device, "/dev/hda3") == 0 ||
+    if (strcmp(device, "/dev/disk0s3") == 0 ||
+        strcmp(device, "/dev/hda3") == 0 ||
         strcmp(device, "/dev/sda3") == 0 ||
         strcmp(device, "/dev/ata0p3") == 0) {
         *start_lba = BLUEYOS_SWAP_PARTITION_LBA;
@@ -63,7 +67,7 @@ void rootfs_config_init(rootfs_config_t *cfg) {
     if (!cfg) return;
 
     memset(cfg, 0, sizeof(*cfg));
-    strncpy(cfg->device, "/dev/hda2", sizeof(cfg->device) - 1);
+    strncpy(cfg->device, "/dev/disk0s2", sizeof(cfg->device) - 1);
     strncpy(cfg->fs_name, "biscuitfs", sizeof(cfg->fs_name) - 1);
     cfg->start_lba = BLUEYOS_ROOT_PARTITION_LBA;
     cfg->auto_probe = true;

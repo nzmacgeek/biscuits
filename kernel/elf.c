@@ -170,9 +170,10 @@ static int elf_copy_string(char **stack_ptr, uint32_t stack_base, const char *va
     return 0;
 }
 
-int elf_validate(const uint8_t *data, size_t len) {
+int elf_validate(const uint8_t *data, size_t len, const char *name) {
+    const char *n = (name && name[0]) ? name : "(unknown)";
     if (len < sizeof(elf32_ehdr_t)) {
-        kprintf("[ELF] Too small to be an ELF file\n");
+        kprintf("[ELF] Too small to be an ELF file: %s\n", n);
         return -1;
     }
     const elf32_ehdr_t *hdr = (const elf32_ehdr_t*)data;
@@ -182,29 +183,29 @@ int elf_validate(const uint8_t *data, size_t len) {
         hdr->e_ident[1] != 'E'  ||
         hdr->e_ident[2] != 'L'  ||
         hdr->e_ident[3] != 'F') {
-        kprintf("[ELF] Invalid magic - that's not an ELF!\n");
+        kprintf("[ELF] Invalid magic - not an ELF: %s\n", n);
         return -1;
     }
     // 32-bit ELF only (class = 1)
     if (hdr->e_ident[4] != 1) {
-        kprintf("[ELF] Not a 32-bit ELF\n");
+        kprintf("[ELF] Not a 32-bit ELF: %s\n", n);
         return -1;
     }
     // Must be executable
     if (hdr->e_type != ET_EXEC) {
-        kprintf("[ELF] Not an executable ELF (type=%d)\n", hdr->e_type);
+        kprintf("[ELF] Not an executable ELF (type=%d): %s\n", hdr->e_type, n);
         return -1;
     }
     // Must be x86
     if (hdr->e_machine != EM_386) {
-        kprintf("[ELF] Not an x86 ELF (machine=%d)\n", hdr->e_machine);
+        kprintf("[ELF] Not an x86 ELF (machine=%d): %s\n", hdr->e_machine, n);
         return -1;
     }
     return 0;
 }
 
 int elf_load(const uint8_t *data, size_t len, uint32_t *entry_out) {
-    if (elf_validate(data, len) != 0) return -1;
+    if (elf_validate(data, len, NULL) != 0) return -1;
 
     const elf32_ehdr_t *hdr = (const elf32_ehdr_t*)data;
 
@@ -372,7 +373,7 @@ static int elf_load_into_address_space(uint32_t page_dir,
     uint32_t loaded = 0;
     uint32_t image_end = 0;
 
-    if (elf_validate(data, len) != 0) return -1;
+    if (elf_validate(data, len, NULL) != 0) return -1;
 
     hdr = (const elf32_ehdr_t*)data;
     paging_switch_directory(page_dir);
@@ -439,7 +440,8 @@ static int elf_load_into_address_space(uint32_t page_dir,
 }
 
 int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_len,
-                                       uint32_t *entry_out, uint32_t *image_end_out) {
+                                       uint32_t *entry_out, uint32_t *image_end_out,
+                                       const char *name) {
     uint32_t old_page_dir = paging_current_directory();
     elf32_ehdr_t hdr;
     elf32_phdr_t *phdrs = NULL;
@@ -453,7 +455,7 @@ int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_le
         return -1;
     }
 
-    if (elf_validate((const uint8_t*)&hdr, sizeof(hdr)) != 0) return -1;
+    if (elf_validate((const uint8_t*)&hdr, sizeof(hdr), name) != 0) return -1;
 
     /* Read program headers */
     ph_size = (size_t)hdr.e_phnum * hdr.e_phentsize;
@@ -603,7 +605,8 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
 
     if (elf_stream_load_into_address_space(page_dir, fd, (size_t)file_len,
                                            &image_out->entry,
-                                           &image_out->image_end) != 0) {
+                                           &image_out->image_end,
+                                           path) != 0) {
         vfs_close(fd);
         paging_destroy_address_space(page_dir);
         return -1;

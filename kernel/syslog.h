@@ -37,10 +37,13 @@
 // Log entry (stored in the ring buffer as a packed record)
 // ---------------------------------------------------------------------------
 typedef struct {
-    uint32_t seq;       /* monotonically increasing sequence number */
-    uint8_t  level;     /* LOG_* severity */
-    uint8_t  _pad[3];   /* padding for alignment */
-    char     tag[16];   /* subsystem tag, e.g. "KERN", "NET", "FS" */
+    uint32_t seq;             /* monotonically increasing sequence number */
+    uint32_t timestamp;       /* kernel uptime in seconds at time of write */
+    uint8_t  level;           /* LOG_* severity */
+    uint8_t  _pad[3];         /* padding for alignment */
+    char     tag[16];         /* subsystem tag, e.g. "KERN", "NET", "FS" */
+    char     src_file[32];    /* source basename (from __FILE__), via syslog_write_loc */
+    char     src_func[32];    /* source function name (from __func__), via syslog_write_loc */
     char     msg[SYSLOG_MSG_MAX];
 } syslog_entry_t;
 
@@ -54,15 +57,24 @@ void syslog_init(void);
 // Write a log entry.  level = LOG_*  tag = short subsystem name.
 void syslog_write(int level, const char *tag, const char *fmt, ...);
 
+// Write a log entry with source-location context (file and function name).
+// Prefer using the syslog_* macros below, which supply __FILE__/__func__
+// automatically.  Call this directly only when source location is known at
+// the call site but cannot be captured by a macro.
+void syslog_write_loc(int level, const char *tag, const char *file,
+                      const char *func, const char *fmt, ...);
+
 // Convenience macros — mirrors the Linux pr_* family.
-#define syslog_emerg(tag, ...)   syslog_write(LOG_EMERG,   tag, __VA_ARGS__)
-#define syslog_alert(tag, ...)   syslog_write(LOG_ALERT,   tag, __VA_ARGS__)
-#define syslog_crit(tag, ...)    syslog_write(LOG_CRIT,    tag, __VA_ARGS__)
-#define syslog_err(tag, ...)     syslog_write(LOG_ERR,     tag, __VA_ARGS__)
-#define syslog_warn(tag, ...)    syslog_write(LOG_WARNING, tag, __VA_ARGS__)
-#define syslog_notice(tag, ...)  syslog_write(LOG_NOTICE,  tag, __VA_ARGS__)
-#define syslog_info(tag, ...)    syslog_write(LOG_INFO,    tag, __VA_ARGS__)
-#define syslog_debug(tag, ...)   syslog_write(LOG_DEBUG,   tag, __VA_ARGS__)
+// These capture __FILE__ and __func__ so verbose output can show the
+// originating source module.
+#define syslog_emerg(tag, ...)   syslog_write_loc(LOG_EMERG,   tag, __FILE__, __func__, __VA_ARGS__)
+#define syslog_alert(tag, ...)   syslog_write_loc(LOG_ALERT,   tag, __FILE__, __func__, __VA_ARGS__)
+#define syslog_crit(tag, ...)    syslog_write_loc(LOG_CRIT,    tag, __FILE__, __func__, __VA_ARGS__)
+#define syslog_err(tag, ...)     syslog_write_loc(LOG_ERR,     tag, __FILE__, __func__, __VA_ARGS__)
+#define syslog_warn(tag, ...)    syslog_write_loc(LOG_WARNING, tag, __FILE__, __func__, __VA_ARGS__)
+#define syslog_notice(tag, ...)  syslog_write_loc(LOG_NOTICE,  tag, __FILE__, __func__, __VA_ARGS__)
+#define syslog_info(tag, ...)    syslog_write_loc(LOG_INFO,    tag, __FILE__, __func__, __VA_ARGS__)
+#define syslog_debug(tag, ...)   syslog_write_loc(LOG_DEBUG,   tag, __FILE__, __func__, __VA_ARGS__)
 
 // Flush the in-RAM ring buffer to /var/log/kernel.log on the mounted VFS.
 // Call this after vfs_mount() succeeds.  Safe to call multiple times.
