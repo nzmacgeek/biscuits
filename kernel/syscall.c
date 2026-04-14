@@ -89,6 +89,7 @@ static int syscall_is_kernel_mode(const registers_t *regs) {
 }
 
 static int32_t sys_write(uint32_t fd, const char *buf, size_t len);
+static int32_t resolve_normalize_path(const char *path, char *out, size_t out_size);
 
 static int syscall_map_user_pages(process_t *process,
                                   uint32_t start,
@@ -749,7 +750,9 @@ static int32_t sys_statx(int dirfd, const char *path, int flags, uint32_t mask, 
         if ((flags & AT_SYMLINK_NOFOLLOW) != 0) {
             /* BlueyFS has no distinct lstat path yet; report regular metadata. */
         }
-        rc = vfs_stat(path, &st);
+        char _rpath[512];
+        if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+        rc = vfs_stat(_rpath, &st);
         if (rc != 0) return -BLUEY_ENOENT;
     }
 
@@ -860,6 +863,9 @@ static void vfs_stat_to_buf(const vfs_stat_t *st, uint32_t *u) {
 static int32_t sys_stat(const char *path, void *buf) {
     if (!path) return -BLUEY_EFAULT;
     if (!buf)  return -BLUEY_EFAULT;
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     vfs_stat_to_buf(&st, (uint32_t *)buf);
@@ -873,6 +879,9 @@ static int32_t sys_lstat(const char *path, void *buf) {
 
 static int32_t sys_access(const char *path, int mode) {
     if (!path) return -BLUEY_EFAULT;
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     if (mode == 0) return 0; /* F_OK */
@@ -885,6 +894,9 @@ static int32_t sys_access(const char *path, int mode) {
 
 static int32_t sys_unlink(const char *path) {
     if (!path) return -BLUEY_EFAULT;
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
     /* First check whether the path exists so we can distinguish ENOENT
      * from other unlink failures (e.g., permissions or wrong type). */
     vfs_stat_t st;
@@ -899,12 +911,16 @@ static int32_t sys_unlink(const char *path) {
 static int32_t sys_mkdir(const char *path, uint32_t mode) {
     (void)mode;
     if (!path) return -BLUEY_EFAULT;
-    return vfs_mkdir(path);
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    return vfs_mkdir(_rpath);
 }
 
 static int32_t sys_rmdir(const char *path) {
     if (!path) return -BLUEY_EFAULT;
-    int32_t res = vfs_rmdir(path);
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    int32_t res = vfs_rmdir(_rpath);
     return res;
 }
 
@@ -1283,6 +1299,11 @@ static int32_t sys_rename(const char *oldpath, const char *newpath) {
     vfs_stat_t new_st;
 
     if (!oldpath || !newpath) return -BLUEY_EFAULT;
+    char _old[512], _new[512];
+    if (resolve_normalize_path(oldpath, _old, sizeof(_old)) != 0) return -BLUEY_EINVAL;
+    if (resolve_normalize_path(newpath, _new, sizeof(_new)) != 0) return -BLUEY_EINVAL;
+    oldpath = _old;
+    newpath = _new;
     if (strcmp(oldpath, newpath) == 0) return 0;
     if (vfs_stat(oldpath, &old_st) != 0) return -BLUEY_ENOENT;
     if (old_st.is_dir) return -BLUEY_EPERM;
@@ -1637,6 +1658,11 @@ static int32_t sys_prlimit64(uint32_t pid,
 }
 static int32_t sys_link(const char *oldpath, const char *newpath) {
     if (!oldpath || !newpath) return -BLUEY_EFAULT;
+    char _old[512], _new[512];
+    if (resolve_normalize_path(oldpath, _old, sizeof(_old)) != 0) return -BLUEY_EINVAL;
+    if (resolve_normalize_path(newpath, _new, sizeof(_new)) != 0) return -BLUEY_EINVAL;
+    oldpath = _old;
+    newpath = _new;
     vfs_stat_t st;
     if (vfs_stat(oldpath, &st) != 0) return -BLUEY_ENOENT;
     int r = vfs_link(oldpath, newpath);
@@ -1645,6 +1671,9 @@ static int32_t sys_link(const char *oldpath, const char *newpath) {
 
 static int32_t sys_symlink(const char *target, const char *linkpath) {
     if (!target || !linkpath) return -BLUEY_EFAULT;
+    char _lpath[512];
+    if (resolve_normalize_path(linkpath, _lpath, sizeof(_lpath)) != 0) return -BLUEY_EINVAL;
+    linkpath = _lpath;
     int r = vfs_symlink(target, linkpath);
     return (r == 0) ? 0 : -BLUEY_EPERM;
 }
@@ -1652,6 +1681,9 @@ static int32_t sys_symlink(const char *target, const char *linkpath) {
 static int32_t sys_readlink(const char *path, char *buf, uint32_t bufsize) {
     if (!path || !buf) return -BLUEY_EFAULT;
     if (bufsize == 0) return -BLUEY_EINVAL;
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     /* readlink(2) requires the target to be a symlink */
@@ -1664,6 +1696,9 @@ static int32_t sys_readlink(const char *path, char *buf, uint32_t bufsize) {
 
 static int32_t sys_chmod(const char *path, uint32_t mode) {
     if (!path) return -BLUEY_EFAULT;
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     int r = vfs_chmod(path, (uint16_t)mode);
@@ -1683,6 +1718,9 @@ static int32_t sys_fchmod(int fd, uint32_t mode) {
 
 static int32_t sys_chown(const char *path, uint32_t uid, uint32_t gid) {
     if (!path) return -BLUEY_EFAULT;
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     int r = vfs_chown(path, uid, gid);
@@ -1691,6 +1729,9 @@ static int32_t sys_chown(const char *path, uint32_t uid, uint32_t gid) {
 
 static int32_t sys_lchown(const char *path, uint32_t uid, uint32_t gid) {
     if (!path) return -BLUEY_EFAULT;
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     int r = vfs_lchown(path, uid, gid);
@@ -1814,6 +1855,9 @@ static int32_t sys_faccessat2(int dirfd, const char *path, int mode, int flags) 
         if (path[0] != '/') return -BLUEY_EBADF;
         /* absolute path: dirfd is irrelevant, proceed */
     }
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     if (mode == 0) return 0; /* F_OK: existence only */
@@ -2272,6 +2316,10 @@ static int32_t sys_open(const char *path, int flags) {
 
     if (!path) return -BLUEY_EFAULT;
 
+    char _rpath[512];
+    if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    path = _rpath;
+
     access_mode = flags & 0x3;
     vfs_flags = access_mode | (flags & (VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND));
 
@@ -2326,6 +2374,21 @@ static int32_t sys_execve(registers_t *regs,
     if (!path_copy || !path_copy[0]) {
         result = path_copy ? -BLUEY_EINVAL : -BLUEY_E2BIG;
         goto cleanup;
+    }
+
+    /* Resolve relative path to absolute before any VFS operation. */
+    {
+        char _exec_rpath[512];
+        if (resolve_normalize_path(path_copy, _exec_rpath, sizeof(_exec_rpath)) != 0) {
+            result = -BLUEY_ENOENT;
+            goto cleanup;
+        }
+        size_t _rlen = strlen(_exec_rpath);
+        char *_resolved = (char*)kheap_alloc(_rlen + 1, 0);
+        if (!_resolved) { result = -BLUEY_ENOMEM; goto cleanup; }
+        memcpy(_resolved, _exec_rpath, _rlen + 1);
+        kheap_free(path_copy);
+        path_copy = _resolved;
     }
 
     argv_copy = syscall_copy_string_vector(argv, path_copy);
