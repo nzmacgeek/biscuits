@@ -710,7 +710,15 @@ int vfs_readdir(const char *path, vfs_dirent_t *out, int max) {
     out[1].is_dir = 1;
 
     int real = m->fs->readdir(path, out + 2, max - 2);
-    if (real < 0) return 2; /* synthetic entries still valid */
+    if (real < 0) {
+        /* Underlying readdir failed.  When the caller only asked for the two
+         * dot entries (max == 2), they just want inode numbers — return
+         * synthetic entries.  Otherwise propagate the real error so callers
+         * like getdents/ls can distinguish a genuine I/O failure from an
+         * empty directory. */
+        if (max == 2) return 2;
+        return -1;
+    }
 
     /* Compact the real entries to remove any on-disk "." / ".." entries that
      * the underlying filesystem (e.g. biscuitfs) already stores — we've

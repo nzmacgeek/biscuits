@@ -621,6 +621,10 @@ typedef struct {
 #define AT_FDCWD ((int32_t)-100)
 #define AT_EMPTY_PATH 0x1000
 #define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_EACCESS 0x200
+
+#define O_NONBLOCK 0x800
+#define O_CLOEXEC  0x80000
 
 #define BLUEY_CLOCK_REALTIME           0
 #define BLUEY_CLOCK_MONOTONIC          1
@@ -1780,31 +1784,46 @@ static int32_t sys_pipe_impl(int *fds) {
 }
 
 /* pipe2(fds, flags) — identical to pipe() for our purposes.
- * We accept but ignore O_CLOEXEC (0x80000) and O_NONBLOCK (0x800).
- * Bash uses pipe2 when it is available; the kernel simply creates a
- * plain pipe and the flags are a best-effort advisory only. */
+ * O_CLOEXEC and O_NONBLOCK are the only defined flags.
+ * We accept them but do not yet enforce them.  Unknown flag bits are
+ * rejected with EINVAL to match Linux behaviour and catch caller bugs. */
 static int32_t sys_pipe2(int *fds, int flags) {
-    (void)flags;   /* O_CLOEXEC / O_NONBLOCK: accepted, not yet enforced */
+    /* Validate: only O_CLOEXEC and O_NONBLOCK are permitted */
+#define PIPE2_VALID_FLAGS (O_CLOEXEC | O_NONBLOCK)
+    if (flags & ~PIPE2_VALID_FLAGS) return -BLUEY_EINVAL;
+#undef PIPE2_VALID_FLAGS
     if (!fds) return -BLUEY_EFAULT;
     int r = vfs_pipe(fds);
     return r < 0 ? r : 0;
 }
 
 /* faccessat2(dirfd, path, mode, flags) — check file accessibility.
- * We map this to a simple vfs_stat existence check; full permission
- * checking against uid/gid is a future enhancement.
- * Bash calls this to probe PATH entries during command lookup. */
+ * mode bits: F_OK(0), X_OK(1), W_OK(2), R_OK(4).
+ * Only AT_FDCWD is supported for dirfd; relative paths are not yet
+ * resolved against an open directory fd.
+ * AT_SYMLINK_NOFOLLOW and AT_EACCESS are accepted silently as we don't
+ * implement symlinks or effective-vs-real uid distinction yet.
+ * Any other flag bits are rejected with EINVAL. */
+#define FACCESSAT2_VALID_FLAGS (AT_SYMLINK_NOFOLLOW | AT_EACCESS)
 static int32_t sys_faccessat2(int dirfd, const char *path, int mode, int flags) {
-    (void)dirfd;   /* AT_FDCWD assumed; relative paths not yet supported */
-    (void)flags;
-    (void)mode;
     if (!path) return -BLUEY_EFAULT;
+    /* Reject unknown flag bits */
+    if (flags & ~FACCESSAT2_VALID_FLAGS) return -BLUEY_EINVAL;
+    /* Only AT_FDCWD is supported; a real dirfd requires relative-path lookup */
+    if (dirfd != AT_FDCWD) {
+        if (path[0] != '/') return -BLUEY_EBADF;
+        /* absolute path: dirfd is irrelevant, proceed */
+    }
     vfs_stat_t st;
-    /* F_OK (0) just checks existence; X_OK (1) / R_OK (4) / W_OK (2):
-     * we return success whenever the path exists in the VFS. */
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
-    return 0;
+    if (mode == 0) return 0; /* F_OK: existence only */
+    uint8_t need = 0;
+    if (mode & 4) need |= VFS_ACCESS_READ;
+    if (mode & 2) need |= VFS_ACCESS_WRITE;
+    if (mode & 1) need |= VFS_ACCESS_EXEC;
+    return vfs_access(path, need) == 0 ? 0 : -BLUEY_EPERM;
 }
+#undef FACCESSAT2_VALID_FLAGS
 
 /* Minimal fcntl: F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL */
 #define FCNTL_F_DUPFD   0
