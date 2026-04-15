@@ -24,6 +24,7 @@
 #define SYS_LCHOWN        16  /* lchown (16-bit uid/gid variant) */
 #define SYS_LSEEK         19
 #define SYS_SELECT        142
+#define SYS_FLOCK         143
 #define SYS_GETPID        20
 #define SYS_MOUNT         21
 #define SYS_GETUID        24

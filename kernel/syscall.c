@@ -2023,6 +2023,14 @@ static int32_t sys_ioctl(int fd, uint32_t request, void *arg) {
     }
 }
 
+static int32_t sys_flock(int fd, int operation) {
+    (void)operation;
+
+    if (fd < 0) return -BLUEY_EBADF;
+    if ((fd <= 2) || vfs_fd_is_open(fd)) return 0;
+    return -BLUEY_EBADF;
+}
+
 /* ---- chdir / getcwd ----------------------------------------------------- */
 
 /* Resolve a user-supplied path against the current working directory and
@@ -3111,6 +3119,9 @@ int32_t syscall_dispatch(registers_t *regs) {
                              (void*)regs->edx,
                              (void*)regs->esi,
                              (const k_timeval_t*)regs->edi);
+            break;
+        case SYS_FLOCK:
+            ret = sys_flock((int)regs->ebx, (int)regs->ecx);
             break;
         case SYS_PSELECT6:
             ret = sys_pselect6((int)regs->ebx,

@@ -8,6 +8,7 @@
 #include "process.h"
 #include "signal.h"
 #include "tty.h"
+#include "../lib/string.h"
 
 static int tty_ready = 0;
 #define TTY_SERIAL_PORT 0x3F8
@@ -70,6 +71,16 @@ static void tty_serial_putchar(char c) {
     outb(TTY_SERIAL_PORT, (uint8_t)c);
 }
 
+static int tty_serial_input_available(void) {
+    return (inb(TTY_SERIAL_PORT + 5) & 0x01u) != 0;
+}
+
+static void tty_poll_input_sources(void) {
+    while (tty_serial_input_available()) {
+        tty_input_char((char)inb(TTY_SERIAL_PORT));
+    }
+}
+
 static void tty_output_char(char c) {
     outb(0xE9, (uint8_t)c);
     tty_serial_putchar(c);
@@ -122,9 +133,12 @@ char tty_getchar(void) {
     char ch;
 
     while (!tty_input_available()) {
-        __asm__ volatile("hlt");
+        tty_poll_input_sources();
+        if (tty_input_available()) break;
+        __asm__ volatile("sti; hlt; cli");
     }
 
+    tty_poll_input_sources();
     ch = (char)tty_input_pop();
     return ch;
 }

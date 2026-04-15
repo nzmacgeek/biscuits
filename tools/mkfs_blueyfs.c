@@ -918,7 +918,10 @@ static int create_file_host(uint32_t parent_ino, const char *name,
     size_t offset = 0;
     uint32_t block_index = 0;
 
-    if (!ino) return -1;
+    if (!ino) {
+        fprintf(stderr, "mkfs: alloc_inode_host failed for '%s'\n", name);
+        return -1;
+    }
 
     memset(&inode, 0, sizeof(inode));
     inode.mode = (uint16_t)(BISCUITFS_IFREG | (host_mode & 07777));
@@ -940,14 +943,20 @@ static int create_file_host(uint32_t parent_ino, const char *name,
         size_t chunk;
         uint32_t metadata_blocks_added = 0;
 
-        if (!blk) return -1;
+        if (!blk) {
+            fprintf(stderr, "mkfs: alloc_block_host failed for '%s' at file block %u\n", name, block_index);
+            return -1;
+        }
 
         memset(blkbuf, 0, sizeof(blkbuf));
         chunk = remaining > sizeof(blkbuf) ? sizeof(blkbuf) : remaining;
         memcpy(blkbuf, data + offset, chunk);
         write_block(blk, blkbuf);
 
-        if (inode_set_block_host(&inode, block_index, blk, &metadata_blocks_added) != 0) return -1;
+        if (inode_set_block_host(&inode, block_index, blk, &metadata_blocks_added) != 0) {
+            fprintf(stderr, "mkfs: inode_set_block_host failed for '%s' at file block %u\n", name, block_index);
+            return -1;
+        }
 
         inode.blocks_lo += (uint32_t)((1u + metadata_blocks_added) * (g_block_size / HOST_SECTOR_SIZE));
         offset += chunk;
@@ -955,8 +964,15 @@ static int create_file_host(uint32_t parent_ino, const char *name,
         block_index++;
     }
 
-    if (write_inode_host(ino, &inode) != 0) return -1;
-    return dir_add_entry_host(parent_ino, name, ino, BISCUITFS_FT_REG_FILE);
+    if (write_inode_host(ino, &inode) != 0) {
+        fprintf(stderr, "mkfs: write_inode_host failed for '%s' (ino=%u)\n", name, ino);
+        return -1;
+    }
+    if (dir_add_entry_host(parent_ino, name, ino, BISCUITFS_FT_REG_FILE) != 0) {
+        fprintf(stderr, "mkfs: dir_add_entry_host failed for '%s' in parent ino %u\n", name, parent_ino);
+        return -1;
+    }
+    return 0;
 }
 
 static int read_host_file(const char *path, uint8_t **data_out, size_t *size_out) {
@@ -995,7 +1011,68 @@ static int read_host_file(const char *path, uint8_t **data_out, size_t *size_out
     return 0;
 }
 
-static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base, const char *relpath, uint32_t now);
+static int populate_from_dir_recursive(uint32_t parent_ino, const char *install_root, const char *host_dir, uint32_t now);
+
+static int path_is_within_root(const char *root_path, const char *candidate_path) {
+    size_t root_len = strlen(root_path);
+
+    if (strncmp(root_path, candidate_path, root_len) != 0) return 0;
+    return candidate_path[root_len] == '\0' || candidate_path[root_len] == '/';
+}
+
+static int resolve_install_symlink(const char *install_root,
+                                   const char *link_path,
+                                   char *resolved_out,
+                                   size_t resolved_out_size,
+                                   struct stat *st_out) {
+    char target[PATH_MAX];
+    char candidate[PATH_MAX];
+    ssize_t target_len;
+
+    target_len = readlink(link_path, target, sizeof(target) - 1);
+    if (target_len <= 0) {
+        fprintf(stderr, "mkfs: readlink('%s') failed or empty\n", link_path);
+        return -1;
+    }
+    target[target_len] = '\0';
+
+    if (target[0] == '/') {
+        snprintf(candidate, sizeof(candidate), "%s%s", install_root, target);
+    } else {
+        char dironly[PATH_MAX];
+        char *slash;
+
+        if (strlen(link_path) >= sizeof(dironly)) {
+            fprintf(stderr, "mkfs: path too long, skipping symlink '%s'\n", link_path);
+            return -1;
+        }
+
+        strncpy(dironly, link_path, sizeof(dironly) - 1);
+        dironly[sizeof(dironly) - 1] = '\0';
+        slash = strrchr(dironly, '/');
+        if (slash) *slash = '\0';
+        else strcpy(dironly, ".");
+
+        snprintf(candidate, sizeof(candidate), "%s/%s", dironly, target);
+    }
+
+    if (!realpath(candidate, resolved_out)) {
+        fprintf(stderr, "mkfs: symlink target not found '%s' -> '%s' (skipping)\n", link_path, target);
+        return -1;
+    }
+
+    if (!path_is_within_root(install_root, resolved_out)) {
+        fprintf(stderr, "mkfs: symlink escapes install root '%s' -> '%s' (skipping)\n", link_path, target);
+        return -1;
+    }
+
+    if (stat(resolved_out, st_out) != 0) {
+        fprintf(stderr, "mkfs: stat('%s') failed: %s\n", resolved_out, strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
 
 static int populate_standard_layout(const char *init_path, const char *fstab_path, const char *install_dir) {
     biscuitfs_super_t sb;
@@ -1033,7 +1110,14 @@ static int populate_standard_layout(const char *init_path, const char *fstab_pat
     /* If an install_dir is provided, recursively copy its contents into
      * the new filesystem root preserving relative paths. */
     if (install_dir && install_dir[0] != '\0') {
-        if (populate_from_dir_recursive(BISCUITFS_ROOT_INO, install_dir, "", now) != 0) return -1;
+        char install_root[PATH_MAX];
+
+        if (!realpath(install_dir, install_root)) {
+            fprintf(stderr, "mkfs: realpath('%s') failed: %s\n", install_dir, strerror(errno));
+            return -1;
+        }
+
+        if (populate_from_dir_recursive(BISCUITFS_ROOT_INO, install_root, install_root, now) != 0) return -1;
     }
 
     return 0;
@@ -1045,28 +1129,20 @@ static int populate_standard_layout(const char *init_path, const char *fstab_pat
  * relpath: path within src_base for current recursion (empty for top-level)
  * parent_ino: inode number of the directory in the image where entries are added
  * -------------------------------------------------------------------------*/
-static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base, const char *relpath, uint32_t now) {
-    char path[PATH_MAX];
-    if (relpath && relpath[0])
-        snprintf(path, sizeof(path), "%s/%s", src_base, relpath);
-    else
-        snprintf(path, sizeof(path), "%s", src_base);
-
-    DIR *d = opendir(path);
+static int populate_from_dir_recursive(uint32_t parent_ino, const char *install_root, const char *host_dir, uint32_t now) {
+    DIR *d = opendir(host_dir);
     if (!d) {
-        fprintf(stderr, "mkfs: opendir('%s') failed: %s\n", path, strerror(errno));
+        fprintf(stderr, "mkfs: opendir('%s') failed: %s\n", host_dir, strerror(errno));
         return -1;
     }
     struct dirent *de;
 
     while ((de = readdir(d)) != NULL) {
         if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
-        char relchild[PATH_MAX];
-        if (relpath && relpath[0]) snprintf(relchild, sizeof(relchild), "%s/%s", relpath, de->d_name);
-        else snprintf(relchild, sizeof(relchild), "%s", de->d_name);
-
         char fullchild[PATH_MAX];
-        snprintf(fullchild, sizeof(fullchild), "%s/%s", src_base, relchild);
+        const char *source_path = fullchild;
+        char resolved_source[PATH_MAX];
+        snprintf(fullchild, sizeof(fullchild), "%s/%s", host_dir, de->d_name);
 
         struct stat st;
         /* Use lstat to detect symlinks without following them */
@@ -1076,37 +1152,14 @@ static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base
             return -1;
         }
 
-        /* If it's a symlink, try to resolve and copy the target if present; otherwise skip */
+        /* Resolve symlinks against the install root so absolute links such as
+         * /usr/lib/libc.so stay within the staged sysroot instead of following
+         * the host filesystem. */
         if (S_ISLNK(st.st_mode)) {
-            char tbuf[PATH_MAX];
-            ssize_t tl = readlink(fullchild, tbuf, sizeof(tbuf) - 1);
-            if (tl <= 0) {
-                fprintf(stderr, "mkfs: readlink('%s') failed or empty\n", fullchild);
+            if (resolve_install_symlink(install_root, fullchild, resolved_source, sizeof(resolved_source), &st) != 0) {
                 continue;
             }
-            tbuf[tl] = '\0';
-            char resolved[PATH_MAX];
-            /* If the link is absolute, use it; otherwise resolve relative to the symlink's dir */
-            if (tbuf[0] == '/') {
-                snprintf(resolved, sizeof(resolved), "%s", tbuf);
-            } else {
-                /* dirname(fullchild) + '/' + tbuf */
-                char dironly[PATH_MAX];
-                if (strlen(fullchild) >= sizeof(dironly)) {
-                    fprintf(stderr, "mkfs: path too long, skipping symlink '%s'\n", fullchild);
-                    continue;
-                }
-                strncpy(dironly, fullchild, sizeof(dironly) - 1);
-                dironly[sizeof(dironly) - 1] = '\0';
-                char *p = strrchr(dironly, '/');
-                if (p) *p = '\0'; else dironly[0] = '.'; 
-                snprintf(resolved, sizeof(resolved), "%s/%s", dironly, tbuf);
-            }
-            if (stat(resolved, &st) != 0) {
-                fprintf(stderr, "mkfs: symlink target not found '%s' -> '%s' (skipping)\n", fullchild, tbuf);
-                continue;
-            }
-            /* proceed using st for the resolved target */
+            source_path = resolved_source;
         }
 
         if (S_ISDIR(st.st_mode)) {
@@ -1116,7 +1169,7 @@ static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base
             if (!child_ino) {
                 if (create_dir_host(parent_ino, de->d_name, now, &child_ino,
                                     st.st_mode, (uint32_t)st.st_uid, (uint32_t)st.st_gid) != 0) {
-                    fprintf(stderr, "mkfs: create_dir_host failed for '%s' under parent ino %u\n", relchild, parent_ino);
+                    fprintf(stderr, "mkfs: create_dir_host failed for '%s' under parent ino %u\n", fullchild, parent_ino);
                     closedir(d);
                     return -1;
                 }
@@ -1130,22 +1183,22 @@ static int populate_from_dir_recursive(uint32_t parent_ino, const char *src_base
                     write_inode_host(child_ino, &existing);
                 }
             }
-            if (populate_from_dir_recursive(child_ino, src_base, relchild, now) != 0) {
-                fprintf(stderr, "mkfs: recursion failed for '%s'\n", relchild);
+            if (populate_from_dir_recursive(child_ino, install_root, source_path, now) != 0) {
+                fprintf(stderr, "mkfs: recursion failed for '%s'\n", source_path);
                 closedir(d);
                 return -1;
             }
         } else if (S_ISREG(st.st_mode)) {
             uint8_t *data = NULL;
             size_t size = 0;
-            if (read_host_file(fullchild, &data, &size) != 0) {
-                fprintf(stderr, "mkfs: read_host_file failed for '%s'\n", fullchild);
+            if (read_host_file(source_path, &data, &size) != 0) {
+                fprintf(stderr, "mkfs: read_host_file failed for '%s'\n", source_path);
                 closedir(d);
                 return -1;
             }
             if (create_file_host(parent_ino, de->d_name, data, size, now,
                                   st.st_mode, (uint32_t)st.st_uid, (uint32_t)st.st_gid) != 0) {
-                fprintf(stderr, "mkfs: create_file_host failed for '%s' under parent ino %u\n", relchild, parent_ino);
+                fprintf(stderr, "mkfs: create_file_host failed for '%s' under parent ino %u\n", source_path, parent_ino);
                 free(data);
                 closedir(d);
                 return -1;
