@@ -2202,28 +2202,47 @@ static int32_t sys_getdents(int fd, void *buf, uint32_t count) {
     /* Use the path stored for the fd if available; fall back to cwd */
     const char *fdpath = vfs_fd_get_path(fd);
     const char *dirpath = fdpath ? fdpath : process_get_cwd();
+    int32_t cur_off = vfs_lseek(fd, 0, VFS_SEEK_CUR);
+    if (cur_off < 0) return -BLUEY_EBADF;
+
     vfs_dirent_t entries[32];
     int nent = vfs_readdir(dirpath, entries, 32);
     if (nent < 0) return -BLUEY_EINVAL;
 
     uint8_t *out = (uint8_t *)buf;
     uint32_t written = 0;
+    uint32_t stream_off = 0;
 
     for (int i = 0; i < nent; i++) {
         size_t namelen = strlen(entries[i].name);
         /* dirent record: d_ino(4) + d_off(4) + d_reclen(2) + name + NUL, aligned to 4 */
         uint16_t reclen = (uint16_t)((sizeof(uint32_t) + sizeof(uint32_t) +
                                       sizeof(uint16_t) + namelen + 1 + 3) & ~3u);
-        if (written + reclen > count) break;
+        if (stream_off + reclen <= (uint32_t)cur_off) {
+            stream_off += reclen;
+            continue;
+        }
+
+        if (written + reclen > count) {
+            if (written == 0) return -BLUEY_EINVAL;
+            break;
+        }
 
         k_dirent_t *de = (k_dirent_t *)out;
         de->d_ino    = entries[i].inode ? entries[i].inode : (uint32_t)(i + 1);
-        de->d_off    = written + reclen;
+        de->d_off    = stream_off + reclen;
         de->d_reclen = reclen;
         memcpy(de->d_name, entries[i].name, namelen + 1);
 
         out     += reclen;
         written += reclen;
+        stream_off += reclen;
+    }
+
+    if (written > 0) {
+        (void)vfs_lseek(fd, cur_off + (int32_t)written, VFS_SEEK_SET);
+    } else {
+        (void)vfs_lseek(fd, (int32_t)stream_off, VFS_SEEK_SET);
     }
 
     return (int32_t)written;
@@ -2239,29 +2258,48 @@ static int32_t sys_getdents64(int fd, void *buf, uint32_t count) {
 
     const char *fdpath = vfs_fd_get_path(fd);
     const char *dirpath = fdpath ? fdpath : process_get_cwd();
+    int32_t cur_off = vfs_lseek(fd, 0, VFS_SEEK_CUR);
+    if (cur_off < 0) return -BLUEY_EBADF;
+
     vfs_dirent_t entries[32];
     int nent = vfs_readdir(dirpath, entries, 32);
     if (nent < 0) return -BLUEY_EINVAL;
 
     uint8_t *out = (uint8_t *)buf;
     uint32_t written = 0;
+    uint32_t stream_off = 0;
 
     for (int i = 0; i < nent; i++) {
         size_t namelen = strlen(entries[i].name);
         uint16_t reclen = (uint16_t)((sizeof(uint64_t) + sizeof(uint64_t) +
                                       sizeof(uint16_t) + sizeof(uint8_t) +
                                       namelen + 1 + 7) & ~7u);
-        if (written + reclen > count) break;
+        if (stream_off + reclen <= (uint32_t)cur_off) {
+            stream_off += reclen;
+            continue;
+        }
+
+        if (written + reclen > count) {
+            if (written == 0) return -BLUEY_EINVAL;
+            break;
+        }
 
         k_dirent64_t *de = (k_dirent64_t *)out;
         de->d_ino = entries[i].inode ? (uint64_t)entries[i].inode : (uint64_t)(i + 1);
-        de->d_off = (uint64_t)(written + reclen);
+        de->d_off = (uint64_t)(stream_off + reclen);
         de->d_reclen = reclen;
         de->d_type = entries[i].is_dir ? K_DT_DIR : K_DT_REG;
         memcpy(de->d_name, entries[i].name, namelen + 1);
 
         out += reclen;
         written += reclen;
+        stream_off += reclen;
+    }
+
+    if (written > 0) {
+        (void)vfs_lseek(fd, cur_off + (int32_t)written, VFS_SEEK_SET);
+    } else {
+        (void)vfs_lseek(fd, (int32_t)stream_off, VFS_SEEK_SET);
     }
 
     return (int32_t)written;
@@ -2370,6 +2408,15 @@ void syscall_init(void) {
 
 // SYS_WRITE (1): fd=1/2 -> stdout/stderr -> TTY; fd>=3 -> VFS
 static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
+    /* If userspace remapped this descriptor via dup/dup2/fcntl(F_DUPFD),
+     * honor the VFS binding first (including fd 0/1/2). */
+    if (vfs_fd_is_open((int)fd)) {
+        if (!buf) return -BLUEY_EFAULT;
+        if (len == 0) return 0;
+        if (len > 4096) len = 4096;
+        return vfs_write((int)fd, (const uint8_t *)buf, len);
+    }
+
     if (fd == 1 || fd == 2) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
@@ -2576,6 +2623,14 @@ cleanup:
 
 // SYS_READ (0): fd=0 -> stdin -> TTY; fd>=3 -> VFS
 static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
+    /* If userspace remapped this descriptor via dup/dup2/fcntl(F_DUPFD),
+     * honor the VFS binding first (including fd 0/1/2). */
+    if (vfs_fd_is_open((int)fd)) {
+        if (!buf) return -BLUEY_EFAULT;
+        if (len == 0) return 0;
+        return vfs_read((int)fd, (uint8_t *)buf, len);
+    }
+
     if (fd == 0) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;

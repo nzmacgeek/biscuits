@@ -13,6 +13,8 @@ FS_BLOCK_SIZE = 4096
 BOOT_START_LBA = 2048
 BOOT_MB = 32
 DEFAULT_ROOT_BUFFER_PCT = 30
+MBR_PARTITION_TABLE_OFFSET = 446
+MBR_ENTRY_SIZE = 16
 BLUEYFS_INODE_SIZE = 256
 BLUEYFS_INODES_PER_GROUP = 8192
 BLUEYFS_BLOCKS_PER_GROUP = 8192
@@ -206,8 +208,7 @@ def write_partition_region(image: Path, offset_lba: int, partition_image: Path) 
         shutil.copyfileobj(part_fp, disk_fp)
 
 
-def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_mb: int, root_device: str, root_fstype: str, boot_extra_dir: str = None, init_kernel_path: str = "/sbin/claw") -> None:
-    boot_sectors = sectors_from_mb(boot_mb)
+def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sectors: int, root_device: str, root_fstype: str, boot_extra_dir: str = None, init_kernel_path: str = "/sbin/claw") -> None:
     boot_size_bytes = boot_sectors * SECTOR_SIZE
     boot_img = image.with_suffix(".boot.tmp")
     boot_stage = image.parent / ".boot-stage"
@@ -354,6 +355,31 @@ def run(cmd, cwd: Path) -> None:
     subprocess.run(cmd, cwd=str(cwd), check=True)
 
 
+def read_existing_layout(image: Path) -> tuple[int, int, int, int, int, int]:
+    with image.open("rb") as fp:
+        mbr = fp.read(SECTOR_SIZE)
+
+    if len(mbr) != SECTOR_SIZE or mbr[510:512] != b"\x55\xaa":
+        raise SystemExit(f"invalid or missing MBR in existing image: {image}")
+
+    def read_entry(index: int) -> tuple[int, int]:
+        offset = MBR_PARTITION_TABLE_OFFSET + index * MBR_ENTRY_SIZE
+        _status, _chs_first, _ptype, _chs_last, start_lba, sectors = struct.unpack_from("<B3sB3sII", mbr, offset)
+        if start_lba == 0 or sectors == 0:
+            raise SystemExit(f"missing partition entry {index + 1} in existing image: {image}")
+        return start_lba, sectors
+
+    boot_start, boot_sectors = read_entry(0)
+    root_start, root_sectors = read_entry(1)
+    swap_start, swap_sectors = read_entry(2)
+    if boot_start != BOOT_START_LBA:
+        raise SystemExit(
+            f"unexpected boot partition start in existing image ({boot_start}); expected {BOOT_START_LBA}. Use --erase to rebuild."
+        )
+
+    return boot_start, boot_sectors, root_start, root_sectors, swap_start, swap_sectors
+
+
 def prepare_root_extra_dir(root_extra_dir: str | None, timezone_file: str | None) -> str | None:
     if not root_extra_dir:
         return None
@@ -415,6 +441,8 @@ def main() -> int:
                         help="Kernel commandline init= path to embed in grub.cfg (default: /sbin/claw)")
     parser.add_argument("--timezone-file", default="/usr/share/zoneinfo/Australia/Brisbane",
                         help="Host tzfile to install as /etc/localtime when root-extra-dir lacks one")
+    parser.add_argument("--erase", action="store_true",
+                        help="Wipe and recreate the full disk layout before populating partitions")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
@@ -441,26 +469,12 @@ def main() -> int:
         getattr(args, 'root_extra_dir', None),
         getattr(args, 'timezone_file', None),
     )
-    boot_sectors = sectors_from_mb(args.boot_mb)
-    swap_sectors = sectors_from_mb(args.swap_mb)
-    slack_sectors = sectors_from_mb(args.slack_mb)
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="ascii", newline="\n") as fstab_fp:
         fstab_fp.write("# BlueyOS mount table - Chilli keeps it organised\n")
         fstab_fp.write("/dev/disk0s2 / blueyfs defaults 0 1\n")
         fstab_fp.write("/dev/disk0s3 none swap defaults 0 0\n")
         fstab_name = fstab_fp.name
     fstab_path = Path(fstab_name)
-    root_sectors, root_size_details = estimate_root_partition_sectors(
-        effective_root_extra_dir,
-        init_path,
-        fstab_path,
-        args.root_mb,
-        args.root_buffer_pct,
-    )
-    root_start = BOOT_START_LBA + boot_sectors
-    swap_start = root_start + root_sectors
-    total_sectors = swap_start + swap_sectors + slack_sectors
-    total_bytes = total_sectors * SECTOR_SIZE
 
     image.parent.mkdir(parents=True, exist_ok=True)
 
@@ -473,10 +487,38 @@ def main() -> int:
     if not mkswap_tool.exists():
         raise SystemExit(f"missing mkswap tool: {mkswap_tool}")
 
-    with image.open("wb") as fp:
-        fp.truncate(total_bytes)
+    recreate_image = args.erase or not image.exists()
+    root_size_details = {"dynamic": False, "payload_bytes": 0, "total_mb": args.root_mb}
 
-    write_mbr(image, BOOT_START_LBA, boot_sectors, root_start, root_sectors, swap_start, swap_sectors)
+    if recreate_image:
+        boot_sectors = sectors_from_mb(args.boot_mb)
+        swap_sectors = sectors_from_mb(args.swap_mb)
+        slack_sectors = sectors_from_mb(args.slack_mb)
+        root_sectors, root_size_details = estimate_root_partition_sectors(
+            effective_root_extra_dir,
+            init_path,
+            fstab_path,
+            args.root_mb,
+            args.root_buffer_pct,
+        )
+        root_start = BOOT_START_LBA + boot_sectors
+        swap_start = root_start + root_sectors
+        total_sectors = swap_start + swap_sectors + slack_sectors
+        total_bytes = total_sectors * SECTOR_SIZE
+
+        with image.open("wb") as fp:
+            fp.truncate(total_bytes)
+
+        write_mbr(image, BOOT_START_LBA, boot_sectors, root_start, root_sectors, swap_start, swap_sectors)
+    else:
+        _boot_start, boot_sectors, root_start, root_sectors, swap_start, swap_sectors = read_existing_layout(image)
+        required_bytes = (swap_start + swap_sectors) * SECTOR_SIZE
+        image_bytes = image.stat().st_size
+        if image_bytes < required_bytes:
+            raise SystemExit(
+                f"existing image is smaller than its partition table expects ({image_bytes} < {required_bytes}); use --erase"
+            )
+        print(f"[DISK] Reusing existing image layout in {image}")
 
     try:
         if root_size_details["dynamic"]:
@@ -489,7 +531,7 @@ def main() -> int:
         else:
             print(f"[DISK] Root partition using fallback size: {args.root_mb} MiB")
 
-        build_boot_partition(repo, image, kernel_path, args.boot_mb, "/dev/disk0s2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'))
+        build_boot_partition(repo, image, kernel_path, boot_sectors, "/dev/disk0s2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'))
 
         mkfs_cmd = [str(mkfs_tool), "-F", "-L", args.root_label, "-o", str(root_start), "-n", str(root_sectors), "-I", str(init_path), "-T", fstab_name]
         if effective_root_extra_dir:
