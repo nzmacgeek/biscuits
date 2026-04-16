@@ -21,6 +21,7 @@ static int tty_ready = 0;
 #define TTY_LFLAG_ISIG   0x00000001u
 #define TTY_LFLAG_ICANON 0x00000002u
 #define TTY_LFLAG_ECHO   0x00000008u
+#define TTY_EFLAGS_IF    0x00000200u
 
 typedef struct {
     char input_buf[TTY_INPUT_BUF_SIZE];
@@ -137,7 +138,7 @@ char tty_getchar(void) {
         tty_poll_input_sources();
         if (tty_input_available()) break;
         __asm__ volatile("pushf; pop %0" : "=r"(flags) : : "memory");
-        if ((flags & 0x200u) != 0u) {
+        if ((flags & TTY_EFLAGS_IF) != 0u) {
             __asm__ volatile("sti; hlt" : : : "memory");
         } else {
             __asm__ volatile("sti; hlt; cli" : : : "memory");

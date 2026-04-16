@@ -1072,11 +1072,12 @@ static int resolve_install_symlink(const char *install_root,
         return -1;
     }
 
-    if (strlen(resolved_path) + 1 > resolved_out_size) {
+    size_t resolved_len = strlen(resolved_path);
+    if (resolved_len + 1 > resolved_out_size) {
         fprintf(stderr, "mkfs: resolved symlink path too long for buffer '%s' (skipping)\n", link_path);
         return -1;
     }
-    memcpy(resolved_out, resolved_path, strlen(resolved_path) + 1);
+    memcpy(resolved_out, resolved_path, resolved_len + 1);
 
     if (!path_is_within_root(install_root, resolved_out)) {
         fprintf(stderr, "mkfs: symlink escapes install root '%s' -> '%s' (skipping)\n", link_path, target);
