@@ -131,11 +131,17 @@ void tty_write(const char *buf, size_t len) {
 
 char tty_getchar(void) {
     char ch;
+    uint32_t flags;
 
     while (!tty_input_available()) {
         tty_poll_input_sources();
         if (tty_input_available()) break;
-        __asm__ volatile("sti; hlt; cli");
+        __asm__ volatile("pushf; pop %0" : "=r"(flags) : : "memory");
+        if ((flags & 0x200u) != 0u) {
+            __asm__ volatile("sti; hlt" : : : "memory");
+        } else {
+            __asm__ volatile("sti; hlt; cli" : : : "memory");
+        }
     }
 
     tty_poll_input_sources();

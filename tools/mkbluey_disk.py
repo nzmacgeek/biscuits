@@ -28,8 +28,8 @@ heelers:x:1:bluey,bingo,chilli,bandit
 mates:x:2:jack,judo
 """
 
-DEFAULT_SHADOW = """root:$6$blueyos$i71qzV0KYDjxto0fG97RZJk/yuMr.qZzc9zx79xmx9pm56pa5v6liPjsPiSa61tRrhF0j/cLIqXhrHd.GWm7K0:0:0:99999:7:::
-bandit:$6$blueyos$i71qzV0KYDjxto0fG97RZJk/yuMr.qZzc9zx79xmx9pm56pa5v6liPjsPiSa61tRrhF0j/cLIqXhrHd.GWm7K0:0:0:99999:7:::
+DEFAULT_SHADOW = """root:!:0:0:99999:7:::
+bandit:!:0:0:99999:7:::
 bluey:$pbkdf2-sha256$10000$7d9f4a1e0c0b5f6e1122334455667788$f5f07c6926875023aedfd2087b52e1dca0c596b16e7d3a360ac744eec25720f5:0:0:99999:7:::
 bingo:!:0:0:99999:7:::
 chilli:*:0:0:99999:7:::

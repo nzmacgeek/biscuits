@@ -572,8 +572,7 @@ void process_exit(int code) {
     process_mark_exited(dying, code);
     kprintf("[PRC]  Process '%s' (pid=%d) exited with code %d\n",
             dying->name, dying->pid, code);
-    /* Yield immediately so the zombie doesn't keep running in userspace. */
-    scheduler_yield();
+    /* The process is now a zombie; rescheduling occurs on trap return. */
 }
 
 process_t *process_current(void) { return proc_current; }

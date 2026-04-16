@@ -853,6 +853,16 @@ static uint32_t dir_lookup_host(uint32_t dir_ino, const char *name) {
     return 0;
 }
 
+static uint16_t host_id_to_u16(uint32_t host_id, const char *id_kind, const char *path_hint) {
+    if (host_id > UINT16_MAX) {
+        fprintf(stderr,
+                "mkfs: %s %u for '%s' exceeds 65535, mapping to 0\n",
+                id_kind, host_id, path_hint ? path_hint : "(unknown)");
+        return 0;
+    }
+    return (uint16_t)host_id;
+}
+
 static int create_dir_host(uint32_t parent_ino, const char *name, uint32_t now, uint32_t *ino_out,
                            mode_t host_mode, uint32_t host_uid, uint32_t host_gid) {
     uint32_t ino = alloc_inode_host();
@@ -867,8 +877,8 @@ static int create_dir_host(uint32_t parent_ino, const char *name, uint32_t now, 
 
     memset(&inode, 0, sizeof(inode));
     inode.mode = (uint16_t)(BISCUITFS_IFDIR | (host_mode & 07777));
-    inode.uid = (uint16_t)host_uid;
-    inode.gid = (uint16_t)host_gid;
+    inode.uid = host_id_to_u16(host_uid, "uid", name);
+    inode.gid = host_id_to_u16(host_gid, "gid", name);
     inode.links_count = 2;
     inode.atime = now;
     inode.ctime = now;
@@ -925,8 +935,8 @@ static int create_file_host(uint32_t parent_ino, const char *name,
 
     memset(&inode, 0, sizeof(inode));
     inode.mode = (uint16_t)(BISCUITFS_IFREG | (host_mode & 07777));
-    inode.uid = (uint16_t)host_uid;
-    inode.gid = (uint16_t)host_gid;
+    inode.uid = host_id_to_u16(host_uid, "uid", name);
+    inode.gid = host_id_to_u16(host_gid, "gid", name);
     inode.links_count = 1;
     inode.atime = now;
     inode.ctime = now;
@@ -1027,6 +1037,7 @@ static int resolve_install_symlink(const char *install_root,
                                    struct stat *st_out) {
     char target[PATH_MAX];
     char candidate[PATH_MAX];
+    char resolved_path[PATH_MAX];
     ssize_t target_len;
 
     target_len = readlink(link_path, target, sizeof(target) - 1);
@@ -1056,10 +1067,16 @@ static int resolve_install_symlink(const char *install_root,
         snprintf(candidate, sizeof(candidate), "%s/%s", dironly, target);
     }
 
-    if (!realpath(candidate, resolved_out)) {
+    if (!realpath(candidate, resolved_path)) {
         fprintf(stderr, "mkfs: symlink target not found '%s' -> '%s' (skipping)\n", link_path, target);
         return -1;
     }
+
+    if (strlen(resolved_path) + 1 > resolved_out_size) {
+        fprintf(stderr, "mkfs: resolved symlink path too long for buffer '%s' (skipping)\n", link_path);
+        return -1;
+    }
+    memcpy(resolved_out, resolved_path, strlen(resolved_path) + 1);
 
     if (!path_is_within_root(install_root, resolved_out)) {
         fprintf(stderr, "mkfs: symlink escapes install root '%s' -> '%s' (skipping)\n", link_path, target);
@@ -1178,8 +1195,8 @@ static int populate_from_dir_recursive(uint32_t parent_ino, const char *install_
                 biscuitfs_inode_t existing;
                 if (read_inode_host(child_ino, &existing) == 0) {
                     existing.mode = (uint16_t)(BISCUITFS_IFDIR | (st.st_mode & 07777));
-                    existing.uid  = (uint16_t)st.st_uid;
-                    existing.gid  = (uint16_t)st.st_gid;
+                    existing.uid  = host_id_to_u16((uint32_t)st.st_uid, "uid", fullchild);
+                    existing.gid  = host_id_to_u16((uint32_t)st.st_gid, "gid", fullchild);
                     write_inode_host(child_ino, &existing);
                 }
             }

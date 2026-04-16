@@ -254,7 +254,7 @@ void paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phy
      * the currently-active address space.  A full CR3 reload is unnecessary
      * and flushes all global entries. */
     if (page_dir == current_page_dir) {
-        __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
+        paging_invlpg(virt);
     }
 }
 
