@@ -22,6 +22,9 @@
 #define BLUEY_ENOMEM 12
 #define BLUEY_EPERM   1
 
+#define PROCESS_RLIMIT_NOFILE_DEFAULT_CUR 256u
+#define PROCESS_RLIMIT_NOFILE_DEFAULT_MAX 1024u
+
 #define PROCESS_USER_MMAP_BASE 0x50000000u
 
 static process_t *proc_list  = NULL;   // head of process linked list
@@ -81,6 +84,9 @@ static void process_set_credentials(process_t *process, uint32_t uid, uint32_t g
             process->group_count = 1;
         }
     }
+
+    process->rlimit_nofile_cur = PROCESS_RLIMIT_NOFILE_DEFAULT_CUR;
+    process->rlimit_nofile_max = PROCESS_RLIMIT_NOFILE_DEFAULT_MAX;
 }
 
 static void process_init_kernel_frame(process_t *process, uint32_t entry) {
@@ -153,6 +159,13 @@ static void process_enqueue_deferred_reap(process_t *process) {
 static int process_wait_matches(process_t *parent, process_t *child) {
     if (!parent || !child) return 0;
     if (parent->state != PROC_WAITING) return 0;
+    /* If the parent is blocked waiting for a vfork child (vfork_child_pid != 0),
+     * do NOT wake it via the normal waitpid-style path.  The parent is only
+     * released when the specific vfork child calls exec() or _exit(), which
+     * goes through process_release_vfork_parent().  Waking the parent early
+     * lets it run concurrently with its live vfork child, corrupting the
+     * shared address space (stack, fd table, etc.). */
+    if (parent->vfork_child_pid != 0) return 0;
     if (parent->wait_pid > 0 && parent->wait_pid != (int32_t)child->pid) return 0;
     return child->parent_pid == parent->pid;
 }
@@ -362,6 +375,8 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     child->user_stack_top = parent->user_stack_top;
     child->rlimit_stack_cur = parent->rlimit_stack_cur;
     child->rlimit_stack_max = parent->rlimit_stack_max;
+    child->rlimit_nofile_cur = parent->rlimit_nofile_cur;
+    child->rlimit_nofile_max = parent->rlimit_nofile_max;
     child->tls_base = parent->tls_base;
     child->page_dir = page_dir;
     child->brk_base = parent->brk_base;
@@ -429,6 +444,8 @@ process_t *process_vfork_current(const registers_t *regs, int32_t *error_out) {
     child->user_stack_top = parent->user_stack_top;
     child->rlimit_stack_cur = parent->rlimit_stack_cur;
     child->rlimit_stack_max = parent->rlimit_stack_max;
+    child->rlimit_nofile_cur = parent->rlimit_nofile_cur;
+    child->rlimit_nofile_max = parent->rlimit_nofile_max;
     child->tls_base = parent->tls_base;
     child->page_dir = parent->page_dir;
     child->brk_base = parent->brk_base;
@@ -539,17 +556,23 @@ void process_mark_exited(process_t *process, int code) {
         signal_send_pid(parent->pid, SIGCHLD);
         if (process_wait_matches(parent, process)) {
             process_complete_wait(parent, process, 0);
-        } else if (parent->state == PROC_WAITING) {
+        } else if (parent->state == PROC_WAITING && parent->vfork_child_pid == 0) {
+            /* Wake the parent only if it is not blocked for a vfork child.
+             * Vfork-waiting parents are released exclusively through
+             * process_release_vfork_parent(). */
             parent->state = PROC_READY;
         }
     }
 }
 
 void process_exit(int code) {
+    process_t *dying;
     if (!proc_current) return;
-    process_mark_exited(proc_current, code);
+    dying = proc_current;
+    process_mark_exited(dying, code);
     kprintf("[PRC]  Process '%s' (pid=%d) exited with code %d\n",
-            proc_current->name, proc_current->pid, code);
+            dying->name, dying->pid, code);
+    /* The process is now a zombie; rescheduling occurs on trap return. */
 }
 
 process_t *process_current(void) { return proc_current; }

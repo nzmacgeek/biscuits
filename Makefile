@@ -80,19 +80,19 @@ BUILD_SYSROOT := $(BUILD_DIR)/sysroot
 MUSL_PREFIX ?= $(BUILD_USERS_DIR)/musl
 MUSL_INCLUDE_DIR := $(MUSL_PREFIX)/include
 MUSL_LIB_DIR := $(MUSL_PREFIX)/lib
+LEGACY_INIT_TARGET := $(BUILD_USER_DIR)/init.elf
 MUSL_INIT_TARGET := $(BUILD_USERS_DIR)/init/init-musl.elf
 BLUEYOS_SYSROOT ?= /opt/blueyos-sysroot
 BLUEYOS_CROSS ?= /opt/blueyos-cross
 BLUEYOS_CROSS_MUSL ?= $(BLUEYOS_CROSS)/musl
-# Optional external sysroot to assemble disk images from (preferred when present)
-# If this directory exists, disk builds will use it instead of the locally
-# assembled $(BUILD_SYSROOT).
-SYSROOT_SRC ?= /opt/blueyos-sysroot
-ifeq ($(shell [ -d $(SYSROOT_SRC) ] && echo yes),yes)
-  ROOT_EXTRA_DIR := $(SYSROOT_SRC)
-else
-  ROOT_EXTRA_DIR := $(BUILD_SYSROOT)
-endif
+# Optional sysroot source to assemble disk images from. By default the disk
+# image is populated from the curated local $(BUILD_SYSROOT); callers can
+# override SYSROOT_SRC to point at an external staging tree when needed.
+SYSROOT_SRC ?= $(BUILD_SYSROOT)
+ROOT_EXTRA_DIR := $(SYSROOT_SRC)
+ROOT_EXTRA_ARG = $(if $(wildcard $(ROOT_EXTRA_DIR)),--root-extra-dir $(ROOT_EXTRA_DIR))
+BOOT_EXTRA_DIR := $(ROOT_EXTRA_DIR)/boot
+BOOT_EXTRA_ARG = $(if $(wildcard $(BOOT_EXTRA_DIR)),--boot-extra-dir $(BOOT_EXTRA_DIR))
 
 # ---------------------------------------------------------------------------
 # Architecture-specific compiler / assembler / linker flags
@@ -259,6 +259,7 @@ I386_C_SOURCES = \
     fs/fat.c \
     fs/blueyfs.c \
     fs/procfs.c \
+    fs/devfs.c \
     net/tcpip.c \
     net/arp.c \
     net/ip.c \
@@ -319,13 +320,13 @@ else
   C_SOURCES   = $(I386_C_SOURCES)
   ASM_SOURCES = $(I386_ASM_SOURCES)
   TARGET      = $(BUILD_KERNEL_DIR)/bkernel
-  # Prefer musl-backed init when present (build userspace musl with `make musl-init`).
-  # This makes the musl-test init the default payload until the new `claw` init is ready.
-  USER_TARGETS = $(MUSL_INIT_TARGET) $(BUILD_USER_DIR)/init.elf
+  USER_TARGETS = $(LEGACY_INIT_TARGET) $(MUSL_INIT_TARGET)
 endif
 
 ISO    = $(BUILD_DIR)/blueyos.iso
 DISK_IMAGE = $(BUILD_DIR)/blueyos-disk.img
+ERASE ?= 0
+DISK_ERASE_FLAG = $(if $(filter 1,$(ERASE)),--erase,)
 LOG_DISK_IMAGE ?= $(BUILD_DIR)/blueyos-log-fat.img
 MKFS_BLUEYFS = $(BUILD_TOOLS_DIR)/mkfs_blueyfs
 MKSWAP_BLUEYFS = $(BUILD_TOOLS_DIR)/mkswap_blueyfs
@@ -412,19 +413,12 @@ $(TARGET): $(OBJECTS)
 
 iso: $(TARGET) ; @if [ "$(ARCH)" != "i386" ]; then echo "  [ISO]  ISO build is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/mkdisk.sh
 
-sysroot: $(TARGET) $(MUSL_INIT_TARGET) | $(BUILD_SYSROOT)
-	@echo "  [SYSROOT] Assembling $(BUILD_SYSROOT)"
-	@mkdir -p $(BUILD_SYSROOT)/boot $(BUILD_SYSROOT)/bin $(BUILD_SYSROOT)/lib $(BUILD_SYSROOT)/etc
-	@cp -f $(TARGET) $(BUILD_SYSROOT)/boot/bkernel
-	@if [ -f $(MUSL_INIT_TARGET) ]; then cp -f $(MUSL_INIT_TARGET) $(BUILD_SYSROOT)/bin/init; fi
-	@if [ -d $(BUILD_USERS_DIR)/bash/bin ]; then cp -a $(BUILD_USERS_DIR)/bash/bin/* $(BUILD_SYSROOT)/bin/ 2>/dev/null || true; fi
-	@if [ -d $(MUSL_LIB_DIR) ]; then cp -a $(MUSL_LIB_DIR)/* $(BUILD_SYSROOT)/lib/ 2>/dev/null || true; fi
-	@echo "  [SYSROOT] ready"
+sysroot: $(TARGET) $(LEGACY_INIT_TARGET) | $(BUILD_SYSROOT) ; @echo "  [SYSROOT] Assembling $(BUILD_SYSROOT)"; mkdir -p $(BUILD_SYSROOT)/boot $(BUILD_SYSROOT)/bin $(BUILD_SYSROOT)/lib $(BUILD_SYSROOT)/etc; cp -f $(TARGET) $(BUILD_SYSROOT)/boot/bkernel; if [ -f $(MUSL_INIT_TARGET) ]; then cp -f $(MUSL_INIT_TARGET) $(BUILD_SYSROOT)/bin/init; else cp -f $(LEGACY_INIT_TARGET) $(BUILD_SYSROOT)/bin/init; fi; if [ -d $(BUILD_USERS_DIR)/bash/bin ]; then cp -a $(BUILD_USERS_DIR)/bash/bin/* $(BUILD_SYSROOT)/bin/ 2>/dev/null || true; fi; if [ -d $(MUSL_LIB_DIR) ]; then cp -a $(MUSL_LIB_DIR)/* $(BUILD_SYSROOT)/lib/ 2>/dev/null || true; fi; echo "  [SYSROOT] ready"
 
 
-disk: $(TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(ROOT_EXTRA_DIR) --boot-extra-dir $(ROOT_EXTRA_DIR)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+disk: $(TARGET) $(LEGACY_INIT_TARGET) sysroot tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(LEGACY_INIT_TARGET) $(ROOT_EXTRA_ARG) $(BOOT_EXTRA_ARG) --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS) $(DISK_ERASE_FLAG)
 
-disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --root-extra-dir $(ROOT_EXTRA_DIR) --boot-extra-dir $(ROOT_EXTRA_DIR)/boot --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS)
+disk-musl: $(TARGET) $(MUSL_INIT_TARGET) tools-host ; @if [ "$(ARCH)" != "i386" ]; then echo "  [DISK]  Disk image build is only supported for ARCH=i386"; exit 1; fi; $(PYTHON) tools/mkbluey_disk.py --image $(DISK_IMAGE) --kernel $(TARGET) --init $(MUSL_INIT_TARGET) $(ROOT_EXTRA_ARG) $(BOOT_EXTRA_ARG) --mkfs-tool $(MKFS_BLUEYFS) --mkswap-tool $(MKSWAP_BLUEYFS) $(DISK_ERASE_FLAG)
 
 fat-log-disk:
 	@bash tools/mkfat_logs_disk.sh "$(LOG_DISK_IMAGE)"
@@ -475,7 +469,7 @@ $(MOUNT_BLUEYFS): tools/mount_blueyfs.c ; @mkdir -p $(dir $@); \
   gcc -O2 -Wall -Wextra -o $@ $< $$(pkg-config --cflags --libs fuse3); \
   echo "  [CC]  $< (host, fuse3)"
 
-$(BUILD_USER_DIR)/init.elf: user/init.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
+$(LEGACY_INIT_TARGET): user/init.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
 
 # Module tools (insmod, rmmod)
 $(BUILD_USER_DIR)/insmod: user/insmod.c ; @mkdir -p $(dir $@); gcc -m32 -std=gnu11 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -nostdlib -fno-builtin -fno-pic -no-pie -Wl,-m,elf_i386 -Wl,-Ttext,0x00400000 -o $@ $<; echo "  [LD]  $@"
@@ -539,11 +533,11 @@ help:
 	@echo "  make ARCH=m68k        - build M68K kernel (Macintosh LC III)"
 	@echo "  make ARCH=ppc         - build PowerPC kernel (iMac G4 Sunflower)"
 	@echo "  make iso              - create bootable ISO (i386 only)"
-	@echo "  make disk             - create a partitioned BlueyOS disk image (root auto-sized from sysroot +30%)"
+	@echo "  make disk             - sync sysroot into disk image (reuse layout by default; ERASE=1 forces fresh image)"
 	@echo "  make fat-log-disk     - create an optional FAT16 log disk image at $(LOG_DISK_IMAGE)"
 	@echo "  make $(MOUNT_BLUEYFS) - build the read-only Linux FUSE BiscuitFS mounter"
 	@echo "  make musl-init        - build static musl test init at $(MUSL_INIT_TARGET)"
-	@echo "  make disk-musl        - create a disk image using the musl test init (root auto-sized from sysroot +30%)"
+	@echo "  make disk-musl        - sync disk image using musl init flow (ERASE=1 forces fresh image)"
 	@echo "  make run              - build ISO and launch in QEMU (i386 only)"
 	@echo "  make run-m68k         - launch M68K QEMU with detached serial capture"
 	@echo "  make tools-host       - build host-side mkfs/mkswap/fsck tools"

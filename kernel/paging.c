@@ -108,82 +108,98 @@ void page_fault_handler(registers_t *regs) {
 
     if (!regs) return;
 
-    kprintf("\n[PGF]  Page Fault! Faulting address: 0x%x\n", faulting_addr);
+    /* Attempt grow-on-demand for user stack faults BEFORE printing anything.
+     * If the fault is a normal stack-growth event we return silently so the
+     * kernel log stays clean. */
+    process_t *proc = process_current();
+    uint32_t page_aligned = faulting_addr & ~0xFFFu;
+
+    if (proc && (regs->err_code & 0x4) && proc->page_dir &&
+        !(regs->err_code & 0x1)) {  /* not-present fault only */
+        /* Stack grows downward. Allow on-demand mapping for pages within the
+         * reserved stack region, but do not map the bottom-most guard page. */
+        uint32_t stack_base = proc->user_stack_base;
+        uint32_t stack_top  = proc->user_stack_top;
+        if (faulting_addr >= stack_base + PAGE_SIZE && faulting_addr < stack_top) {
+            uint32_t offset_from_top = stack_top - page_aligned;
+            if (offset_from_top <= proc->rlimit_stack_cur) {
+                uint32_t phys = pmm_alloc_frame();
+                if (!phys) {
+                    /* Fall through to fatal handling below. */
+                    goto fatal_fault;
+                }
+                paging_map_in_directory(proc->page_dir, page_aligned, phys,
+                                        PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+                memset((void*)page_aligned, 0, PAGE_SIZE);
+                if (proc->tls_base) regs->gs = GDT_TLS_SEL;
+                else if (!regs->gs) regs->gs = GDT_USER_DATA;
+                return; /* silently handled: no [PGF] spam */
+            }
+        }
+    }
+
+fatal_fault:
+    /* Only now print the fault details — this is a real problem. */
+    kprintf("\n[PGF]  Page Fault! pid=%u '%s' faulting_addr=0x%08x EIP=0x%08x\n",
+            proc ? proc->pid : 0u,
+            proc ? proc->name : "?",
+            faulting_addr, regs->eip);
     kprintf("[PGF]  Error code: 0x%x (", regs->err_code);
     if (regs->err_code & 0x1) kprintf("protection violation"); else kprintf("not present");
     if (regs->err_code & 0x2) kprintf(", write");  else kprintf(", read");
     if (regs->err_code & 0x4) kprintf(", user");   else kprintf(", supervisor");
-    kprintf(")\n[PGF]  EIP: 0x%x\n", regs->eip);
+    kprintf(")\n");
 
-    /* Extra diagnostic dump when EIP is in the low-address null region —
-     * these faults often indicate a corrupted code pointer (e.g. EIP set to
-     * a segment selector value such as 0x33).  Emit a full register frame
-     * so the developer can correlate with the signal/scheduling logs. */
-    if (regs->eip < 0x1000 && syslog_get_verbose() >= VERBOSE_INFO) {
-        process_t *dbg_proc = process_current();
-        kprintf("[PGF]  *** Low-address EIP fault (likely corrupted code pointer) ***\n");
+    /* Always dump registers for fatal user faults so we can diagnose the
+     * root cause (corrupted EIP, stack overflow, etc.) without needing to
+     * increase the verbose level. */
+    if (regs->err_code & 0x4) {
         kprintf("[PGF]  EAX=0x%08x EBX=0x%08x ECX=0x%08x EDX=0x%08x\n",
                 regs->eax, regs->ebx, regs->ecx, regs->edx);
         kprintf("[PGF]  ESI=0x%08x EDI=0x%08x EBP=0x%08x ESP=0x%08x\n",
                 regs->esi, regs->edi, regs->ebp, regs->useresp);
         kprintf("[PGF]  CS=0x%04x DS=0x%04x GS=0x%04x EFLAGS=0x%08x\n",
                 regs->cs, regs->ds, regs->gs, regs->eflags);
-        if (dbg_proc) {
-            kprintf("[PGF]  pid=%u uid=%u euid=%u name=%s tls_base=0x%08x\n",
-                    dbg_proc->pid, dbg_proc->uid, dbg_proc->euid,
-                    dbg_proc->name, dbg_proc->tls_base);
-        }
+        if (proc)
+            kprintf("[PGF]  stack_base=0x%08x stack_top=0x%08x rlimit=0x%08x vfork=%u\n",
+                    proc->user_stack_base, proc->user_stack_top,
+                    proc->rlimit_stack_cur,
+                    (proc->flags & PROC_FLAG_VFORK_SHARED_VM) ? 1u : 0u);
     }
 
-    /* Attempt grow-on-demand for user stack faults. */
-    process_t *proc = process_current();
-    uint32_t page_aligned = faulting_addr & ~0xFFFu;
+    /* Supervisor-mode fault (should never happen after kernel stabilises). */
+    if (!(regs->err_code & 0x4)) {
+        kprintf("[PGF]  Supervisor fault — halting.\n");
+        __asm__ volatile("cli; hlt");
+        for(;;);
+    }
 
-    if (proc && (regs->err_code & 0x4) && proc->page_dir) {
-        /* Stack grows downward. Allow on-demand mapping for pages within the
-         * reserved stack region, but do not map the bottom-most guard page. */
-        uint32_t stack_base = proc->user_stack_base;
-        uint32_t stack_top = proc->user_stack_top;
-        if (faulting_addr >= stack_base + PAGE_SIZE && faulting_addr < stack_top) {
-            uint32_t offset_from_top = stack_top - page_aligned;
-            if (offset_from_top <= proc->rlimit_stack_cur) {
-                /* Map this page on behalf of the process. */
-                uint32_t phys = pmm_alloc_frame();
-                if (!phys) {
-                    kprintf("[PGF]  Out of physical frames while growing stack for pid=%u\n", proc->pid);
-                    /* Do NOT return here: the faulting instruction would be
-                     * retried, causing an infinite fault loop.  Mark the
-                     * process as exited (SIGSEGV) and halt until the
-                     * scheduler context-switches away. */
-                    process_mark_exited(proc, 128 + SIGSEGV);
-                    __asm__ volatile("sti");
-                    for (;;) __asm__ volatile("hlt");
-                }
-                if (syslog_get_verbose() >= VERBOSE_INFO)
-                    kprintf("[PGF]  Growing user stack: pid=%u va=0x%08x -> phys=0x%08x\n",
-                            proc->pid, page_aligned, phys);
-                paging_map_in_directory(proc->page_dir, page_aligned, phys,
-                                        PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
-                /* Zero the newly mapped page in the process address space. */
-                uint32_t old_dir = paging_current_directory();
-                paging_switch_directory(proc->page_dir);
-                memset((void*)page_aligned, 0, PAGE_SIZE);
-                paging_switch_directory(old_dir);
-                if (proc->tls_base) regs->gs = GDT_TLS_SEL;
-                else if (!regs->gs) regs->gs = GDT_USER_DATA;
-                return; /* return to userland; instruction will be retried */
-            }
-        }
-        /* Fault in user mode but outside allowed stack growth: send SIGSEGV */
-        kprintf("[PGF]  User fault outside stack growth region pid=%u addr=0x%08x usesp=0x%08x\n",
-                proc->pid, faulting_addr, regs->useresp);
-        process_mark_exited(proc, SIGSEGV);
-        /* Enable interrupts and halt; the timer IRQ will context-switch away. */
+    /* User-mode protectio-violation in kernel-mapped page: definitely fatal. */
+    if (regs->err_code & 0x1) {
+        kprintf("[PGF]  Protection violation in user process pid=%u — SIGSEGV\n",
+                proc ? proc->pid : 0u);
+        if (proc) process_mark_exited(proc, 128 + SIGSEGV);
         __asm__ volatile("sti");
         for(;;) __asm__ volatile("hlt");
     }
 
-    kprintf("[PGF]  Bandit forgot to map that page! Halting.\n");
+    /* Not-present user fault outside the allowed grow region. */
+    if (proc) {
+        kprintf("[PGF]  User not-present fault outside stack region pid=%u — SIGSEGV\n",
+                proc->pid);
+        if (!proc->page_dir) {
+            kprintf("[PGF]  No page directory! Halting.\n");
+            __asm__ volatile("cli; hlt");
+            for(;;);
+        }
+        /* Try to handle PMM OOM reported from the growth path above. */
+        kprintf("[PGF]  Out of physical frames (pid=%u) — SIGSEGV\n", proc->pid);
+        process_mark_exited(proc, 128 + SIGSEGV);
+        __asm__ volatile("sti");
+        for(;;) __asm__ volatile("hlt");
+    }
+
+    kprintf("[PGF]  Unhandled supervisor not-present fault — halting.\n");
     __asm__ volatile("cli; hlt");
     for(;;);
 }
@@ -234,10 +250,11 @@ void paging_map_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t phy
 
     page_table[pt_idx] = new_entry;
 
+    /* Use invlpg to shoot down only this TLB entry when the mapping is in
+     * the currently-active address space.  A full CR3 reload is unnecessary
+     * and flushes all global entries. */
     if (page_dir == current_page_dir) {
-        paging_refresh_active_directory(page_dir);
-    } else if (old_entry & PAGE_PRESENT) {
-        paging_refresh_active_directory(page_dir);
+        paging_invlpg(virt);
     }
 }
 

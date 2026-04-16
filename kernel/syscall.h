@@ -24,6 +24,7 @@
 #define SYS_LCHOWN        16  /* lchown (16-bit uid/gid variant) */
 #define SYS_LSEEK         19
 #define SYS_SELECT        142
+#define SYS_FLOCK         143
 #define SYS_GETPID        20
 #define SYS_MOUNT         21
 #define SYS_GETUID        24
@@ -59,6 +60,7 @@
 #define SYS_SETRLIMIT     75
 #define SYS_GETRLIMIT     76
 #define SYS_GETDENTS      141
+#define SYS_GETDENTS64    220
 #define SYS_MKDIR         39
 #define SYS_RMDIR         40
 #define SYS_DUP           41
@@ -74,6 +76,7 @@
 #define SYS_FCNTL64       221
 #define SYS_GETPPID       64
 #define SYS_WAIT4         114
+#define SYS_SETSID        66
 #define SYS_SCHED_YIELD   158
 #define SYS_NANOSLEEP     162
 #define SYS_CHOWN         182

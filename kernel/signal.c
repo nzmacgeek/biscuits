@@ -88,6 +88,13 @@ static void signal_ensure_trampoline(void) {
     paging_map(SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_phys, PAGE_PRESENT | PAGE_USER);
 }
 
+void signal_map_trampoline_in_current_dir(void) {
+    /* Force a fresh map check against the currently-active page directory.
+     * Called after paging_switch_directory() in execve so the new address
+     * space always has the trampoline mapped at SIGNAL_TRAMPOLINE_ADDR. */
+    signal_ensure_trampoline();
+}
+
 static int signal_next_pending(process_t *process) {
     uint32_t pending;
 
@@ -203,6 +210,11 @@ int signal_dispatch_pending(process_t *process, registers_t *regs) {
     if ((regs->cs & 0x3u) != 0x3u) return 0;
     if (process->flags & PROC_FLAG_SIGNAL_ACTIVE) return 0;
 
+    /* Vfork children share the parent's address space.  Writing a signal
+     * frame onto the stack would corrupt the parent's stack.  Leave all
+     * signals pending; they are delivered once exec() clears this flag. */
+    if (process->flags & PROC_FLAG_VFORK_SHARED_VM) return 0;
+
     sig = signal_next_pending(process);
     if (!sig) return 0;
 
@@ -252,14 +264,16 @@ int signal_sigaction(process_t *process, int sig,
 
     slot = &process->signal_actions[sig - 1];
     if (oldact) {
-        oldact->sa_handler = slot->handler;
-        oldact->sa_flags = slot->flags;
-        oldact->sa_mask = slot->mask;
+        oldact->sa_handler  = slot->handler;
+        oldact->sa_flags    = slot->flags;
+        oldact->sa_restorer = 0;   /* kernel owns the trampoline — no user restorer */
+        oldact->sa_mask     = slot->mask;
     }
     if (act) {
         slot->handler = act->sa_handler;
-        slot->flags = act->sa_flags;
-        slot->mask = act->sa_mask & ~(signal_bit(SIGKILL) | signal_bit(SIGSTOP));
+        slot->flags   = act->sa_flags;
+        /* sa_restorer is accepted but ignored: we always use our own trampoline. */
+        slot->mask    = act->sa_mask & ~(signal_bit(SIGKILL) | signal_bit(SIGSTOP));
     }
     return 0;
 }

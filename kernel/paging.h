@@ -42,3 +42,9 @@ int      paging_unmap_in_directory(uint32_t page_dir_phys, uint32_t virt);
 // `flags` should contain PAGE_WRITABLE / PAGE_USER as desired; PAGE_PRESENT
 // is preserved by the implementation. Returns 0 on success, -1 on failure.
 int      paging_set_page_flags_in_directory(uint32_t page_dir_phys, uint32_t virt, uint32_t flags);
+
+// Invalidate a single TLB entry for the given virtual address in the current
+// address space.  Much cheaper than a full CR3 reload for point mappings.
+static inline void paging_invlpg(uint32_t virt) {
+    __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
+}

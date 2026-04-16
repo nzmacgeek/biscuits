@@ -12,8 +12,8 @@ if [ -f /installed ]; then
 fi
 
 mkdir -p /mnt/boot
-# Try common device names for the boot partition
-mount /dev/hda1 /mnt/boot 2>/dev/null || mount /dev/sda1 /mnt/boot 2>/dev/null || true
+# Try common device names for the boot partition (BSD-style preferred, Linux aliases as fallback)
+mount /dev/disk0s1 /mnt/boot 2>/dev/null || mount /dev/disk1s1 /mnt/boot 2>/dev/null || mount /dev/hda1 /mnt/boot 2>/dev/null || mount /dev/sda1 /mnt/boot 2>/dev/null || true
 
 if [ -d /mnt/boot/stage ]; then
   echo "Installing stage from /mnt/boot/stage..."

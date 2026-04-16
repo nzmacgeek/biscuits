@@ -15,6 +15,7 @@
 #include "../drivers/vga.h"
 #include "../fs/vfs.h"
 #include "syslog.h"
+#include "rtc.h"
 #include <stdarg.h>
 #include "kheap.h"
 
@@ -149,6 +150,19 @@ void syslog_init(void) {
     syslog_ready     = 1;
 }
 
+static int syslog_snprintf(char *out, size_t sz, const char *fmt, ...);
+
+/* Return the basename portion of a file path (the part after the last '/'). */
+static const char *syslog_basename(const char *path) {
+    const char *last = path;
+    if (!path) return "";
+    while (*path) {
+        if (*path == '/') last = path + 1;
+        path++;
+    }
+    return last;
+}
+
 static int syslog_snprintf(char *out, size_t sz, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -185,23 +199,37 @@ static int verbose_console_threshold(void) {
     }
 }
 
-void syslog_write(int level, const char *tag, const char *fmt, ...) {
+static void syslog_write_loc_va(int level, const char *tag, const char *file,
+                                const char *func, const char *fmt, va_list ap) {
     if (!syslog_ready) return;
 
     syslog_entry_t *entry = &syslog_ring[syslog_head % SYSLOG_RING_ENTRIES];
 
-    entry->seq   = syslog_seq++;
-    entry->level = (uint8_t)level;
+    entry->seq       = syslog_seq++;
+    entry->timestamp = rtc_get_uptime_seconds();
+    entry->level     = (uint8_t)level;
 
     // Copy tag (truncate to 15 chars)
     strncpy(entry->tag, tag ? tag : "KERN", sizeof(entry->tag) - 1);
     entry->tag[sizeof(entry->tag) - 1] = '\0';
 
+    // Store source location (basename only to save space)
+    if (file && file[0]) {
+        const char *base = syslog_basename(file);
+        strncpy(entry->src_file, base, sizeof(entry->src_file) - 1);
+        entry->src_file[sizeof(entry->src_file) - 1] = '\0';
+    } else {
+        entry->src_file[0] = '\0';
+    }
+    if (func && func[0]) {
+        strncpy(entry->src_func, func, sizeof(entry->src_func) - 1);
+        entry->src_func[sizeof(entry->src_func) - 1] = '\0';
+    } else {
+        entry->src_func[0] = '\0';
+    }
+
     // Format message
-    va_list ap;
-    va_start(ap, fmt);
     syslog_vsnprintf(entry->msg, sizeof(entry->msg), fmt, ap);
-    va_end(ap);
 
     syslog_head++;
     if (syslog_count_val < SYSLOG_RING_ENTRIES) syslog_count_val++;
@@ -212,9 +240,30 @@ void syslog_write(int level, const char *tag, const char *fmt, ...) {
         else if (level == LOG_WARNING)  vga_set_color(VGA_LIGHT_BROWN, VGA_BLACK);
         else if (level == LOG_DEBUG)    vga_set_color(VGA_DARK_GREY,   VGA_BLACK);
         else                            vga_set_color(VGA_WHITE,       VGA_BLACK);
-        kprintf("[%s] %s\n", entry->tag, entry->msg);
+        if (g_verbose_level >= VERBOSE_INFO && entry->src_file[0] != '\0') {
+            kprintf("[%4u][%s](%s:%s) %s\n",
+                    entry->timestamp, entry->tag,
+                    entry->src_file, entry->src_func, entry->msg);
+        } else {
+            kprintf("[%4u][%s] %s\n", entry->timestamp, entry->tag, entry->msg);
+        }
         vga_set_color(VGA_WHITE, VGA_BLACK);
     }
+}
+
+void syslog_write(int level, const char *tag, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    syslog_write_loc_va(level, tag, NULL, NULL, fmt, ap);
+    va_end(ap);
+}
+
+void syslog_write_loc(int level, const char *tag, const char *file,
+                      const char *func, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    syslog_write_loc_va(level, tag, file, func, fmt, ap);
+    va_end(ap);
 }
 
 uint32_t syslog_count(void) {
@@ -256,8 +305,11 @@ void syslog_dmesg(void) {
         else if (e->level == LOG_DEBUG)   vga_set_color(VGA_DARK_GREY,   VGA_BLACK);
         else                              vga_set_color(VGA_WHITE,       VGA_BLACK);
 
-        kprintf("[%u] %s [%s] %s\n",
-                e->seq, level_str((int)e->level), e->tag, e->msg);
+        kprintf("[%u] [T+%us] %s [%s] %s\n",
+                e->seq, e->timestamp, level_str((int)e->level), e->tag, e->msg);
+        if (g_verbose_level >= VERBOSE_INFO && e->src_file[0] != '\0') {
+            kprintf("         src: %s:%s\n", e->src_file, e->src_func);
+        }
     }
     vga_set_color(VGA_WHITE, VGA_BLACK);
     kprintf("-- end of kernel log --\n");
@@ -360,17 +412,22 @@ void syslog_flush_to_fs(void) {
         }
 
         /* Now write out the snapshot without holding locks or disabling IRQs. */
-        char line[SYSLOG_MSG_MAX + 64];
+        char line[SYSLOG_MSG_MAX + 160];
         for (uint32_t i = 0; i < n; i++) {
             syslog_entry_t *e = &snapshot[i];
             char lvlbuf[16];
             strncpy(lvlbuf, level_str((int)e->level), sizeof(lvlbuf) - 1);
             lvlbuf[sizeof(lvlbuf) - 1] = '\0';
 
-            int len = syslog_snprintf(line, sizeof(line), "[%u] %s [%s] %s\n",
-                                      e->seq, lvlbuf, e->tag, e->msg);
-
-            /* Handle partial writes */
+            int len;
+            if (e->src_file[0] != '\0') {
+                len = syslog_snprintf(line, sizeof(line), "[%u] [T+%us] %s [%s](%s:%s) %s\n",
+                                      e->seq, e->timestamp, lvlbuf, e->tag,
+                                      e->src_file, e->src_func, e->msg);
+            } else {
+                len = syslog_snprintf(line, sizeof(line), "[%u] [T+%us] %s [%s] %s\n",
+                                      e->seq, e->timestamp, lvlbuf, e->tag, e->msg);
+            }
             size_t written = 0;
             while (written < (size_t)len) {
                 int r = vfs_write(fd, (const uint8_t *)line + written, (size_t)len - written);
@@ -382,15 +439,22 @@ void syslog_flush_to_fs(void) {
         kheap_free(snapshot);
     } else {
         /* Allocation failed: fall back to direct writes but be defensive. */
-        char line[SYSLOG_MSG_MAX + 64];
+        char line[SYSLOG_MSG_MAX + 160];
         for (uint32_t i = 0; i < n; i++) {
             syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
             char lvlbuf[16];
             strncpy(lvlbuf, level_str((int)e->level), sizeof(lvlbuf) - 1);
             lvlbuf[sizeof(lvlbuf) - 1] = '\0';
 
-            int len = syslog_snprintf(line, sizeof(line), "[%u] %s [%s] %s\n",
-                                      e->seq, lvlbuf, e->tag, e->msg);
+            int len;
+            if (e->src_file[0] != '\0') {
+                len = syslog_snprintf(line, sizeof(line), "[%u] [T+%us] %s [%s](%s:%s) %s\n",
+                                      e->seq, e->timestamp, lvlbuf, e->tag,
+                                      e->src_file, e->src_func, e->msg);
+            } else {
+                len = syslog_snprintf(line, sizeof(line), "[%u] [T+%us] %s [%s] %s\n",
+                                      e->seq, e->timestamp, lvlbuf, e->tag, e->msg);
+            }
 
             size_t written = 0;
             while (written < (size_t)len) {

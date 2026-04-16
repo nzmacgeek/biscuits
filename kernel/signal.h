@@ -15,7 +15,8 @@ typedef struct process process_t;
 typedef struct {
 	uint32_t sa_handler;
 	uint32_t sa_flags;
-	uint32_t sa_mask;
+	uint32_t sa_restorer;  /* Linux i386 ABI: restorer function pointer (offset +8) */
+	uint32_t sa_mask;      /* signal mask (offset +12, matching Linux i386 layout)   */
 } bluey_sigaction_t;
 
 #define SIGHUP    1
@@ -48,3 +49,7 @@ int         signal_sigprocmask(process_t *process, int how,
 							   uint32_t *oldset);
 int         signal_sigreturn(process_t *process, registers_t *regs, void *frame_ptr);
 void        signal_reset_on_exec(process_t *process);
+/* Map the signal trampoline into the currently-active page directory.
+ * Must be called after switching to a new address space (e.g. after execve)
+ * so that every process has the trampoline accessible at the well-known VA. */
+void        signal_map_trampoline_in_current_dir(void);

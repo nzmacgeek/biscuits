@@ -57,7 +57,7 @@ static uint32_t        jnl_seq       = 1;
 static uint32_t        jnl_start_blk = 0;  /* first block of journal region */
 
 // Open file table
-#define BISCUITFS_MAX_OPEN  16
+#define BISCUITFS_MAX_OPEN  1024
 typedef struct {
     int      used;
     uint32_t inode_no;

@@ -24,7 +24,7 @@ static uint16_t   *fat_cache = NULL;    // in-memory FAT (up to 64KB FAT = 32K e
 static int         fat_loaded = 0;
 
 // Simple open file table for FAT
-#define FAT_MAX_OPEN 8
+#define FAT_MAX_OPEN 1024
 typedef struct {
     int      used;
     uint16_t first_cluster;

@@ -40,6 +40,8 @@ typedef struct process {
     uint32_t      user_stack_limit; // soft limit for stack growth (grow-on-demand)
     uint32_t      rlimit_stack_cur;
     uint32_t      rlimit_stack_max;
+    uint32_t      rlimit_nofile_cur;
+    uint32_t      rlimit_nofile_max;
     uint32_t      tls_base;          // thread-local storage base for GDT entry 6
     uint32_t      robust_list_head;  // userspace head for set_robust_list(2)
     uint32_t      robust_list_len;
@@ -57,6 +59,7 @@ typedef struct process {
     /* CPU accounting: cumulative ticks and last-start tick for this process/thread */
     uint32_t      cpu_ticks;     /* accumulated timer ticks spent on CPU */
     uint32_t      cpu_last_tick; /* tick value when this process was scheduled in */
+    uint64_t      vruntime;      /* CFS virtual runtime (weighted tick accumulator) */
     int           exit_code;
     uint32_t      sleep_until;   // timer tick to wake at (0 = not sleeping)
     uint32_t      priority;      // 1 (low) .. 10 (high) - Bluey always gets priority :)

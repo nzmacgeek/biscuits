@@ -8,6 +8,7 @@
 #include "process.h"
 #include "signal.h"
 #include "tty.h"
+#include "../lib/string.h"
 
 static int tty_ready = 0;
 #define TTY_SERIAL_PORT 0x3F8
@@ -20,6 +21,7 @@ static int tty_ready = 0;
 #define TTY_LFLAG_ISIG   0x00000001u
 #define TTY_LFLAG_ICANON 0x00000002u
 #define TTY_LFLAG_ECHO   0x00000008u
+#define TTY_EFLAGS_IF    0x00000200u
 
 typedef struct {
     char input_buf[TTY_INPUT_BUF_SIZE];
@@ -68,6 +70,16 @@ static void tty_serial_putchar(char c) {
     while ((inb(TTY_SERIAL_PORT + 5) & 0x20u) == 0) {
     }
     outb(TTY_SERIAL_PORT, (uint8_t)c);
+}
+
+static int tty_serial_input_available(void) {
+    return (inb(TTY_SERIAL_PORT + 5) & 0x01u) != 0;
+}
+
+static void tty_poll_input_sources(void) {
+    while (tty_serial_input_available()) {
+        tty_input_char((char)inb(TTY_SERIAL_PORT));
+    }
 }
 
 static void tty_output_char(char c) {
@@ -120,11 +132,20 @@ void tty_write(const char *buf, size_t len) {
 
 char tty_getchar(void) {
     char ch;
+    uint32_t flags;
 
     while (!tty_input_available()) {
-        __asm__ volatile("hlt");
+        tty_poll_input_sources();
+        if (tty_input_available()) break;
+        __asm__ volatile("pushf; pop %0" : "=r"(flags) : : "memory");
+        if ((flags & TTY_EFLAGS_IF) != 0u) {
+            __asm__ volatile("sti; hlt" : : : "memory");
+        } else {
+            __asm__ volatile("sti; hlt; cli" : : : "memory");
+        }
     }
 
+    tty_poll_input_sources();
     ch = (char)tty_input_pop();
     return ch;
 }
