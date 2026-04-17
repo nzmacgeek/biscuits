@@ -25,6 +25,8 @@ tools/list_blueyfs
 *.swo
 *~
 .DS_Store
+__pycache__/
+*.pyc
 
 # Local run artifacts
 *.log
