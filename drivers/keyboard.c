@@ -56,9 +56,15 @@ static int e0_prefix   = 0;
 static int cad_latched = 0;
 
 static void keyboard_emit_cad_event(void) {
-    devev_event_t ev = { DEV_EV_CTRL_ALT_DEL, {0,0,0}, 0, 0, 0 };
+    devev_event_t ev = {
+        .type = DEV_EV_CTRL_ALT_DEL,
+        ._pad = {0, 0, 0},
+        .pid = 0,
+        .code = 0,
+        .reserved = 0,
+    };
     devev_push(&ev);
-    kprintf("[KBD]  Ctrl+Alt+Del detected - notifying PID1 via device event\n");
+    kprintf("[KBD]  Ctrl+Alt+Del detected - notifying PID 1 via device event\n");
 }
 
 static void kb_irq_handler(registers_t *regs) {
@@ -78,10 +84,15 @@ static void kb_irq_handler(registers_t *regs) {
     // Key release (bit 7 set)
     if (release) {
         if (code == 0x2A || code == 0x36) shift_held = 0;  // left/right shift up
-        if (code == 0x1D) ctrl_held = 0;                   // left/right ctrl up
-        if (code == 0x38) alt_held = 0;                    // left/right alt up
+        if (code == 0x1D) {                                 // left/right ctrl up
+            ctrl_held = 0;
+            cad_latched = 0;
+        }
+        if (code == 0x38) {                                 // left/right alt up
+            alt_held = 0;
+            cad_latched = 0;
+        }
         if (extended && code == 0x53) cad_latched = 0;     // delete released
-        if (!ctrl_held || !alt_held) cad_latched = 0;
         return;
     }
 

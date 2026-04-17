@@ -95,5 +95,7 @@ The following is a snippet from the `kernel/syscall/syscall.h` file, which defin
 #define SYS_REBOOT        88
 ```
 
-Device event ABI includes `DEV_EV_CTRL_ALT_DEL` in `kernel/devev.h`, emitted by
-the keyboard driver when Ctrl+Alt+Del is pressed so PID 1 can choose policy.
+## Device event channel note
+
+The device event ABI includes `DEV_EV_CTRL_ALT_DEL` in `kernel/devev.h`, emitted
+by the keyboard driver when Ctrl+Alt+Del is pressed so PID 1 can choose policy.
