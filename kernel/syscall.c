@@ -2722,7 +2722,10 @@ static int32_t sys_sync(void) {
     tty_flush();
     syslog_flush_to_fs();
     ata_ret = ata_flush_cache();
-    if (ata_ret != 0) return -BLUEY_EIO;
+    if (ata_ret != 0) {
+        kprintf("[SYS]  sync(): ATA cache flush failed (%d)\n", ata_ret);
+        return -BLUEY_EIO;
+    }
     return 0;
 }
 

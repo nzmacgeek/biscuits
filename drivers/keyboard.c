@@ -128,7 +128,12 @@ static void kb_irq_handler(registers_t *regs) {
 
 void keyboard_init(void) {
     kb_head = kb_tail = 0;
-    shift_held = caps_lock = ctrl_held = alt_held = e0_prefix = cad_latched = 0;
+    shift_held = 0;
+    caps_lock = 0;
+    ctrl_held = 0;
+    alt_held = 0;
+    e0_prefix = 0;
+    cad_latched = 0;
     irq_install_handler(1, kb_irq_handler);
     kprintf("%s\n", MSG_KB_INIT);
 }
