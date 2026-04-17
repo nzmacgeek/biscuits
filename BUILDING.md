@@ -42,7 +42,7 @@ Quick build (i386)
 
    - After building, copy the resulting `bash` binary into `build/userspace/bash/bin/` (create that path) so the `sysroot` step picks it up.
 
-5. Assemble a sysroot that will be packaged into the disk image:
+5. Assemble a local fallback sysroot (optional):
 
    `make sysroot`
 
@@ -52,6 +52,8 @@ Quick build (i386)
 
    `make disk`
 
+   - By default this now packages `/opt/blueyos-sysroot` into the root partition before boot.
+   - Override with another source tree if needed: `make disk SYSROOT_SRC=/path/to/sysroot`.
    - For creating a disk using the musl init test: `make disk-musl`.
    - To create an additional FAT16 disk image that QEMU will attach as a second IDE disk when present: `make fat-log-disk`.
    - The root partition is now sized from the assembled sysroot payload with an additional 30% buffer, so larger userlands automatically produce larger disk images.

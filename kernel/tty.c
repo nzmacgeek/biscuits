@@ -277,3 +277,8 @@ void tty_get_winsize(tty_winsize_t *winsize) {
     if (!winsize) return;
     *winsize = tty_console.winsize;
 }
+
+int tty_input_pending(void) {
+    tty_poll_input_sources();
+    return tty_input_available();
+}
