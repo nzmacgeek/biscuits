@@ -8,6 +8,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <pthread.h>
 
 #define SYS_READ    0
 #define SYS_WRITE   1
@@ -280,12 +282,84 @@ static void test_file_mmap(void) {
     syscall1(SYS_CLOSE, fd);
 }
 
+static pthread_mutex_t g_thread_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_thread_cond = PTHREAD_COND_INITIALIZER;
+static int g_thread_ready = 0;
+static int g_thread_value = 0;
+
+static void *thread_smoke_main(void *arg) {
+    int *result = (int *)arg;
+
+    if (pthread_mutex_lock(&g_thread_lock) != 0) {
+        write_str("[init-thread] mutex lock failed\n");
+        return (void *)1;
+    }
+
+    g_thread_value = 0x42;
+    g_thread_ready = 1;
+    fprintf(stdout, "[init-thread] worker signalled\n");
+    fflush(stdout);
+    pthread_cond_signal(&g_thread_cond);
+    pthread_mutex_unlock(&g_thread_lock);
+
+    *result = 7;
+    return NULL;
+}
+
+static void test_pthread_smoke(void) {
+    pthread_t thread;
+    int rc;
+    int thread_result = 0;
+
+    write_str("[init] pthread smoke test\n");
+    rc = pthread_create(&thread, NULL, thread_smoke_main, &thread_result);
+    if (rc != 0) {
+        write_str("[init] pthread_create failed\n");
+        exit_now(61);
+    }
+
+    rc = pthread_mutex_lock(&g_thread_lock);
+    if (rc != 0) {
+        write_str("[init] pthread mutex lock failed\n");
+        exit_now(62);
+    }
+
+    while (!g_thread_ready) {
+        rc = pthread_cond_wait(&g_thread_cond, &g_thread_lock);
+        if (rc != 0) {
+            write_str("[init] pthread cond wait failed\n");
+            exit_now(63);
+        }
+    }
+
+    if (g_thread_value != 0x42) {
+        write_str("[init] pthread shared state mismatch\n");
+        exit_now(64);
+    }
+    pthread_mutex_unlock(&g_thread_lock);
+
+    rc = pthread_join(thread, NULL);
+    if (rc != 0) {
+        write_str("[init] pthread_join failed\n");
+        exit_now(65);
+    }
+
+    if (thread_result != 7) {
+        write_str("[init] pthread result mismatch\n");
+        exit_now(66);
+    }
+
+    fprintf(stdout, "[init] pthread smoke ok\n");
+    fflush(stdout);
+}
+
 int main(void) {
     write_str("[init] userspace bootstrap ok\n");
     test_heap_and_mmap();
     test_fork_wait();
     test_file_mmap();
     test_blueyfs_file_sizes();
+    test_pthread_smoke();
     write_str("[init] all tests passed\n");
     if (getenv("BLUEYOS_EXEC_BASH")) {
         execl("/bin/bash", "bash", NULL);
