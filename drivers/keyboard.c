@@ -14,6 +14,10 @@
 
 #define KB_DATA_PORT  0x60
 #define KB_BUF_SIZE   256  // must be power of 2
+#define KB_EXTENDED_PREFIX 0xE0
+#define KB_SC_LEFT_CTRL  0x1D
+#define KB_SC_LEFT_ALT   0x38
+#define KB_SC_DELETE     0x53
 
 // Ring buffer - bounds hard-enforced
 static volatile char kb_buf[KB_BUF_SIZE];
@@ -71,7 +75,7 @@ static void kb_irq_handler(registers_t *regs) {
     (void)regs;
     uint8_t sc = inb(KB_DATA_PORT);
 
-    if (sc == 0xE0) {
+    if (sc == KB_EXTENDED_PREFIX) {
         e0_prefix = 1;
         return;
     }
@@ -84,25 +88,25 @@ static void kb_irq_handler(registers_t *regs) {
     // Key release (bit 7 set)
     if (release) {
         if (code == 0x2A || code == 0x36) shift_held = 0;  // left/right shift up
-        if (code == 0x1D) {                                 // left/right ctrl up
+        if (code == KB_SC_LEFT_CTRL) {                      // left/right ctrl up
             ctrl_held = 0;
             cad_latched = 0;
         }
-        if (code == 0x38) {                                 // left/right alt up
+        if (code == KB_SC_LEFT_ALT) {                       // left/right alt up
             alt_held = 0;
             cad_latched = 0;
         }
-        if (extended && code == 0x53) cad_latched = 0;     // delete released
+        if (extended && code == KB_SC_DELETE) cad_latched = 0; // delete released
         return;
     }
 
     // Key press
     if (code == 0x2A || code == 0x36) { shift_held = 1; return; }  // shift down
-    if (code == 0x1D) { ctrl_held = 1; return; }                   // ctrl down
-    if (code == 0x38) { alt_held = 1; return; }                    // alt down
+    if (code == KB_SC_LEFT_CTRL) { ctrl_held = 1; return; }        // ctrl down
+    if (code == KB_SC_LEFT_ALT) { alt_held = 1; return; }          // alt down
     if (!extended && code == 0x3A) { caps_lock ^= 1; return; }     // caps lock toggle
 
-    if (extended && code == 0x53) {
+    if (extended && code == KB_SC_DELETE) {
         if (ctrl_held && alt_held && !cad_latched) {
             keyboard_emit_cad_event();
             cad_latched = 1;

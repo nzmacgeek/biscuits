@@ -2719,6 +2719,7 @@ static int32_t sys_getpgrp(void) {
 static int32_t sys_sync(void) {
     int ata_ret;
 
+    /* tty/syslog flush APIs are best-effort and currently void-returning. */
     tty_flush();
     syslog_flush_to_fs();
     ata_ret = ata_flush_cache();
