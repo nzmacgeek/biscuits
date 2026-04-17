@@ -9,6 +9,8 @@
 #include "../lib/stdio.h"
 #include "ata.h"
 
+static int ata_present = 0;
+
 // Wait for BSY to clear and DRQ to set (or error)
 static int ata_wait_ready(void) {
     uint8_t status;
@@ -68,9 +70,11 @@ int ata_identify(void) {
 
 int ata_init(void) {
     if (ata_identify() != 0) {
+        ata_present = 0;
         kprintf("[ATA]  No ATA device found (Jack forgot the disk!)\n");
         return -1;
     }
+    ata_present = 1;
     kprintf("%s\n", MSG_ATA_INIT);
     return 0;
 }
@@ -117,4 +121,14 @@ int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     ata_delay();
     if (ata_wait_ready() != 0) return -1;
     return 0;
+}
+
+int ata_flush_cache(void) {
+    if (!ata_present) return 0;
+    if (ata_wait_ready() != 0) return -1;
+
+    outb(ATA_PRIMARY_BASE + ATA_REG_DRIVE, 0xE0);
+    outb(ATA_PRIMARY_BASE + ATA_REG_CMD, 0xE7);
+    ata_delay();
+    return ata_wait_ready();
 }

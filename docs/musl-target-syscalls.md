@@ -5,6 +5,7 @@ The following is a snippet from the `kernel/syscall/syscall.h` file, which defin
 #define SYS_WRITE         1
 #define SYS_OPEN          2
 #define SYS_CLOSE         3
+#define SYS_SYNC          36
 #define SYS_STAT          4
 #define SYS_FSTAT         5
 #define SYS_LINK          9
@@ -93,3 +94,6 @@ The following is a snippet from the `kernel/syscall/syscall.h` file, which defin
 // Reboot / poweroff
 #define SYS_REBOOT        88
 ```
+
+Device event ABI includes `DEV_EV_CTRL_ALT_DEL` in `kernel/devev.h`, emitted by
+the keyboard driver when Ctrl+Alt+Del is pressed so PID 1 can choose policy.

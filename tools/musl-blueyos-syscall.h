@@ -10,6 +10,7 @@
 #define __NR_write         1
 #define __NR_open          2
 #define __NR_close         3
+#define __NR_sync          36
 #define __NR_stat          4
 #define __NR_fstat         5
 #define __NR_fstat64       197

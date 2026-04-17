@@ -9,6 +9,7 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../drivers/keyboard.h"
+#include "../drivers/ata.h"
 #include "../drivers/vga.h"
 #include "tty.h"
 #include "idt.h"
@@ -29,6 +30,7 @@
 #include "netctl.h"
 #include "socket.h"
 #include "module.h"
+#include "syslog.h"
 #include "../net/tcpip.h"
 #include "../fs/vfs.h"
 
@@ -2714,6 +2716,16 @@ static int32_t sys_getpgrp(void) {
 
 /* ---- Mount / umount ---------------------------------------------------- */
 
+static int32_t sys_sync(void) {
+    int ata_ret;
+
+    tty_flush();
+    syslog_flush_to_fs();
+    ata_ret = ata_flush_cache();
+    if (ata_ret != 0) return -BLUEY_EIO;
+    return 0;
+}
+
 static int32_t sys_mount(const char *source, const char *target,
                          const char *fstype, uint32_t flags,
                          const void *data) {
@@ -3105,6 +3117,9 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_MOUNT:
             ret = sys_mount((const char*)regs->ebx, (const char*)regs->ecx,
                             (const char*)regs->edx, 0, NULL);
+            break;
+        case SYS_SYNC:
+            ret = sys_sync();
             break;
         case SYS_UMOUNT2:
             ret = sys_umount2((const char*)regs->ebx, regs->ecx);
