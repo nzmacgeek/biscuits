@@ -81,6 +81,7 @@
 #define SYS_SCHED_YIELD   158
 #define SYS_NANOSLEEP     162
 #define SYS_CHOWN         182
+#define SYS_FUTEX         240
 #define SYS_EXIT_GROUP    252
 #define SYS_SET_TID_ADDRESS 258
 #define SYS_SET_ROBUST_LIST 311

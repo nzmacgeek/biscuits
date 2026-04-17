@@ -21,6 +21,7 @@
 #define BLUEY_EAGAIN 11
 #define BLUEY_ENOMEM 12
 #define BLUEY_EPERM   1
+#define BLUEY_ETIMEDOUT 110
 
 #define PROCESS_RLIMIT_NOFILE_DEFAULT_CUR 256u
 #define PROCESS_RLIMIT_NOFILE_DEFAULT_MAX 1024u
@@ -35,6 +36,43 @@ static uint8_t    proc_kernel_stacks[MAX_PROCESSES][PROC_STACK_SIZE] __attribute
 static uint8_t    proc_kernel_stack_used[MAX_PROCESSES];
 
 static void process_reap(process_t *process);
+
+static int process_has_shared_page_dir(process_t *process) {
+    if (!process || !process->page_dir) return 0;
+
+    for (process_t *node = proc_list; node; node = node->next) {
+        if (node == process) continue;
+        if (node->page_dir == process->page_dir && node->state != PROC_DEAD) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+int process_read_user_u32(process_t *process, uint32_t addr, uint32_t *value_out) {
+    uint32_t old_page_dir;
+
+    if (!process || !addr || !value_out) return -1;
+
+    old_page_dir = paging_current_directory();
+    paging_switch_directory(process->page_dir);
+    *value_out = *(uint32_t *)(uintptr_t)addr;
+    paging_switch_directory(old_page_dir);
+    return 0;
+}
+
+int process_write_user_u32(process_t *process, uint32_t addr, uint32_t value) {
+    uint32_t old_page_dir;
+
+    if (!process || !addr) return -1;
+
+    old_page_dir = paging_current_directory();
+    paging_switch_directory(process->page_dir);
+    *(uint32_t *)(uintptr_t)addr = value;
+    paging_switch_directory(old_page_dir);
+    return 0;
+}
 
 static void process_free_kernel_stack(process_t *process) {
     if (!process || !process->stack_base) return;
@@ -158,6 +196,7 @@ static void process_enqueue_deferred_reap(process_t *process) {
 
 static int process_wait_matches(process_t *parent, process_t *child) {
     if (!parent || !child) return 0;
+    if (child->flags & PROC_FLAG_THREAD) return 0;
     if (parent->state != PROC_WAITING) return 0;
     /* If the parent is blocked waiting for a vfork child (vfork_child_pid != 0),
      * do NOT wake it via the normal waitpid-style path.  The parent is only
@@ -208,7 +247,7 @@ static void process_reap(process_t *process) {
     process_remove_from_list(process);
 
     if ((process->flags & PROC_FLAG_USER_MODE) && process->page_dir &&
-        !(process->flags & PROC_FLAG_VFORK_SHARED_VM)) {
+        !process_has_shared_page_dir(process)) {
         paging_destroy_address_space(process->page_dir);
     }
     process_free_kernel_stack(process);
@@ -225,6 +264,7 @@ static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t 
     memset(process, 0, sizeof(process_t));
     strncpy(process->name, name, sizeof(process->name) - 1);
     process->pid = process_next_pid();
+    process->thread_group_id = process->pid;
     process->parent_pid = proc_current ? proc_current->pid : 0;
     process_set_credentials(process, uid, gid);
     process->uid = uid;
@@ -396,6 +436,79 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     return child;
 }
 
+process_t *process_clone_current(const registers_t *regs, uint32_t child_stack,
+                                 int share_vm, int32_t *error_out) {
+    process_t *parent = proc_current;
+    process_t *child;
+    uint8_t *stack;
+    uint32_t page_dir;
+
+    if (error_out) *error_out = -BLUEY_EAGAIN;
+
+    if (!parent || !regs || !(parent->flags & PROC_FLAG_USER_MODE)) {
+        if (error_out) *error_out = -BLUEY_EPERM;
+        return NULL;
+    }
+
+    if (share_vm) {
+        page_dir = parent->page_dir;
+    } else {
+        page_dir = paging_clone_address_space(parent->page_dir);
+        if (!page_dir) {
+            if (error_out) *error_out = -BLUEY_ENOMEM;
+            return NULL;
+        }
+    }
+
+    child = process_alloc_common(parent->name, parent->uid, parent->gid);
+    if (!child) {
+        if (!share_vm && page_dir) paging_destroy_address_space(page_dir);
+        if (error_out) *error_out = -BLUEY_ENOMEM;
+        return NULL;
+    }
+
+    stack = process_alloc_kernel_stack(child);
+    if (!stack) {
+        process_remove_from_list(child);
+        kheap_free(child);
+        if (!share_vm && page_dir) paging_destroy_address_space(page_dir);
+        if (error_out) *error_out = -BLUEY_ENOMEM;
+        return NULL;
+    }
+
+    child->flags = parent->flags & ~PROC_FLAG_SIGNAL_ACTIVE;
+    if (share_vm) child->flags |= PROC_FLAG_SHARED_VM;
+    child->euid = parent->euid;
+    child->egid = parent->egid;
+    child->group_count = parent->group_count;
+    memcpy(child->groups, parent->groups, sizeof(child->groups));
+    child->pgid = parent->pgid;
+    child->user_stack_base = parent->user_stack_base;
+    child->user_stack_top = parent->user_stack_top;
+    child->rlimit_stack_cur = parent->rlimit_stack_cur;
+    child->rlimit_stack_max = parent->rlimit_stack_max;
+    child->rlimit_nofile_cur = parent->rlimit_nofile_cur;
+    child->rlimit_nofile_max = parent->rlimit_nofile_max;
+    child->tls_base = parent->tls_base;
+    child->page_dir = page_dir;
+    child->brk_base = parent->brk_base;
+    child->brk_current = parent->brk_current;
+    child->mmap_base = parent->mmap_base;
+    child->blocked_signals = parent->blocked_signals;
+    memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
+    memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    child->saved_regs = *regs;
+    child->saved_regs.eax = 0;
+    if (child_stack) child->saved_regs.useresp = child_stack;
+    child->eip = child->saved_regs.eip;
+    child->esp = child->saved_regs.useresp;
+    child->cpu_ticks = 0;
+    child->cpu_last_tick = 0;
+
+    if (error_out) *error_out = 0;
+    return child;
+}
+
 process_t *process_vfork_current(const registers_t *regs, int32_t *error_out) {
     process_t *parent = proc_current;
     process_t *child;
@@ -541,7 +654,21 @@ void process_mark_exited(process_t *process, int code) {
     process->exit_code = code;
     process->pending_signals = 0;
 
+    if (process->clear_child_tid) {
+        process_write_user_u32(process, process->clear_child_tid, 0);
+        process_wake_futex(process, process->clear_child_tid, 1, 1, 0);
+        process->clear_child_tid = 0;
+    }
+
     process_release_vfork_parent(process, 0);
+
+    if (process->flags & PROC_FLAG_THREAD) {
+        process->state = PROC_DEAD;
+        scheduler_remove(process->pid);
+        process_remove_from_list(process);
+        process_enqueue_deferred_reap(process);
+        return;
+    }
 
     /* Notify the device event channel so supervisors like claw can react */
     ev.type = DEV_EV_CHILD_EXIT;
@@ -586,6 +713,55 @@ void process_set_current(process_t *p) {
 void process_set_waiting(process_t *p) {
     if (p) p->state = PROC_WAITING;
 }
+
+void process_set_futex_wait(process_t *process, uint32_t addr, uint32_t deadline, int priv) {
+    if (!process) return;
+
+    process->state = PROC_WAITING;
+    process->futex_wait_addr = addr;
+    process->futex_wait_deadline = deadline;
+    process->futex_wait_result = 0;
+    process->futex_wait_private = priv ? 1u : 0u;
+    process->saved_regs.eax = 0;
+}
+
+int process_wake_futex(process_t *caller, uint32_t addr, int count, int priv, int32_t result) {
+    int woken = 0;
+
+    if (!caller || !addr || count == 0) return 0;
+    if (count < 0) count = MAX_PROCESSES;
+
+    for (process_t *node = proc_list; node; node = node->next) {
+        if (node->state != PROC_WAITING || node->futex_wait_addr != addr) continue;
+        if (priv && node->page_dir != caller->page_dir) continue;
+
+        node->state = PROC_READY;
+        node->futex_wait_addr = 0;
+        node->futex_wait_deadline = 0;
+        node->futex_wait_result = result;
+        node->saved_regs.eax = (uint32_t)result;
+        woken++;
+        if (woken >= count) break;
+    }
+
+    return woken;
+}
+
+int process_requeue_futex(process_t *caller, uint32_t addr, int wake_count,
+                          int requeue_count, uint32_t new_addr, int priv) {
+    int moved = 0;
+    int woken = process_wake_futex(caller, addr, wake_count, priv, 0);
+
+    for (process_t *node = proc_list; node && moved < requeue_count; node = node->next) {
+        if (node->state != PROC_WAITING || node->futex_wait_addr != addr) continue;
+        if (priv && node->page_dir != caller->page_dir) continue;
+
+        node->futex_wait_addr = new_addr;
+        moved++;
+    }
+
+    return woken + moved;
+}
 process_t *process_first(void) { return proc_list; }
 process_t *process_next(process_t *p) { return p ? p->next : NULL; }
 
@@ -604,7 +780,8 @@ int32_t process_waitpid(int32_t pid, int *status, int options) {
     for (process_t *process = proc_list; process; ) {
         process_t *next = process->next;
 
-        if (current && process->parent_pid == current->pid &&
+        if (current && !(process->flags & PROC_FLAG_THREAD) &&
+            process->parent_pid == current->pid &&
             (pid <= 0 || (int32_t)process->pid == pid)) {
             found_child = 1;
             if (process->state == PROC_ZOMBIE) {
@@ -629,7 +806,7 @@ int32_t process_waitpid(int32_t pid, int *status, int options) {
 }
 
 uint32_t process_getpid(void) {
-    return proc_current ? proc_current->pid : 0;
+    return proc_current ? proc_current->thread_group_id : 0;
 }
 
 uint32_t process_get_uid(void) {

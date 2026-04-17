@@ -169,20 +169,31 @@ void scheduler_remove(uint32_t pid) {
 void scheduler_tick(void) {
     uint64_t min_vr;
     process_t *p;
+    uint32_t now;
 
     if (!run_queue) return;
 
     min_vr = cfs_min_vruntime();
+    now = timer_get_ticks();
 
     p = run_queue;
     do {
         if (p->state == PROC_SLEEPING &&
-            timer_get_ticks() >= p->sleep_until) {
+            now >= p->sleep_until) {
             p->state = PROC_READY;
             /* Clamp the waking process's vruntime to at least min_vruntime so
              * it does not immediately starve everyone else. */
             if (p->vruntime < min_vr)
                 p->vruntime = min_vr;
+        } else if (p->state == PROC_WAITING &&
+                   p->futex_wait_addr &&
+                   p->futex_wait_deadline &&
+                   now >= p->futex_wait_deadline) {
+            p->state = PROC_READY;
+            p->futex_wait_addr = 0;
+            p->futex_wait_deadline = 0;
+            p->futex_wait_result = -110;
+            p->saved_regs.eax = (uint32_t)-110;
         }
         p = p->sched_next;
     } while (p != run_queue);

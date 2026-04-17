@@ -67,6 +67,7 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_EPROTONOSUPPORT 93
 #define BLUEY_EOPNOTSUPP 95
 #define BLUEY_ECONNREFUSED 111
+#define BLUEY_ETIMEDOUT 110
 
 #define BLUEY_ENOMEM 12
 
@@ -84,8 +85,22 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_MAP_ANON    0x20
 
 #define BLUEY_CLONE_VM          0x00000100u
+#define BLUEY_CLONE_FS          0x00000200u
+#define BLUEY_CLONE_FILES       0x00000400u
+#define BLUEY_CLONE_SIGHAND     0x00000800u
+#define BLUEY_CLONE_THREAD      0x00010000u
+#define BLUEY_CLONE_SYSVSEM     0x00040000u
+#define BLUEY_CLONE_SETTLS      0x00080000u
+#define BLUEY_CLONE_PARENT_SETTID 0x00100000u
+#define BLUEY_CLONE_CHILD_CLEARTID 0x00200000u
+#define BLUEY_CLONE_DETACHED    0x00400000u
 #define BLUEY_CLONE_VFORK       0x00004000u
 #define BLUEY_CLONE_EXIT_SIGNAL 0x000000ffu
+
+#define BLUEY_FUTEX_WAIT        0
+#define BLUEY_FUTEX_WAKE        1
+#define BLUEY_FUTEX_REQUEUE     3
+#define BLUEY_FUTEX_PRIVATE     128
 
 static int syscall_is_kernel_mode(const registers_t *regs) {
     return regs && ((regs->cs & 0x3u) == 0);
@@ -93,6 +108,18 @@ static int syscall_is_kernel_mode(const registers_t *regs) {
 
 static int32_t sys_write(uint32_t fd, const char *buf, size_t len);
 static int32_t resolve_normalize_path(const char *path, char *out, size_t out_size);
+
+static int syscall_read_tls_base(process_t *process, uint32_t user_desc_ptr, uint32_t *base_out) {
+    uint32_t base;
+
+    if (!process || !user_desc_ptr || !base_out) return -BLUEY_EINVAL;
+    if (process_read_user_u32(process, user_desc_ptr + sizeof(uint32_t), &base) != 0) {
+        return -BLUEY_EFAULT;
+    }
+
+    *base_out = base;
+    return 0;
+}
 
 static int32_t syscall_map_vfs_fd_error(int vfs_err) {
     if (vfs_err == VFS_ERR_EMFILE) return -BLUEY_EMFILE;
@@ -290,15 +317,29 @@ static int32_t sys_vfork(const registers_t *regs) {
 }
 
 static int32_t sys_clone(const registers_t *regs) {
+    process_t *current;
+    process_t *child;
+    int32_t clone_error = -BLUEY_EAGAIN;
+    uint32_t child_stack;
+    uint32_t tls_base = 0;
     uint32_t flags;
     uint32_t exit_signal;
+    uint32_t supported_flags = BLUEY_CLONE_VM | BLUEY_CLONE_VFORK | BLUEY_CLONE_EXIT_SIGNAL |
+                               BLUEY_CLONE_FS | BLUEY_CLONE_FILES | BLUEY_CLONE_SIGHAND |
+                               BLUEY_CLONE_THREAD | BLUEY_CLONE_SYSVSEM | BLUEY_CLONE_SETTLS |
+                               BLUEY_CLONE_PARENT_SETTID | BLUEY_CLONE_CHILD_CLEARTID |
+                               BLUEY_CLONE_DETACHED;
 
     if (!regs) return -BLUEY_EPERM;
 
+    current = process_current();
+    if (!current || !(current->flags & PROC_FLAG_USER_MODE)) return -BLUEY_EPERM;
+
     flags = regs->ebx;
     exit_signal = flags & BLUEY_CLONE_EXIT_SIGNAL;
+    child_stack = regs->ecx;
 
-    if ((flags & ~(BLUEY_CLONE_VM | BLUEY_CLONE_VFORK | BLUEY_CLONE_EXIT_SIGNAL)) != 0u) {
+    if ((flags & ~supported_flags) != 0u) {
         kprintf("[SYS] clone unsupported flags=0x%x\n", flags);
         return -BLUEY_ENOSYS;
     }
@@ -316,8 +357,53 @@ static int32_t sys_clone(const registers_t *regs) {
         return sys_fork(regs);
     }
 
-    kprintf("[SYS] clone unsupported flags=0x%x stack=0x%x\n", flags, regs->ecx);
-    return -BLUEY_ENOSYS;
+    if ((flags & BLUEY_CLONE_THREAD) == 0u) {
+        kprintf("[SYS] clone currently only supports thread-style shared VM clones flags=0x%x\n", flags);
+        return -BLUEY_ENOSYS;
+    }
+
+    if ((flags & (BLUEY_CLONE_VM | BLUEY_CLONE_FS | BLUEY_CLONE_FILES |
+                  BLUEY_CLONE_SIGHAND | BLUEY_CLONE_THREAD |
+                  BLUEY_CLONE_SYSVSEM | BLUEY_CLONE_SETTLS |
+                  BLUEY_CLONE_PARENT_SETTID | BLUEY_CLONE_CHILD_CLEARTID))
+        != (BLUEY_CLONE_VM | BLUEY_CLONE_FS | BLUEY_CLONE_FILES |
+            BLUEY_CLONE_SIGHAND | BLUEY_CLONE_THREAD |
+            BLUEY_CLONE_SYSVSEM | BLUEY_CLONE_SETTLS |
+            BLUEY_CLONE_PARENT_SETTID | BLUEY_CLONE_CHILD_CLEARTID)) {
+        kprintf("[SYS] clone missing required thread flags=0x%x\n", flags);
+        return -BLUEY_EINVAL;
+    }
+
+    if (!child_stack) return -BLUEY_EINVAL;
+
+    child = process_clone_current(regs, child_stack, 1, &clone_error);
+    if (!child) return clone_error;
+
+    child->flags |= PROC_FLAG_THREAD | PROC_FLAG_SHARED_VM;
+    child->thread_group_id = current->thread_group_id;
+    child->parent_pid = current->parent_pid;
+
+    if (syscall_read_tls_base(current, regs->esi, &tls_base) != 0) {
+        process_mark_exited(child, 128 + SIGKILL);
+        return -BLUEY_EFAULT;
+    }
+
+    child->tls_base = tls_base;
+    child->saved_regs.gs = GDT_TLS_SEL;
+
+    if ((flags & BLUEY_CLONE_PARENT_SETTID) && regs->edx) {
+        if (process_write_user_u32(current, regs->edx, child->pid) != 0) {
+            process_mark_exited(child, 128 + SIGKILL);
+            return -BLUEY_EFAULT;
+        }
+    }
+
+    if ((flags & BLUEY_CLONE_CHILD_CLEARTID) && regs->edi) {
+        child->clear_child_tid = regs->edi;
+    }
+
+    scheduler_add(child);
+    return (int32_t)child->pid;
 }
 
 static int32_t sys_brk(uint32_t addr) {
@@ -2360,11 +2446,58 @@ static int32_t sys_exit_group(int code) {
     return 0;
 }
 
+static int32_t sys_futex(uint32_t *uaddr, int op, uint32_t val,
+                         const k_timespec_req_t *timeout,
+                         uint32_t *uaddr2, uint32_t val3) {
+    process_t *current = process_current();
+    uint32_t deadline = 0;
+    uint32_t current_val;
+    int priv = (op & BLUEY_FUTEX_PRIVATE) != 0;
+    int cmd = op & ~BLUEY_FUTEX_PRIVATE;
+
+    if (!current || !uaddr) return -BLUEY_EINVAL;
+
+    switch (cmd) {
+        case BLUEY_FUTEX_WAIT:
+            if (process_read_user_u32(current, (uint32_t)(uintptr_t)uaddr, &current_val) != 0) {
+                return -BLUEY_EFAULT;
+            }
+            if (current_val != val) return -BLUEY_EAGAIN;
+            if (timeout) {
+                uint32_t ms;
+                if (timeout->tv_sec > 4294967u) ms = 0xFFFFFFFFu;
+                else ms = timeout->tv_sec * 1000u + timeout->tv_nsec / 1000000u;
+                if (ms == 0) return -BLUEY_ETIMEDOUT;
+                deadline = timer_get_ticks() + ms;
+            }
+            process_set_futex_wait(current, (uint32_t)(uintptr_t)uaddr, deadline, priv);
+            return 0;
+
+        case BLUEY_FUTEX_WAKE:
+            return process_wake_futex(current, (uint32_t)(uintptr_t)uaddr, (int)val, priv, 0);
+
+        case BLUEY_FUTEX_REQUEUE:
+            if (!uaddr2) return -BLUEY_EINVAL;
+            return process_requeue_futex(current,
+                                         (uint32_t)(uintptr_t)uaddr,
+                                         (int)val,
+                                         (int)val3,
+                                         (uint32_t)(uintptr_t)uaddr2,
+                                         priv);
+
+        default:
+            return -BLUEY_ENOSYS;
+    }
+}
+
 /* ---- set_tid_address ---------------------------------------------------- */
 
 static int32_t sys_set_tid_address(void *tidptr) {
-    (void)tidptr; /* single-threaded: no thread pointer tracking needed */
-    return (int32_t)process_getpid();
+    process_t *process = process_current();
+
+    if (!process) return -BLUEY_EINVAL;
+    process->clear_child_tid = (uint32_t)(uintptr_t)tidptr;
+    return (int32_t)process->pid;
 }
 
 /* ---- set_robust_list --------------------------------------------------- */
@@ -3088,6 +3221,14 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_SET_TID_ADDRESS:
             ret = sys_set_tid_address((void*)regs->ebx);
+            break;
+        case SYS_FUTEX:
+            ret = sys_futex((uint32_t*)regs->ebx,
+                            (int)regs->ecx,
+                            regs->edx,
+                            (const k_timespec_req_t*)regs->esi,
+                            (uint32_t*)regs->edi,
+                            regs->ebp);
             break;
         case SYS_SET_ROBUST_LIST:
             ret = sys_set_robust_list((void*)regs->ebx, (size_t)regs->ecx);
