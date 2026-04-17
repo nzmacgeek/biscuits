@@ -1399,9 +1399,9 @@ static int32_t sys_select(int nfds,
 
         if (want_read) {
             int is_ready = 0;
-            if (fd == 0) is_ready = keyboard_available();
+            if (fd == 0) is_ready = tty_input_pending();
             else if (vfs_fd_is_devev(fd)) is_ready = devev_pending();
-            else if (vfs_fd_is_tty(fd)) is_ready = 1;
+            else if (vfs_fd_is_tty(fd)) is_ready = tty_input_pending();
             else if (vfs_fd_is_socket(fd)) is_ready = socket_is_readable(vfs_socket_id(fd));
             else if (fd >= 3 && vfs_fd_is_open(fd)) is_ready = 1;
 

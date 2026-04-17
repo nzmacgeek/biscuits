@@ -20,8 +20,14 @@ if [ ! -f "$DISK_IMAGE" ]; then
     exit 1
 fi
 
+QEMU_HEADLESS=${QEMU_HEADLESS:-0}
+
 echo "Starting BlueyOS in QEMU..."
-echo "  Memory: 1024MB | Boot: hard disk via GRUB | Display: GTK GUI | Serial: logged to $BUILD_DIR/qemu-serial.log"
+if [ "$QEMU_HEADLESS" = "1" ]; then
+    echo "  Memory: 1024MB | Boot: hard disk via GRUB | Display: headless | Serial: stdio"
+else
+    echo "  Memory: 1024MB | Boot: hard disk via GRUB | Display: GTK GUI | Serial: stdio"
+fi
 if [ -f "$LOG_DISK_IMAGE" ]; then
     echo "  Extra disk: $LOG_DISK_IMAGE (IDE index 1)"
 fi
@@ -31,13 +37,23 @@ QEMU_ARGS=(
     -drive "file=$DISK_IMAGE,format=raw,if=ide,index=0"
     -boot c
     -m 1024M
-    -display gtk
-    -netdev user,id=usernet -device ne2k_pci,netdev=usernet 
-    -vga std
-    -serial stdio
+    -netdev user,id=usernet -device ne2k_pci,netdev=usernet
     -no-reboot
     -no-shutdown
 )
+
+if [ "$QEMU_HEADLESS" = "1" ]; then
+    QEMU_ARGS+=(
+        -display none
+        -serial stdio
+    )
+else
+    QEMU_ARGS+=(
+        -display gtk
+        -vga std
+        -serial stdio
+    )
+fi
 
 if [ -f "$LOG_DISK_IMAGE" ]; then
     QEMU_ARGS+=( -drive "file=$LOG_DISK_IMAGE,format=raw,if=ide,index=1" )

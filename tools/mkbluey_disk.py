@@ -261,7 +261,7 @@ def write_partition_region(image: Path, offset_lba: int, partition_image: Path) 
         shutil.copyfileobj(part_fp, disk_fp)
 
 
-def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sectors: int, root_device: str, root_fstype: str, boot_extra_dir: str | None = None, init_kernel_path: str = "/sbin/claw") -> None:
+def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sectors: int, root_device: str, root_fstype: str, boot_extra_dir: str | None = None, init_kernel_path: str = "/sbin/claw", grub_default: int = 0) -> None:
     boot_size_bytes = boot_sectors * SECTOR_SIZE
     boot_img = image.with_suffix(".boot.tmp")
     boot_stage = image.parent / ".boot-stage"
@@ -329,7 +329,7 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sector
         "serial --unit=0 --speed=115200\n"
         "terminal_output --append serial\n"
         "set timeout=1\n"
-        "set default=0\n"
+        f"set default={grub_default}\n"
         "menuentry \"BlueyOS - Hard Disk Boot\" {\n"
         "    set gfxpayload=text\n"
         f"    multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
@@ -340,9 +340,9 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sector
         f"    multiboot /boot/blueyos.elf safe root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
         "    boot\n"
         "}\n"
-        "menuentry \"BlueyOS - Single User Bash\" {\n"
+        "menuentry \"BlueyOS - Single User (Claw)\" {\n"
         "    set gfxpayload=text\n"
-        f"    multiboot /boot/blueyos.elf safe root={root_device} rootfstype={root_fstype} init=/bin/bash\n"
+        f"    multiboot /boot/blueyos.elf safe root={root_device} rootfstype={root_fstype} init=/sbin/claw claw.single=1 claw.target=single-user\n"
         "    boot\n"
         "}\n"
     )
@@ -513,7 +513,12 @@ def limit_claw_login_services(root_extra: Path) -> None:
                 print(f"[DISK] Removed missing claw-basic.target dependency from {service_name}")
 
 
-def prepare_root_extra_dir(repo: Path, root_extra_dir: str | None, timezone_file: str | None) -> tuple[str | None, str | None]:
+def prepare_root_extra_dir(
+    repo: Path,
+    root_extra_dir: str | None,
+    timezone_file: str | None,
+    rescue_sh_path: str | None = None,
+) -> tuple[str | None, str | None]:
     if not root_extra_dir:
         return None, None
 
@@ -559,6 +564,14 @@ def prepare_root_extra_dir(repo: Path, root_extra_dir: str | None, timezone_file
         except FileExistsError:
             pass
 
+    if rescue_sh_path:
+        rescue_src = Path(rescue_sh_path)
+        if rescue_src.exists() and rescue_src.is_file():
+            rescue_dst = effective_root / "sbin" / "rescue_sh"
+            rescue_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(rescue_src, rescue_dst)
+            print(f"[DISK] Installed rescue shell at {rescue_dst.relative_to(effective_root)}")
+
     localtime_path = effective_root / "etc" / "localtime"
     if localtime_path.exists() or not timezone_file:
         return str(effective_root), str(cleanup_dir) if cleanup_dir else None
@@ -597,6 +610,10 @@ def main() -> int:
                         help="Kernel commandline init= path to embed in grub.cfg (default: /sbin/claw)")
     parser.add_argument("--timezone-file", default="/usr/share/zoneinfo/Australia/Brisbane",
                         help="Host tzfile to install as /etc/localtime when root-extra-dir lacks one")
+    parser.add_argument("--grub-default", type=int, default=0,
+                        help="GRUB default menu index (0=normal, 1=safe, 2=single-user)")
+    parser.add_argument("--rescue-sh", default=None,
+                        help="Optional rescue shell binary to install as /sbin/rescue_sh in root-extra-dir")
     parser.add_argument("--erase", action="store_true",
                         help="Wipe and recreate the full disk layout before populating partitions")
     args = parser.parse_args()
@@ -621,10 +638,18 @@ def main() -> int:
             print(f"[DISK] Using /bin/init from root-extra-dir: {init_path}")
     mkfs_tool = repo / args.mkfs_tool
     mkswap_tool = repo / args.mkswap_tool
+    rescue_sh_path = None
+    if args.rescue_sh:
+        rescue_sh_path = Path(args.rescue_sh)
+        if not rescue_sh_path.is_absolute():
+            rescue_sh_path = repo / rescue_sh_path
+        if not rescue_sh_path.exists():
+            raise SystemExit(f"missing rescue shell payload: {rescue_sh_path}")
     effective_root_extra_dir, cleanup_root_extra_dir = prepare_root_extra_dir(
         repo,
         getattr(args, 'root_extra_dir', None),
         getattr(args, 'timezone_file', None),
+        str(rescue_sh_path) if rescue_sh_path else None,
     )
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="ascii", newline="\n") as fstab_fp:
         fstab_fp.write("# BlueyOS mount table - Chilli keeps it organised\n")
@@ -703,7 +728,7 @@ def main() -> int:
         else:
             print(f"[DISK] Root partition using fallback size: {args.root_mb} MiB")
 
-        build_boot_partition(repo, image, kernel_path, boot_sectors, "/dev/disk0s2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'))
+        build_boot_partition(repo, image, kernel_path, boot_sectors, "/dev/disk0s2", "blueyfs", getattr(args, 'boot_extra_dir', None), getattr(args, 'init_kernel_path', '/sbin/claw'), getattr(args, 'grub_default', 0))
 
         mkfs_cmd = [str(mkfs_tool), "-F", "-L", args.root_label, "-o", str(root_start), "-n", str(root_sectors), "-I", str(init_path), "-T", fstab_name]
         if effective_root_extra_dir:

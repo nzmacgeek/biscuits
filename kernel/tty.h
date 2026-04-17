@@ -40,3 +40,6 @@ int  tty_set_pgrp(uint32_t pgid);
 void tty_get_termios(tty_termios_t *termios);
 void tty_set_termios(const tty_termios_t *termios);
 void tty_get_winsize(tty_winsize_t *winsize);
+
+/* Returns non-zero when terminal input is available (keyboard or serial). */
+int tty_input_pending(void);
