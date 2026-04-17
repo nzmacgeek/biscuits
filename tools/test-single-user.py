@@ -16,8 +16,6 @@ SERIAL_SOCK   = "/tmp/blueyos-test-serial.sock"
 BOOT_TIMEOUT  = 120   # seconds to wait for shell prompt
 CMD_TIMEOUT   = 15    # seconds to wait for command output
 
-GRUB_DEFAULT  = os.environ.get("GRUB_DEFAULT", "2")
-
 PROMPT        = b"sh-5.2#"
 ECHO_MARK     = b"__SHELL_ECHO_MARK__"
 OUTPUT_MARK   = b"__SHELL_OUTPUT_MARK__"
@@ -62,9 +60,21 @@ def main():
             sys.exit(1)
         time.sleep(0.1)
 
-    # Connect
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SERIAL_SOCK)
+    # Connect (socket path may exist before QEMU is accepting connections)
+    deadline = time.time() + 15
+    while True:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(SERIAL_SOCK)
+            break
+        except (ConnectionRefusedError, FileNotFoundError):
+            s.close()
+            if time.time() > deadline:
+                qemu.kill()
+                remove_sock()
+                print("ERROR: serial socket never accepted connections")
+                sys.exit(1)
+            time.sleep(0.1)
     s.setblocking(False)
     print("[*] Connected to serial socket")
 

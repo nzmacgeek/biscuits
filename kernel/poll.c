@@ -9,7 +9,7 @@
 #include "socket.h"
 #include "process.h"
 #include "timer.h"
-#include "../drivers/keyboard.h"
+#include "tty.h"
 #include "../fs/vfs.h"
 
 #define BLUEY_EAGAIN 11
@@ -26,8 +26,8 @@ static int16_t poll_check_fd(int32_t fd, int16_t events) {
 
     /* Standard streams */
     if (fd == 0) {
-        /* stdin — readable when the keyboard buffer has data */
-        if ((events & POLLIN) && keyboard_available()) ready |= POLLIN;
+        /* stdin — readable when tty input is pending */
+        if ((events & POLLIN) && tty_input_pending()) ready |= POLLIN;
         return ready;
     }
     if (fd == 1 || fd == 2) {
@@ -37,6 +37,12 @@ static int16_t poll_check_fd(int32_t fd, int16_t events) {
     }
 
     /* VFS / device fds */
+    if (vfs_fd_is_tty(fd)) {
+        if ((events & POLLIN) && tty_input_pending()) ready |= POLLIN;
+        if (events & POLLOUT) ready |= POLLOUT;
+        return ready;
+    }
+
     if (vfs_fd_is_devev(fd)) {
         if ((events & POLLIN) && devev_pending()) ready |= POLLIN;
         return ready;

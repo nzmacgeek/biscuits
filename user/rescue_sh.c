@@ -149,9 +149,10 @@ static void write_uint(uint32_t value) {
     write_str(&buf[pos]);
 }
 
-static void exit_now(int code) {
+static __attribute__((noreturn)) void exit_now(int code) {
     syscall1(SYS_EXIT, code);
-    for (;;) __asm__ volatile ("hlt");
+    for (;;) {
+    }
 }
 
 static int read_line(char *buf, size_t buf_len) {
