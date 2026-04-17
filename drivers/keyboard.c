@@ -64,7 +64,7 @@ static void keyboard_emit_cad_event(void) {
         .reserved = 0,
     };
     devev_push(&ev);
-    kprintf("[KBD]  Ctrl+Alt+Del detected - notifying PID 1 via device event\n");
+    kprintf("[KBD] Ctrl+Alt+Del detected - notifying PID 1 via device event\n");
 }
 
 static void kb_irq_handler(registers_t *regs) {
