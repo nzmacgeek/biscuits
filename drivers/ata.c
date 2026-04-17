@@ -9,6 +9,8 @@
 #include "../lib/stdio.h"
 #include "ata.h"
 
+static int ata_present = 0;
+
 // Wait for BSY to clear and DRQ to set (or error)
 static int ata_wait_ready(void) {
     uint8_t status;
@@ -68,9 +70,11 @@ int ata_identify(void) {
 
 int ata_init(void) {
     if (ata_identify() != 0) {
+        ata_present = 0;
         kprintf("[ATA]  No ATA device found (Jack forgot the disk!)\n");
         return -1;
     }
+    ata_present = 1;
     kprintf("%s\n", MSG_ATA_INIT);
     return 0;
 }
@@ -79,7 +83,7 @@ int ata_read_sector(uint32_t lba, uint8_t *buf) {
     if (ata_wait_ready() != 0) return -1;
 
     // LBA28: drive = 0xE0 | (LBA bits 24-27)
-    outb(ATA_PRIMARY_BASE + ATA_REG_DRIVE,    0xE0 | ((lba >> 24) & 0x0F));
+    outb(ATA_PRIMARY_BASE + ATA_REG_DRIVE,    ATA_DRIVE_MASTER_LBA | ((lba >> 24) & 0x0F));
     outb(ATA_PRIMARY_BASE + ATA_REG_SECCOUNT, 1);
     outb(ATA_PRIMARY_BASE + ATA_REG_LBA_LO,   (uint8_t)(lba));
     outb(ATA_PRIMARY_BASE + ATA_REG_LBA_MID,  (uint8_t)(lba >> 8));
@@ -98,7 +102,7 @@ int ata_read_sector(uint32_t lba, uint8_t *buf) {
 int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     if (ata_wait_ready() != 0) return -1;
 
-    outb(ATA_PRIMARY_BASE + ATA_REG_DRIVE,    0xE0 | ((lba >> 24) & 0x0F));
+    outb(ATA_PRIMARY_BASE + ATA_REG_DRIVE,    ATA_DRIVE_MASTER_LBA | ((lba >> 24) & 0x0F));
     outb(ATA_PRIMARY_BASE + ATA_REG_SECCOUNT, 1);
     outb(ATA_PRIMARY_BASE + ATA_REG_LBA_LO,   (uint8_t)(lba));
     outb(ATA_PRIMARY_BASE + ATA_REG_LBA_MID,  (uint8_t)(lba >> 8));
@@ -113,8 +117,18 @@ int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     for (int i = 0; i < 256; i++) outw(ATA_PRIMARY_BASE + ATA_REG_DATA, w[i]);
 
     // Flush write cache
-    outb(ATA_PRIMARY_BASE + ATA_REG_CMD, 0xE7);
+    outb(ATA_PRIMARY_BASE + ATA_REG_CMD, ATA_CMD_FLUSH_CACHE);
     ata_delay();
     if (ata_wait_ready() != 0) return -1;
     return 0;
+}
+
+int ata_flush_cache(void) {
+    if (!ata_present) return 0;
+    if (ata_wait_ready() != 0) return -1;
+
+    outb(ATA_PRIMARY_BASE + ATA_REG_DRIVE, ATA_DRIVE_MASTER_LBA);
+    outb(ATA_PRIMARY_BASE + ATA_REG_CMD, ATA_CMD_FLUSH_CACHE);
+    ata_delay();
+    return ata_wait_ready();
 }

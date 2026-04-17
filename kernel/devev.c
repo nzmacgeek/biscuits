@@ -14,6 +14,16 @@ static devev_event_t devev_ring[DEVEV_RING_SIZE];
 static volatile uint32_t devev_head = 0;  /* write index */
 static volatile uint32_t devev_tail = 0;  /* read  index */
 
+static uint32_t devev_irq_save(void) {
+    uint32_t flags;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static void devev_irq_restore(uint32_t flags) {
+    __asm__ volatile("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
 void devev_init(void) {
     devev_head = 0;
     devev_tail = 0;
@@ -22,10 +32,12 @@ void devev_init(void) {
 }
 
 void devev_push(const devev_event_t *ev) {
+    uint32_t flags;
     uint32_t next;
 
     if (!ev) return;
 
+    flags = devev_irq_save();
     next = (devev_head + 1u) & (DEVEV_RING_SIZE - 1u);
     if (next == devev_tail) {
         /* Ring is full — drop the oldest event to make room */
@@ -33,17 +45,30 @@ void devev_push(const devev_event_t *ev) {
     }
     devev_ring[devev_head] = *ev;
     devev_head = next;
+    devev_irq_restore(flags);
 }
 
 int devev_pending(void) {
-    return devev_head != devev_tail;
+    uint32_t flags = devev_irq_save();
+    int pending = (devev_head != devev_tail);
+    devev_irq_restore(flags);
+    return pending;
 }
 
 int devev_read(devev_event_t *ev) {
-    if (!ev || devev_head == devev_tail) return 0;
+    uint32_t flags;
+
+    if (!ev) return 0;
+
+    flags = devev_irq_save();
+    if (devev_head == devev_tail) {
+        devev_irq_restore(flags);
+        return 0;
+    }
 
     *ev = devev_ring[devev_tail];
     devev_tail = (devev_tail + 1u) & (DEVEV_RING_SIZE - 1u);
+    devev_irq_restore(flags);
     return 1;
 }
 

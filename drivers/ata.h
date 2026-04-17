@@ -32,6 +32,10 @@
 #define ATA_CMD_READ_PIO   0x20
 #define ATA_CMD_WRITE_PIO  0x30
 #define ATA_CMD_IDENTIFY   0xEC
+#define ATA_CMD_FLUSH_CACHE 0xE7
+
+// Drive/head register bits (LBA mode, master device)
+#define ATA_DRIVE_MASTER_LBA 0xE0
 
 #define ATA_SECTOR_SIZE    512
 
@@ -39,3 +43,4 @@ int  ata_init(void);
 int  ata_read_sector(uint32_t lba, uint8_t *buf);
 int  ata_write_sector(uint32_t lba, const uint8_t *buf);
 int  ata_identify(void);
+int  ata_flush_cache(void);

@@ -12,6 +12,7 @@
 #define SYS_WRITE         1
 #define SYS_OPEN          2
 #define SYS_CLOSE         3
+#define SYS_SYNC          36
 #define SYS_STAT          4
 #define SYS_FSTAT         5
 #define SYS_FSTAT64       197

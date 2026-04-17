@@ -145,6 +145,7 @@ When BlueyOS boots successfully, you should see the following output in order:
 
   BlueyOS - It's a big day!
   BlueyOS - Safe Mode (No Rules, No Fun)
+  BlueyOS - Single User Bash
   Reboot
 ```
 

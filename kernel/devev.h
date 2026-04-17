@@ -13,6 +13,7 @@
 #define DEV_EV_UMOUNT      3   // a filesystem was unmounted
 #define DEV_EV_KEY         4   // a key was pressed (supplementary)
 #define DEV_EV_DEVICE_ADD  5   // a device driver came online
+#define DEV_EV_CTRL_ALT_DEL 6  // Ctrl+Alt+Del keyboard chord was detected
 
 // Fixed size: 16 bytes per event so the ring can be stride-accessed
 typedef struct {

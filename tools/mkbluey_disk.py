@@ -340,6 +340,11 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sector
         f"    multiboot /boot/blueyos.elf safe root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
         "    boot\n"
         "}\n"
+        "menuentry \"BlueyOS - Single User Bash\" {\n"
+        "    set gfxpayload=text\n"
+        f"    multiboot /boot/blueyos.elf safe root={root_device} rootfstype={root_fstype} init=/bin/bash\n"
+        "    boot\n"
+        "}\n"
     )
     (boot_stage / "boot" / "grub" / "grub.cfg").write_text(disk_grub_cfg, encoding="ascii")
 

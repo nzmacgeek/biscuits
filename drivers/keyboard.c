@@ -10,9 +10,14 @@
 #include "keyboard.h"
 #include "../kernel/irq.h"
 #include "../kernel/tty.h"
+#include "../kernel/devev.h"
 
 #define KB_DATA_PORT  0x60
 #define KB_BUF_SIZE   256  // must be power of 2
+#define KB_EXTENDED_PREFIX 0xE0
+#define KB_SC_LEFT_CTRL  0x1D
+#define KB_SC_LEFT_ALT   0x38
+#define KB_SC_DELETE     0x53
 
 // Ring buffer - bounds hard-enforced
 static volatile char kb_buf[KB_BUF_SIZE];
@@ -49,26 +54,84 @@ static const char scancode_map_upper[128] = {
 
 static int shift_held  = 0;
 static int caps_lock   = 0;
+static int ctrl_left_held  = 0;
+static int ctrl_right_held = 0;
+static int alt_left_held   = 0;
+static int alt_right_held  = 0;
+static int e0_prefix   = 0;
+static int cad_latched = 0;
+
+static void keyboard_emit_cad_event(void) {
+    devev_event_t ev = {
+        .type = DEV_EV_CTRL_ALT_DEL,
+        ._pad = {0, 0, 0},
+        .pid = 0,
+        .code = 0,
+        .reserved = 0,
+    };
+    devev_push(&ev);
+    kprintf("[KBD] Ctrl+Alt+Del detected - notifying PID 1 via device event\n");
+}
 
 static void kb_irq_handler(registers_t *regs) {
     (void)regs;
     uint8_t sc = inb(KB_DATA_PORT);
 
+    if (sc == KB_EXTENDED_PREFIX) {
+        e0_prefix = 1;
+        return;
+    }
+
+    int release = (sc & 0x80) != 0;
+    uint8_t code = sc & 0x7F;
+    int extended = e0_prefix;
+    e0_prefix = 0;
+
     // Key release (bit 7 set)
-    if (sc & 0x80) {
-        uint8_t code = sc & 0x7F;
+    if (release) {
         if (code == 0x2A || code == 0x36) shift_held = 0;  // left/right shift up
+        if (code == KB_SC_LEFT_CTRL) {
+            if (extended) ctrl_right_held = 0;
+            else ctrl_left_held = 0;
+            cad_latched = 0;
+        }
+        if (code == KB_SC_LEFT_ALT) {
+            if (extended) alt_right_held = 0;
+            else alt_left_held = 0;
+            cad_latched = 0;
+        }
+        if (extended && code == KB_SC_DELETE) cad_latched = 0; // delete released
         return;
     }
 
     // Key press
-    if (sc == 0x2A || sc == 0x36) { shift_held = 1; return; }  // shift down
-    if (sc == 0x3A) { caps_lock ^= 1; return; }                 // caps lock toggle
+    if (code == 0x2A || code == 0x36) { shift_held = 1; return; }  // shift down
+    if (code == KB_SC_LEFT_CTRL) {
+        if (extended) ctrl_right_held = 1;
+        else ctrl_left_held = 1;
+        return;
+    }
+    if (code == KB_SC_LEFT_ALT) {
+        if (extended) alt_right_held = 1;
+        else alt_left_held = 1;
+        return;
+    }
+    if (!extended && code == 0x3A) { caps_lock ^= 1; return; }     // caps lock toggle
 
-    if (sc >= 128) return;
+    if (extended && code == KB_SC_DELETE) {
+        int ctrl_held = ctrl_left_held || ctrl_right_held;
+        int alt_held = alt_left_held || alt_right_held;
+        if (ctrl_held && alt_held && !cad_latched) {
+            keyboard_emit_cad_event();
+            cad_latched = 1;
+        }
+        return;
+    }
+
+    if (extended || code >= 128) return;
 
     int upper = shift_held ^ caps_lock;
-    char c = upper ? scancode_map_upper[sc] : scancode_map_lower[sc];
+    char c = upper ? scancode_map_upper[code] : scancode_map_lower[code];
     if (!c) return;
 
     // Write to ring buffer with bounds check - drop if full
@@ -83,6 +146,14 @@ static void kb_irq_handler(registers_t *regs) {
 
 void keyboard_init(void) {
     kb_head = kb_tail = 0;
+    shift_held = 0;
+    caps_lock = 0;
+    ctrl_left_held = 0;
+    ctrl_right_held = 0;
+    alt_left_held = 0;
+    alt_right_held = 0;
+    e0_prefix = 0;
+    cad_latched = 0;
     irq_install_handler(1, kb_irq_handler);
     kprintf("%s\n", MSG_KB_INIT);
 }
