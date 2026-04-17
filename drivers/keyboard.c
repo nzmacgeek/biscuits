@@ -54,8 +54,10 @@ static const char scancode_map_upper[128] = {
 
 static int shift_held  = 0;
 static int caps_lock   = 0;
-static int ctrl_held   = 0;
-static int alt_held    = 0;
+static int ctrl_left_held  = 0;
+static int ctrl_right_held = 0;
+static int alt_left_held   = 0;
+static int alt_right_held  = 0;
 static int e0_prefix   = 0;
 static int cad_latched = 0;
 
@@ -88,12 +90,14 @@ static void kb_irq_handler(registers_t *regs) {
     // Key release (bit 7 set)
     if (release) {
         if (code == 0x2A || code == 0x36) shift_held = 0;  // left/right shift up
-        if (code == KB_SC_LEFT_CTRL) {                      // left/right ctrl up
-            ctrl_held = 0;
+        if (code == KB_SC_LEFT_CTRL) {
+            if (extended) ctrl_right_held = 0;
+            else ctrl_left_held = 0;
             cad_latched = 0;
         }
-        if (code == KB_SC_LEFT_ALT) {                       // left/right alt up
-            alt_held = 0;
+        if (code == KB_SC_LEFT_ALT) {
+            if (extended) alt_right_held = 0;
+            else alt_left_held = 0;
             cad_latched = 0;
         }
         if (extended && code == KB_SC_DELETE) cad_latched = 0; // delete released
@@ -102,11 +106,21 @@ static void kb_irq_handler(registers_t *regs) {
 
     // Key press
     if (code == 0x2A || code == 0x36) { shift_held = 1; return; }  // shift down
-    if (code == KB_SC_LEFT_CTRL) { ctrl_held = 1; return; }        // ctrl down
-    if (code == KB_SC_LEFT_ALT) { alt_held = 1; return; }          // alt down
+    if (code == KB_SC_LEFT_CTRL) {
+        if (extended) ctrl_right_held = 1;
+        else ctrl_left_held = 1;
+        return;
+    }
+    if (code == KB_SC_LEFT_ALT) {
+        if (extended) alt_right_held = 1;
+        else alt_left_held = 1;
+        return;
+    }
     if (!extended && code == 0x3A) { caps_lock ^= 1; return; }     // caps lock toggle
 
     if (extended && code == KB_SC_DELETE) {
+        int ctrl_held = ctrl_left_held || ctrl_right_held;
+        int alt_held = alt_left_held || alt_right_held;
         if (ctrl_held && alt_held && !cad_latched) {
             keyboard_emit_cad_event();
             cad_latched = 1;
@@ -134,8 +148,10 @@ void keyboard_init(void) {
     kb_head = kb_tail = 0;
     shift_held = 0;
     caps_lock = 0;
-    ctrl_held = 0;
-    alt_held = 0;
+    ctrl_left_held = 0;
+    ctrl_right_held = 0;
+    alt_left_held = 0;
+    alt_right_held = 0;
     e0_prefix = 0;
     cad_latched = 0;
     irq_install_handler(1, kb_irq_handler);

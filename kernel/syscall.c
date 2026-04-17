@@ -2717,7 +2717,11 @@ static int32_t sys_getpgrp(void) {
 /* ---- Mount / umount ---------------------------------------------------- */
 
 static int32_t sys_sync(void) {
+    process_t *caller = process_current();
     int ata_ret;
+
+    if (!caller) return -BLUEY_EPERM;
+    if (caller->euid != 0 && caller->pid != 1) return -BLUEY_EPERM;
 
     /* tty/syslog flush APIs are best-effort and currently void-returning. */
     tty_flush();
