@@ -9,6 +9,8 @@
 typedef struct {
     char     name[32];
     uint32_t entry;
+    uint32_t program_entry;
+    uint32_t interp_base;
     uint32_t image_end;
     uint32_t stack_base;
     uint32_t stack_top;
@@ -16,12 +18,24 @@ typedef struct {
     uint32_t page_dir;
 } elf_image_t;
 
+typedef struct {
+    uint32_t phdr;
+    uint32_t phent;
+    uint32_t phnum;
+    uint32_t entry;
+    uint32_t base;
+    uint32_t secure;
+} elf_auxv_info_t;
+
 // ELF32 magic and constants
 #define ELF_MAGIC    0x464C457F   // 0x7F 'E' 'L' 'F' (little-endian uint32)
 #define ET_EXEC      2            // executable file
 #define ET_DYN       3            // shared object
 #define EM_386       3            // Intel 80386
 #define PT_LOAD      1            // loadable segment
+#define PT_DYNAMIC   2            // dynamic linking information
+#define PT_INTERP    3            // program interpreter path
+#define PT_PHDR      6            // program header table
 #define PF_X         0x1          // segment executable
 #define PF_W         0x2          // segment writable
 #define PF_R         0x4          // segment readable
@@ -62,7 +76,8 @@ int elf_validate(const uint8_t *data, size_t len, const char *name);
 int elf_build_initial_stack(uint32_t page_dir,
                             const char *const argv[], const char *const envp[],
                             uint32_t *stack_base_out, uint32_t *stack_top_out,
-                            uint32_t *stack_pointer_out);
+                            uint32_t *stack_pointer_out,
+                            const elf_auxv_info_t *auxv_info);
 int elf_load_image(const char *path, const char *const argv[], const char *const envp[],
                    elf_image_t *image_out);
 process_t *elf_exec(const char *path, uint32_t uid);

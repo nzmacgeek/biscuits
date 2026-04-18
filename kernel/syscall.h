@@ -35,6 +35,7 @@
 #define SYS_GETGID        47
 #define SYS_MMAP          90
 #define SYS_MMAP2         192
+#define SYS_OPENAT        295
 #define SYS_MUNMAP        91
 #define SYS_MPROTECT      92
 #define SYS_KILL          62

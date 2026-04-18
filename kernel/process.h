@@ -90,6 +90,7 @@ typedef struct process {
 #define PROC_FLAG_VFORK_SHARED_VM 0x00000004u
 #define PROC_FLAG_SHARED_VM 0x00000008u
 #define PROC_FLAG_THREAD    0x00000010u
+#define PROC_FLAG_LINUX_ABI 0x00000020u
 
 void       process_init(void);
 process_t *process_create(const char *name, void (*entry)(void), uint32_t uid, uint32_t gid);

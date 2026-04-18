@@ -14,10 +14,36 @@
 
 #define ELF_READ_CHUNK_SIZE   512u
 #define ELF_MAX_IMAGE_SIZE    (1024u * 1024u)
+#define ELF_INTERP_BASE       0x20000000u
 #define ELF_USER_STACK_BASE   0x70000000u
 #define ELF_USER_STACK_SIZE   (8u * 1024u * 1024u)   /* 8 MiB soft limit, matching Linux default */
 #define ELF_USER_STACK_PREFAULT_PAGES 4u
 #define ELF_USER_STACK_STRIDE 0x00A00000u             /* 10 MiB between process stacks */
+
+#define AT_NULL    0u
+#define AT_PHDR    3u
+#define AT_PHENT   4u
+#define AT_PHNUM   5u
+#define AT_PAGESZ  6u
+#define AT_BASE    7u
+#define AT_ENTRY   9u
+#define AT_SECURE  23u
+#define AT_RANDOM  25u
+
+#define ELF_INTERP_PATH_MAX 128u
+
+typedef struct {
+    elf32_ehdr_t hdr;
+    elf32_phdr_t *phdrs;
+    uint32_t phdr_addr;
+    char interp_path[ELF_INTERP_PATH_MAX];
+    int has_interp;
+} elf_metadata_t;
+
+typedef struct {
+    uint32_t type;
+    uint32_t value;
+} elf_aux_entry_t;
 
 static uint32_t elf_next_stack_base = ELF_USER_STACK_BASE;
 
@@ -90,6 +116,112 @@ static int elf_read_file(const char *path, uint8_t **data_out, size_t *len_out) 
     vfs_close(fd);
     *data_out = buffer;
     *len_out = length;
+    return 0;
+}
+
+static void elf_free_metadata(elf_metadata_t *meta) {
+    if (!meta) return;
+    if (meta->phdrs) kheap_free(meta->phdrs);
+    memset(meta, 0, sizeof(*meta));
+}
+
+static int elf_validate_header(const elf32_ehdr_t *hdr, const char *name, int allow_dyn) {
+    const char *n = (name && name[0]) ? name : "(unknown)";
+
+    if (!hdr) return -1;
+
+    if (hdr->e_ident[0] != 0x7F ||
+        hdr->e_ident[1] != 'E'  ||
+        hdr->e_ident[2] != 'L'  ||
+        hdr->e_ident[3] != 'F') {
+        kprintf("[ELF] Invalid magic - not an ELF: %s\n", n);
+        return -1;
+    }
+    if (hdr->e_ident[4] != 1) {
+        kprintf("[ELF] Not a 32-bit ELF: %s\n", n);
+        return -1;
+    }
+    if (hdr->e_type != ET_EXEC && (!allow_dyn || hdr->e_type != ET_DYN)) {
+        kprintf("[ELF] Unsupported ELF type=%d: %s\n", hdr->e_type, n);
+        return -1;
+    }
+    if (hdr->e_machine != EM_386) {
+        kprintf("[ELF] Not an x86 ELF (machine=%d): %s\n", hdr->e_machine, n);
+        return -1;
+    }
+    return 0;
+}
+
+static int elf_read_metadata_fd(int fd, size_t file_len, const char *name,
+                                int allow_dyn, elf_metadata_t *meta_out) {
+    size_t ph_size;
+    int found_phdr = 0;
+
+    if (!meta_out) return -1;
+    memset(meta_out, 0, sizeof(*meta_out));
+
+    if (vfs_read_at(fd, (uint8_t*)&meta_out->hdr, sizeof(meta_out->hdr), 0) != (int)sizeof(meta_out->hdr)) {
+        kprintf("[ELF] Failed to read ELF header\n");
+        return -1;
+    }
+
+    if (elf_validate_header(&meta_out->hdr, name, allow_dyn) != 0) return -1;
+
+    ph_size = (size_t)meta_out->hdr.e_phnum * meta_out->hdr.e_phentsize;
+    if (ph_size == 0) {
+        kprintf("[ELF] No program headers\n");
+        return -1;
+    }
+
+    meta_out->phdrs = (elf32_phdr_t*)kheap_alloc(ph_size, 0);
+    if (!meta_out->phdrs) {
+        kprintf("[ELF] Failed to allocate program header buffer\n");
+        return -1;
+    }
+    if (vfs_read_at(fd, (uint8_t*)meta_out->phdrs, ph_size, meta_out->hdr.e_phoff) != (int)ph_size) {
+        kprintf("[ELF] Failed to read program headers\n");
+        elf_free_metadata(meta_out);
+        return -1;
+    }
+
+    for (uint16_t i = 0; i < meta_out->hdr.e_phnum; i++) {
+        elf32_phdr_t *ph = &meta_out->phdrs[i];
+
+        if (ph->p_type == PT_PHDR) {
+            meta_out->phdr_addr = ph->p_vaddr;
+            found_phdr = 1;
+        } else if (ph->p_type == PT_INTERP) {
+            size_t copy_len;
+
+            if (ph->p_offset + ph->p_filesz > file_len || ph->p_filesz == 0) {
+                kprintf("[ELF] PT_INTERP extends beyond file: %s\n", name ? name : "(unknown)");
+                elf_free_metadata(meta_out);
+                return -1;
+            }
+
+            copy_len = ph->p_filesz;
+            if (copy_len >= sizeof(meta_out->interp_path)) copy_len = sizeof(meta_out->interp_path) - 1u;
+            if (vfs_read_at(fd, (uint8_t*)meta_out->interp_path, copy_len, ph->p_offset) != (int)copy_len) {
+                kprintf("[ELF] Failed to read PT_INTERP for %s\n", name ? name : "(unknown)");
+                elf_free_metadata(meta_out);
+                return -1;
+            }
+            meta_out->interp_path[copy_len] = '\0';
+            meta_out->has_interp = 1;
+        }
+    }
+
+    if (!found_phdr) {
+        for (uint16_t i = 0; i < meta_out->hdr.e_phnum; i++) {
+            elf32_phdr_t *ph = &meta_out->phdrs[i];
+            if (ph->p_type != PT_LOAD) continue;
+            if (meta_out->hdr.e_phoff < ph->p_offset) continue;
+            if (meta_out->hdr.e_phoff >= ph->p_offset + ph->p_filesz) continue;
+            meta_out->phdr_addr = ph->p_vaddr + (meta_out->hdr.e_phoff - ph->p_offset);
+            break;
+        }
+    }
+
     return 0;
 }
 
@@ -171,37 +303,11 @@ static int elf_copy_string(char **stack_ptr, uint32_t stack_base, const char *va
 }
 
 int elf_validate(const uint8_t *data, size_t len, const char *name) {
-    const char *n = (name && name[0]) ? name : "(unknown)";
     if (len < sizeof(elf32_ehdr_t)) {
-        kprintf("[ELF] Too small to be an ELF file: %s\n", n);
+        kprintf("[ELF] Too small to be an ELF file: %s\n", (name && name[0]) ? name : "(unknown)");
         return -1;
     }
-    const elf32_ehdr_t *hdr = (const elf32_ehdr_t*)data;
-
-    // Check magic: 0x7F 'E' 'L' 'F'
-    if (hdr->e_ident[0] != 0x7F ||
-        hdr->e_ident[1] != 'E'  ||
-        hdr->e_ident[2] != 'L'  ||
-        hdr->e_ident[3] != 'F') {
-        kprintf("[ELF] Invalid magic - not an ELF: %s\n", n);
-        return -1;
-    }
-    // 32-bit ELF only (class = 1)
-    if (hdr->e_ident[4] != 1) {
-        kprintf("[ELF] Not a 32-bit ELF: %s\n", n);
-        return -1;
-    }
-    // Must be executable
-    if (hdr->e_type != ET_EXEC) {
-        kprintf("[ELF] Not an executable ELF (type=%d): %s\n", hdr->e_type, n);
-        return -1;
-    }
-    // Must be x86
-    if (hdr->e_machine != EM_386) {
-        kprintf("[ELF] Not an x86 ELF (machine=%d): %s\n", hdr->e_machine, n);
-        return -1;
-    }
-    return 0;
+    return elf_validate_header((const elf32_ehdr_t*)data, name, 0);
 }
 
 int elf_load(const uint8_t *data, size_t len, uint32_t *entry_out) {
@@ -271,7 +377,8 @@ int elf_load(const uint8_t *data, size_t len, uint32_t *entry_out) {
 int elf_build_initial_stack(uint32_t page_dir,
                             const char *const argv[], const char *const envp[],
                             uint32_t *stack_base_out, uint32_t *stack_top_out,
-                            uint32_t *stack_pointer_out) {
+                            uint32_t *stack_pointer_out,
+                            const elf_auxv_info_t *auxv_info) {
     size_t argc = elf_vector_count(argv);
     size_t envc = elf_vector_count(envp);
     uint32_t stack_base = elf_alloc_stack_region();
@@ -280,6 +387,10 @@ int elf_build_initial_stack(uint32_t page_dir,
     uint32_t *arg_ptrs = NULL;
     uint32_t *env_ptrs = NULL;
     uint32_t old_page_dir = paging_current_directory();
+    elf_aux_entry_t aux_entries[8];
+    size_t aux_count = 0;
+    uint32_t random_addr = 0;
+    uint32_t execfn_addr = 0;
 
     if (elf_map_stack_pages(page_dir, stack_base, ELF_USER_STACK_SIZE) != 0) return -1;
     if (syslog_get_verbose() >= VERBOSE_DEBUG)
@@ -320,18 +431,43 @@ int elf_build_initial_stack(uint32_t page_dir,
         }
     }
 
+    stack_ptr -= 16u;
+    if ((uint32_t)(uintptr_t)stack_ptr < stack_base) {
+        paging_switch_directory(old_page_dir);
+        if (env_ptrs) kheap_free(env_ptrs);
+        if (arg_ptrs) kheap_free(arg_ptrs);
+        return -1;
+    }
+    memset(stack_ptr, 0, 16u);
+    random_addr = (uint32_t)(uintptr_t)stack_ptr;
+
     stack_ptr = (char*)((uint32_t)(uintptr_t)stack_ptr & ~0x3u);
 
-    /* Push a minimal Linux-ABI auxvec: {AT_PAGESZ, 4096} then {AT_NULL, 0}.
-     * musl's __init_libc scans the raw auxvec sequentially and stops at the
-     * first AT_NULL entry, then builds a local indexed table.  We push from
-     * high-addr to low-addr; the auxvec FIRST entry lands at the higher addr. */
-    /* AT_NULL terminator (innermost push = lowest addr = last read) */
-    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = 0; /* AT_NULL value */
-    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = 0; /* AT_NULL type  */
-    /* AT_PAGESZ = 6, value = 4096 */
-    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = PAGE_SIZE; /* AT_PAGESZ value */
-    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = 6u;        /* AT_PAGESZ type  */
+    if (argc && arg_ptrs) execfn_addr = arg_ptrs[0];
+
+    aux_entries[aux_count++] = (elf_aux_entry_t){ AT_PAGESZ, PAGE_SIZE };
+    aux_entries[aux_count++] = (elf_aux_entry_t){ AT_RANDOM, random_addr };
+    if (auxv_info) {
+        if (auxv_info->phdr)  aux_entries[aux_count++] = (elf_aux_entry_t){ AT_PHDR,  auxv_info->phdr };
+        if (auxv_info->phent) aux_entries[aux_count++] = (elf_aux_entry_t){ AT_PHENT, auxv_info->phent };
+        if (auxv_info->phnum) aux_entries[aux_count++] = (elf_aux_entry_t){ AT_PHNUM, auxv_info->phnum };
+        if (auxv_info->entry) aux_entries[aux_count++] = (elf_aux_entry_t){ AT_ENTRY, auxv_info->entry };
+        if (auxv_info->base)  aux_entries[aux_count++] = (elf_aux_entry_t){ AT_BASE,  auxv_info->base };
+    }
+    if (execfn_addr && aux_count < (sizeof(aux_entries) / sizeof(aux_entries[0]))) {
+        /* Reuse AT_SECURE slot only when no secure-mode flag needs to be exposed. */
+        aux_entries[aux_count++] = (elf_aux_entry_t){ 31u, execfn_addr }; /* AT_EXECFN */
+    }
+
+    /* AT_NULL terminator (innermost push = lowest addr = last read). */
+    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = 0;
+    stack_ptr -= sizeof(uint32_t); *(uint32_t*)stack_ptr = AT_NULL;
+    for (size_t index = aux_count; index > 0; index--) {
+        stack_ptr -= sizeof(uint32_t);
+        *(uint32_t*)stack_ptr = aux_entries[index - 1].value;
+        stack_ptr -= sizeof(uint32_t);
+        *(uint32_t*)stack_ptr = aux_entries[index - 1].type;
+    }
 
     stack_ptr -= sizeof(uint32_t);
     *(uint32_t*)stack_ptr = 0;
@@ -439,75 +575,48 @@ static int elf_load_into_address_space(uint32_t page_dir,
     return 0;
 }
 
-int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_len,
-                                       uint32_t *entry_out, uint32_t *image_end_out,
-                                       const char *name) {
+static int elf_stream_load_metadata_into_address_space(uint32_t page_dir, int fd, size_t file_len,
+                                                       const elf_metadata_t *meta, uint32_t load_bias,
+                                                       uint32_t *entry_out, uint32_t *image_end_out) {
     uint32_t old_page_dir = paging_current_directory();
-    elf32_ehdr_t hdr;
-    elf32_phdr_t *phdrs = NULL;
     uint32_t loaded = 0;
     uint32_t image_end = 0;
-    size_t ph_size;
+    const elf32_ehdr_t *hdr;
 
-    /* Read ELF header */
-    if (vfs_read_at(fd, (uint8_t*)&hdr, sizeof(hdr), 0) != (int)sizeof(hdr)) {
-        kprintf("[ELF] Failed to read ELF header\n");
-        return -1;
-    }
-
-    if (elf_validate((const uint8_t*)&hdr, sizeof(hdr), name) != 0) return -1;
-
-    /* Read program headers */
-    ph_size = (size_t)hdr.e_phnum * hdr.e_phentsize;
-    if (ph_size == 0) {
-        kprintf("[ELF] No program headers\n");
-        return -1;
-    }
-
-    phdrs = (elf32_phdr_t*)kheap_alloc(ph_size, 0);
-    if (!phdrs) {
-        kprintf("[ELF] Failed to allocate program header buffer\n");
-        return -1;
-    }
-    if (vfs_read_at(fd, (uint8_t*)phdrs, ph_size, hdr.e_phoff) != (int)ph_size) {
-        kprintf("[ELF] Failed to read program headers\n");
-        kheap_free(phdrs);
-        return -1;
-    }
+    if (!meta || !meta->phdrs) return -1;
+    hdr = &meta->hdr;
 
     paging_switch_directory(page_dir);
 
-    for (uint16_t i = 0; i < hdr.e_phnum; i++) {
-        elf32_phdr_t *ph = &phdrs[i];
+    for (uint16_t i = 0; i < hdr->e_phnum; i++) {
+        const elf32_phdr_t *ph = &meta->phdrs[i];
         if (ph->p_type != PT_LOAD) continue;
-        if (ph->p_filesz == 0) continue;
+        if (ph->p_memsz == 0) continue;
 
         if (ph->p_offset + ph->p_filesz > file_len) {
             kprintf("[ELF] Segment %d extends beyond file!\n", i);
             paging_switch_directory(old_page_dir);
-            kheap_free(phdrs);
             return -1;
         }
 
-        if (ph->p_vaddr < 0x1000) {
+        if (load_bias == 0 && ph->p_vaddr < 0x1000) {
             kprintf("[ELF] Segment %d tries to load at NULL page - denied!\n", i);
             paging_switch_directory(old_page_dir);
-            kheap_free(phdrs);
             return -1;
         }
 
         uint32_t flags = PAGE_PRESENT | PAGE_USER;
         if (ph->p_flags & PF_W) flags |= PAGE_WRITABLE;
 
-        uint32_t vstart = ph->p_vaddr & ~0xFFFu;
-        uint32_t vend   = (ph->p_vaddr + ph->p_memsz + 0xFFFu) & ~0xFFFu;
+        uint32_t segment_vaddr = load_bias + ph->p_vaddr;
+        uint32_t vstart = segment_vaddr & ~0xFFFu;
+        uint32_t vend   = (segment_vaddr + ph->p_memsz + 0xFFFu) & ~0xFFFu;
         if (vend > image_end) image_end = vend;
         for (uint32_t va = vstart; va < vend; va += PAGE_SIZE) {
             uint32_t phys = pmm_alloc_frame();
             if (!phys) {
                 kprintf("[ELF] Out of physical frames!\n");
                 paging_switch_directory(old_page_dir);
-                kheap_free(phdrs);
                 return -1;
             }
             paging_map_in_directory(page_dir, va, phys, flags);
@@ -518,7 +627,7 @@ int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_le
         uint32_t copied = 0;
         while (copied < ph->p_filesz) {
             uint32_t file_off = ph->p_offset + copied;
-            uint32_t dest_va = ph->p_vaddr + copied;
+            uint32_t dest_va = segment_vaddr + copied;
             uint32_t to_read = (uint32_t)PAGE_SIZE - (dest_va & 0xFFFu);
             if (to_read > ph->p_filesz - copied) to_read = (uint32_t)(ph->p_filesz - copied);
 
@@ -526,7 +635,6 @@ int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_le
             if (r < 0) {
                 kprintf("[ELF] Read failed for segment %d at off=%u\n", i, file_off);
                 paging_switch_directory(old_page_dir);
-                kheap_free(phdrs);
                 return -1;
             }
             copied += (uint32_t)r;
@@ -534,7 +642,7 @@ int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_le
 
         /* Zero-fill remaining memsz beyond filesz */
         if (ph->p_memsz > ph->p_filesz) {
-            uint32_t zero_addr = ph->p_vaddr + ph->p_filesz;
+            uint32_t zero_addr = segment_vaddr + ph->p_filesz;
             uint32_t zero_len = ph->p_memsz - ph->p_filesz;
             memset((void*)(uintptr_t)zero_addr, 0, zero_len);
         }
@@ -546,17 +654,16 @@ int elf_stream_load_into_address_space(uint32_t page_dir, int fd, size_t file_le
     }
 
     paging_switch_directory(old_page_dir);
-    kheap_free(phdrs);
 
     if (loaded == 0) {
         kprintf("[ELF] No loadable segments found!\n");
         return -1;
     }
 
-    *entry_out = hdr.e_entry;
+    *entry_out = load_bias + hdr->e_entry;
     if (image_end_out) *image_end_out = image_end;
     if (syslog_get_verbose() >= VERBOSE_INFO)
-        kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", hdr.e_entry);
+        kprintf("[ELF] Entry point: 0x%x - Judo is ready to flip!\n", load_bias + hdr->e_entry);
     return 0;
 }
 
@@ -565,10 +672,20 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
                    elf_image_t *image_out) {
     uint32_t page_dir;
     const char *name;
+    elf_metadata_t exec_meta;
+    elf_metadata_t interp_meta;
+    elf_auxv_info_t auxv_info;
+    int interp_fd = -1;
+    int fd = -1;
+    int32_t file_len;
+    uint32_t program_image_end = 0;
 
     if (!path || !image_out) return -1;
 
     memset(image_out, 0, sizeof(*image_out));
+    memset(&exec_meta, 0, sizeof(exec_meta));
+    memset(&interp_meta, 0, sizeof(interp_meta));
+    memset(&auxv_info, 0, sizeof(auxv_info));
     /* Enforce execute-permission bits when supported by the filesystem.
        If vfs_stat is not available for the filesystem, allow execution. */
     vfs_stat_t st;
@@ -582,13 +699,13 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
     /* Open the file and determine its length so we can stream segments
      * directly into the new address space without buffering the whole
      * image in the kernel heap. */
-    int fd = vfs_open(path, VFS_O_RDONLY);
+    fd = vfs_open(path, VFS_O_RDONLY);
     if (fd < 0) {
         kprintf("[ELF] Open failed for %s\n", path);
         return -1;
     }
 
-    int32_t file_len = vfs_lseek(fd, 0, VFS_SEEK_END);
+    file_len = vfs_lseek(fd, 0, VFS_SEEK_END);
     if (file_len < 0) {
         kprintf("[ELF] Failed to seek EOF for %s\n", path);
         vfs_close(fd);
@@ -597,26 +714,106 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
     /* Rewind to start (not strictly necessary for read_at) */
     vfs_lseek(fd, 0, VFS_SEEK_SET);
 
-    page_dir = paging_create_address_space();
-    if (!page_dir) {
+    if (elf_read_metadata_fd(fd, (size_t)file_len, path, 0, &exec_meta) != 0) {
         vfs_close(fd);
         return -1;
     }
 
-    if (elf_stream_load_into_address_space(page_dir, fd, (size_t)file_len,
-                                           &image_out->entry,
-                                           &image_out->image_end,
-                                           path) != 0) {
+    page_dir = paging_create_address_space();
+    if (!page_dir) {
+        elf_free_metadata(&exec_meta);
+        vfs_close(fd);
+        return -1;
+    }
+
+    if (elf_stream_load_metadata_into_address_space(page_dir, fd, (size_t)file_len,
+                                                    &exec_meta, 0,
+                                                    &image_out->program_entry,
+                                                    &program_image_end) != 0) {
+        elf_free_metadata(&exec_meta);
         vfs_close(fd);
         paging_destroy_address_space(page_dir);
         return -1;
     }
 
+    image_out->entry = image_out->program_entry;
+    image_out->interp_base = 0;
+    image_out->image_end = program_image_end;
+    auxv_info.phdr = exec_meta.phdr_addr;
+    auxv_info.phent = exec_meta.hdr.e_phentsize;
+    auxv_info.phnum = exec_meta.hdr.e_phnum;
+    auxv_info.entry = image_out->program_entry;
+
+    if (exec_meta.has_interp && exec_meta.interp_path[0]) {
+        int32_t interp_len;
+        uint32_t interp_entry = 0;
+        uint32_t interp_image_end = 0;
+
+        interp_fd = vfs_open(exec_meta.interp_path, VFS_O_RDONLY);
+        if (interp_fd < 0) {
+            kprintf("[ELF] Failed to open interpreter %s for %s\n", exec_meta.interp_path, path);
+            elf_free_metadata(&exec_meta);
+            vfs_close(fd);
+            paging_destroy_address_space(page_dir);
+            return -1;
+        }
+
+        interp_len = vfs_lseek(interp_fd, 0, VFS_SEEK_END);
+        if (interp_len < 0) {
+            kprintf("[ELF] Failed to seek EOF for interpreter %s\n", exec_meta.interp_path);
+            elf_free_metadata(&exec_meta);
+            vfs_close(interp_fd);
+            vfs_close(fd);
+            paging_destroy_address_space(page_dir);
+            return -1;
+        }
+        vfs_lseek(interp_fd, 0, VFS_SEEK_SET);
+
+        if (elf_read_metadata_fd(interp_fd, (size_t)interp_len, exec_meta.interp_path, 1, &interp_meta) != 0) {
+            elf_free_metadata(&exec_meta);
+            vfs_close(interp_fd);
+            vfs_close(fd);
+            paging_destroy_address_space(page_dir);
+            return -1;
+        }
+
+        if (interp_meta.hdr.e_type != ET_DYN) {
+            kprintf("[ELF] Unsupported interpreter type=%u for %s\n",
+                    interp_meta.hdr.e_type, exec_meta.interp_path);
+            elf_free_metadata(&interp_meta);
+            elf_free_metadata(&exec_meta);
+            vfs_close(interp_fd);
+            vfs_close(fd);
+            paging_destroy_address_space(page_dir);
+            return -1;
+        }
+
+        if (elf_stream_load_metadata_into_address_space(page_dir, interp_fd, (size_t)interp_len,
+                                                        &interp_meta, ELF_INTERP_BASE,
+                                                        &interp_entry, &interp_image_end) != 0) {
+            elf_free_metadata(&interp_meta);
+            elf_free_metadata(&exec_meta);
+            vfs_close(interp_fd);
+            vfs_close(fd);
+            paging_destroy_address_space(page_dir);
+            return -1;
+        }
+
+        image_out->entry = interp_entry;
+        image_out->interp_base = ELF_INTERP_BASE;
+        if (interp_image_end > image_out->image_end) image_out->image_end = interp_image_end;
+        auxv_info.base = ELF_INTERP_BASE;
+    }
+
     if (elf_build_initial_stack(page_dir, argv, envp,
                                 &image_out->stack_base,
                                 &image_out->stack_top,
-                                &image_out->stack_pointer) != 0) {
+                                &image_out->stack_pointer,
+                                &auxv_info) != 0) {
         kprintf("[ELF] Failed to build initial stack for %s\n", path);
+        elf_free_metadata(&interp_meta);
+        elf_free_metadata(&exec_meta);
+        if (interp_fd >= 0) vfs_close(interp_fd);
         vfs_close(fd);
         paging_destroy_address_space(page_dir);
         return -1;
@@ -628,6 +825,9 @@ int elf_load_image(const char *path, const char *const argv[], const char *const
 
     strncpy(image_out->name, name, sizeof(image_out->name) - 1);
     image_out->page_dir = page_dir;
+    elf_free_metadata(&interp_meta);
+    elf_free_metadata(&exec_meta);
+    if (interp_fd >= 0) vfs_close(interp_fd);
     vfs_close(fd);
     return 0;
 }
@@ -680,6 +880,10 @@ process_t *elf_exec(const char *path, uint32_t uid) {
                                    uid, uid);
 
     if (!process) return NULL;
+
+    if (image.interp_base != 0) {
+        process->flags |= PROC_FLAG_LINUX_ABI;
+    }
 
     process_set_memory_layout(process, image.image_end);
     process_set_effective_ids(process, euid, egid);

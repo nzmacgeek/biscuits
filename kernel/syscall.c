@@ -156,6 +156,22 @@ static int syscall_map_user_pages(process_t *process,
     return 0;
 }
 
+static void syscall_unmap_user_pages(process_t *process,
+                                     uint32_t start,
+                                     uint32_t end) {
+    uint32_t old_page_dir;
+
+    if (!process || !process->page_dir) return;
+
+    old_page_dir = paging_current_directory();
+    paging_switch_directory(process->page_dir);
+    for (uint32_t addr = start; addr < end; addr += PAGE_SIZE) {
+        if (!paging_virt_to_phys(addr)) continue;
+        paging_unmap_in_directory(process->page_dir, addr);
+    }
+    paging_switch_directory(old_page_dir);
+}
+
 static size_t syscall_copy_strlen(const char *src, size_t limit) {
     size_t len = 0;
 
@@ -501,6 +517,7 @@ static int32_t sys_mmap(registers_t *regs) {
     uint32_t prot = regs->edx;
     uint32_t map_flags = regs->esi;
     int fd = (int)regs->edi;
+    uint32_t file_offset = 0;
     uint32_t map_addr;
     uint32_t aligned_len;
     uint32_t page_flags = PAGE_PRESENT | PAGE_USER;
@@ -509,6 +526,10 @@ static int32_t sys_mmap(registers_t *regs) {
     if (!process || !(process->flags & PROC_FLAG_USER_MODE)) return -BLUEY_EPERM;
     if (len == 0) return -BLUEY_EINVAL;
     if (!(map_flags & (BLUEY_MAP_PRIVATE | BLUEY_MAP_SHARED))) return -BLUEY_EINVAL;
+
+    if (regs->eax == SYS_MMAP2) {
+        file_offset = regs->ebp << 12;
+    }
 
     aligned_len = PAGE_ALIGN_UP(len);
     if (prot & BLUEY_PROT_WRITE) page_flags |= PAGE_WRITABLE;
@@ -523,6 +544,10 @@ static int32_t sys_mmap(registers_t *regs) {
     } else {
         map_addr = PAGE_ALIGN_UP(process->mmap_base);
         process->mmap_base = map_addr + aligned_len + PAGE_SIZE;
+    }
+
+    if ((map_flags & BLUEY_MAP_FIXED) && addr) {
+        syscall_unmap_user_pages(process, map_addr, map_addr + aligned_len);
     }
 
     if (map_flags & BLUEY_MAP_ANON) {
@@ -563,7 +588,7 @@ static int32_t sys_mmap(registers_t *regs) {
 
     uint32_t old_dir = paging_current_directory();
     uint32_t remaining = len;
-    uint32_t off = 0;
+    uint32_t off = file_offset;
     while (remaining) {
         uint32_t toread = remaining > PAGE_SIZE ? PAGE_SIZE : remaining;
         int r = vfs_read_at(fd, kbuf, toread, off);
@@ -574,7 +599,7 @@ static int32_t sys_mmap(registers_t *regs) {
 
         /* Copy into user mapping */
         paging_switch_directory(process->page_dir);
-        memcpy((void*)(map_addr + off), kbuf, (size_t)r);
+        memcpy((void*)(map_addr + (off - file_offset)), kbuf, (size_t)r);
         paging_switch_directory(old_dir);
 
         remaining -= (uint32_t)r;
@@ -838,6 +863,7 @@ static void sys_fill_stat64(vfs_stat_t *st, k_stat64_t *out) {
 
     memset(out, 0, sizeof(*out));
     out->st_dev = 1;
+    out->__st_ino_truncated = st->inode;
     out->st_mode = st->mode;
     out->st_nlink = st->is_dir ? 2u : 1u;
     out->st_uid = st->uid;
@@ -848,6 +874,7 @@ static void sys_fill_stat64(vfs_stat_t *st, k_stat64_t *out) {
     out->st_atime_sec = (int32_t)ticks;
     out->st_mtime_sec = (int32_t)ticks;
     out->st_ctime_sec = (int32_t)ticks;
+    out->st_ino = st->inode;
 }
 
 static int32_t sys_fstat64(int fd, k_stat64_t *buf) {
@@ -897,8 +924,12 @@ static int32_t sys_statx(int dirfd, const char *path, int flags, uint32_t mask, 
     buf->stx_uid = st.uid;
     buf->stx_gid = st.gid;
     buf->stx_mode = st.mode;
+    buf->stx_ino = st.inode;
     buf->stx_size = st.size;
     buf->stx_blocks = ((uint64_t)st.size + 511u) / 512u;
+    buf->stx_mnt_id = 1;
+    buf->stx_dev_major = 0;
+    buf->stx_dev_minor = 1;
     return 0;
 }
 
@@ -937,7 +968,7 @@ static int32_t sys_fstat(int fd, void *buf) {
     uint32_t *u = (uint32_t *)buf;
     memset(u, 0, 64);
     u[0]  = 1;
-    u[1]  = 1;
+    u[1]  = st.inode;
     u[2]  = (uint32_t)st.mode | ((uint32_t)1 << 16);
     u[3]  = (uint32_t)st.uid | ((uint32_t)st.gid << 16);
     u[4]  = 0;
@@ -978,7 +1009,7 @@ static void vfs_stat_to_buf(const vfs_stat_t *st, uint32_t *u) {
     uint32_t ticks = timer_get_ticks();
     memset(u, 0, 64);
     u[0]  = 1;               /* st_dev */
-    u[1]  = 1;               /* st_ino (placeholder) */
+    u[1]  = st->inode;       /* st_ino */
     /* st_mode (16-bit) in low half of u[2], st_nlink (16-bit) in high */
     u[2]  = (uint32_t)st->mode | ((uint32_t)1 << 16); /* nlink = 1 */
     /* st_uid / st_gid packed into u[3] */
@@ -2637,6 +2668,14 @@ static int32_t sys_open(const char *path, int flags) {
     return -BLUEY_EPERM;
 }
 
+static int32_t sys_openat(int dirfd, const char *path, int flags, int mode) {
+    (void)mode;
+
+    if (!path) return -BLUEY_EFAULT;
+    if (dirfd != AT_FDCWD && path[0] != '/') return -BLUEY_ENOSYS;
+    return sys_open(path, flags);
+}
+
 static int32_t sys_close(int fd) {
     return vfs_close(fd);
 }
@@ -2728,6 +2767,8 @@ static int32_t sys_execve(registers_t *regs,
     int had_vfork_shared_vm = (process->flags & PROC_FLAG_VFORK_SHARED_VM) != 0;
     process_exec_replace(process, image.name, image.entry, image.stack_pointer,
                          image.stack_base, image.stack_top, image.page_dir);
+    if (image.interp_base != 0) process->flags |= PROC_FLAG_LINUX_ABI;
+    else process->flags &= ~PROC_FLAG_LINUX_ABI;
     process_set_memory_layout(process, image.image_end);
     paging_switch_directory(image.page_dir);
     /* Ensure the signal trampoline is mapped in the new address space. */
@@ -2986,7 +3027,56 @@ static int32_t sys_delete_module(const char *name, uint32_t flags) {
 // regs.eax = syscall number, regs.ebx = arg1, regs.ecx = arg2, regs.edx = arg3
 int32_t syscall_dispatch(registers_t *regs) {
     int32_t ret = -1;
+    process_t *current;
     if (!regs) return -1;
+
+    current = process_current();
+    if (current && (current->flags & PROC_FLAG_LINUX_ABI)) {
+        switch (regs->eax) {
+            case 1:
+                process_exit((int)regs->ebx);
+                ret = 0;
+                goto syscall_out;
+            case 2:
+                ret = sys_fork(regs);
+                goto syscall_out;
+            case 3:
+                ret = sys_read(regs->ebx, (char*)regs->ecx, (size_t)regs->edx);
+                goto syscall_out;
+            case 4:
+                ret = sys_write(regs->ebx, (const char*)regs->ecx, (size_t)regs->edx);
+                goto syscall_out;
+            case 5:
+                ret = sys_open((const char*)regs->ebx, (int)regs->ecx);
+                goto syscall_out;
+            case 6:
+                ret = sys_close((int)regs->ebx);
+                goto syscall_out;
+            case 7:
+                ret = process_waitpid((int32_t)regs->ebx, (int*)regs->ecx, (int)regs->edx);
+                goto syscall_out;
+            case 12:
+                ret = sys_chdir((const char*)regs->ebx);
+                goto syscall_out;
+            case 33:
+                ret = sys_access((const char*)regs->ebx, (int)regs->ecx);
+                goto syscall_out;
+            case 63:
+                ret = sys_dup2_impl((int)regs->ebx, (int)regs->ecx);
+                goto syscall_out;
+            case 85:
+                ret = sys_readlink((const char*)regs->ebx, (char*)regs->ecx, regs->edx);
+                goto syscall_out;
+            case 122:
+                ret = sys_uname((utsname_t*)regs->ebx);
+                goto syscall_out;
+            case 125:
+                ret = sys_mprotect(regs);
+                goto syscall_out;
+            default:
+                break;
+        }
+    }
 
     switch (regs->eax) {
         case SYS_READ:
@@ -2997,6 +3087,9 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         case SYS_OPEN:
             ret = sys_open((const char*)regs->ebx, (int)regs->ecx);
+            break;
+        case SYS_OPENAT:
+            ret = sys_openat((int)regs->ebx, (const char*)regs->ecx, (int)regs->edx, (int)regs->esi);
             break;
         case SYS_CLOSE:
             ret = sys_close((int)regs->ebx);
@@ -3449,6 +3542,7 @@ int32_t syscall_dispatch(registers_t *regs) {
             break;
         }
     }
+syscall_out:
     regs->eax = ret;
     scheduler_handle_trap(regs, 0);
     return ret;
