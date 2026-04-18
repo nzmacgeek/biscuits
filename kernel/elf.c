@@ -63,7 +63,7 @@ static uint32_t elf_entropy_seed(const elf_auxv_info_t *auxv_info, uint32_t stac
     }
 #endif
 
-    if (seed == 0) seed = 0x6c8e9cf5u;
+    if (seed == 0) seed = 0x6c8e9cf5u; /* Non-zero fallback so AT_RANDOM is never all-zero. */
     return seed;
 }
 
@@ -72,7 +72,7 @@ static uint32_t elf_entropy_next(uint32_t *state) {
     value ^= value << 13;
     value ^= value >> 17;
     value ^= value << 5;
-    if (value == 0) value = 0x9e3779b9u;
+    if (value == 0) value = 0x9e3779b9u; /* 2^32 / phi, used as a non-zero xorshift state. */
     *state = value;
     return value;
 }

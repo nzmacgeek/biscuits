@@ -54,6 +54,7 @@ static int process_user_u32_accessible(const process_t *process, uint32_t addr, 
     uint32_t last_page;
     uint32_t *page_dir;
 
+    /* Keep NULL inaccessible for copyin/copyout hardening. */
     if (!process || !process->page_dir || !addr) return 0;
 
     end_addr = addr + sizeof(uint32_t) - 1u;
