@@ -192,8 +192,8 @@ void scheduler_tick(void) {
             p->state = PROC_READY;
             p->futex_wait_addr = 0;
             p->futex_wait_deadline = 0;
-            p->futex_wait_result = -110;
-            p->saved_regs.eax = (uint32_t)-110;
+            p->futex_wait_result = -(int32_t)BLUEY_ETIMEDOUT;
+            p->saved_regs.eax = (uint32_t)(-(int32_t)BLUEY_ETIMEDOUT);
         }
         p = p->sched_next;
     } while (p != run_queue);

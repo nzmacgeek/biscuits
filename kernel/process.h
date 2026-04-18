@@ -9,6 +9,7 @@
 #define MAX_PROCESSES  64
 #define PROC_STACK_SIZE 8192   // 8 KiB per process stack
 #define PROC_MAX_GROUPS 8
+#define BLUEY_ETIMEDOUT 110
 
 typedef enum {
     PROC_READY,     // ready to run - like Bluey ready for a new game

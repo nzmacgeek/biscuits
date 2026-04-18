@@ -271,7 +271,8 @@ def find_grub_boot_img() -> Path:
         if candidate.exists():
             return candidate
 
-    raise SystemExit(f"missing GRUB BIOS boot image: {candidates[0]}")
+    tried = ", ".join(str(candidate) for candidate in candidates)
+    raise SystemExit(f"missing GRUB BIOS boot image (tried: {tried})")
 
 
 def find_grub_module_dir() -> Path:
@@ -284,7 +285,8 @@ def find_grub_module_dir() -> Path:
         if (candidate / "moddep.lst").exists():
             return candidate
 
-    raise SystemExit(f"missing GRUB module directory: {candidates[0]}")
+    tried = ", ".join(str(candidate) for candidate in candidates)
+    raise SystemExit(f"missing GRUB module directory (tried: {tried})")
 
 
 def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sectors: int, root_device: str, root_fstype: str, boot_extra_dir: str | None = None, init_kernel_path: str = "/sbin/claw", grub_default: int = 0) -> None:

@@ -11,6 +11,8 @@
 #include "paging.h"
 #include "multiuser.h"
 #include "syslog.h"
+#include "timer.h"
+#include "rtc.h"
 
 #define ELF_READ_CHUNK_SIZE   512u
 #define ELF_MAX_IMAGE_SIZE    (1024u * 1024u)
@@ -46,6 +48,43 @@ typedef struct {
 } elf_aux_entry_t;
 
 static uint32_t elf_next_stack_base = ELF_USER_STACK_BASE;
+
+static uint32_t elf_entropy_seed(const elf_auxv_info_t *auxv_info, uint32_t stack_top) {
+    uint32_t seed = timer_get_ticks() ^ paging_current_directory() ^
+                    stack_top ^ elf_next_stack_base ^ (uint32_t)(uintptr_t)auxv_info;
+    uint32_t unix_secs = 0;
+
+    if (rtc_get_unix_time(&unix_secs)) seed ^= unix_secs;
+#if defined(__i386__)
+    {
+        uint32_t tsc_lo, tsc_hi;
+        __asm__ volatile("rdtsc" : "=a"(tsc_lo), "=d"(tsc_hi));
+        seed ^= tsc_lo ^ tsc_hi;
+    }
+#endif
+
+    if (seed == 0) seed = 0x6c8e9cf5u;
+    return seed;
+}
+
+static uint32_t elf_entropy_next(uint32_t *state) {
+    uint32_t value = *state;
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    if (value == 0) value = 0x9e3779b9u;
+    *state = value;
+    return value;
+}
+
+static void elf_fill_auxv_random(uint8_t bytes[16], const elf_auxv_info_t *auxv_info, uint32_t stack_top) {
+    uint32_t state = elf_entropy_seed(auxv_info, stack_top);
+
+    for (size_t index = 0; index < 16u; index += sizeof(uint32_t)) {
+        uint32_t mixed = elf_entropy_next(&state);
+        memcpy(bytes + index, &mixed, sizeof(uint32_t));
+    }
+}
 
 static size_t elf_vector_count(const char *const vec[]) {
     size_t count = 0;
@@ -391,6 +430,7 @@ int elf_build_initial_stack(uint32_t page_dir,
     size_t aux_count = 0;
     uint32_t random_addr = 0;
     uint32_t execfn_addr = 0;
+    uint8_t random_bytes[16];
 
     if (elf_map_stack_pages(page_dir, stack_base, ELF_USER_STACK_SIZE) != 0) return -1;
     if (syslog_get_verbose() >= VERBOSE_DEBUG)
@@ -438,7 +478,8 @@ int elf_build_initial_stack(uint32_t page_dir,
         if (arg_ptrs) kheap_free(arg_ptrs);
         return -1;
     }
-    memset(stack_ptr, 0, 16u);
+    elf_fill_auxv_random(random_bytes, auxv_info, stack_top);
+    memcpy(stack_ptr, random_bytes, sizeof(random_bytes));
     random_addr = (uint32_t)(uintptr_t)stack_ptr;
 
     stack_ptr = (char*)((uint32_t)(uintptr_t)stack_ptr & ~0x3u);

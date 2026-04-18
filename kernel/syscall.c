@@ -67,8 +67,6 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_EPROTONOSUPPORT 93
 #define BLUEY_EOPNOTSUPP 95
 #define BLUEY_ECONNREFUSED 111
-#define BLUEY_ETIMEDOUT 110
-
 #define BLUEY_ENOMEM 12
 
 #define EXEC_COPY_MAX_STRINGS    64u
@@ -2481,39 +2479,45 @@ static int32_t sys_futex(uint32_t *uaddr, int op, uint32_t val,
                          const k_timespec_req_t *timeout,
                          uint32_t *uaddr2, uint32_t val3) {
     process_t *current = process_current();
+    uint32_t uaddr_value = (uint32_t)(uintptr_t)uaddr;
     uint32_t deadline = 0;
     uint32_t current_val;
+    uint32_t uaddr2_value;
     int priv = (op & BLUEY_FUTEX_PRIVATE) != 0;
     int cmd = op & ~BLUEY_FUTEX_PRIVATE;
 
     if (!current || !uaddr) return -BLUEY_EINVAL;
+    if ((uaddr_value & (sizeof(uint32_t) - 1u)) != 0) return -BLUEY_EINVAL;
 
     switch (cmd) {
         case BLUEY_FUTEX_WAIT:
-            if (process_read_user_u32(current, (uint32_t)(uintptr_t)uaddr, &current_val) != 0) {
+            if (process_read_user_u32(current, uaddr_value, &current_val) != 0) {
                 return -BLUEY_EFAULT;
             }
             if (current_val != val) return -BLUEY_EAGAIN;
             if (timeout) {
                 uint32_t ms;
+                if (timeout->tv_nsec >= 1000000000u) return -BLUEY_EINVAL;
                 if (timeout->tv_sec > 4294967u) ms = 0xFFFFFFFFu;
                 else ms = timeout->tv_sec * 1000u + timeout->tv_nsec / 1000000u;
                 if (ms == 0) return -BLUEY_ETIMEDOUT;
                 deadline = timer_get_ticks() + ms;
             }
-            process_set_futex_wait(current, (uint32_t)(uintptr_t)uaddr, deadline, priv);
+            process_set_futex_wait(current, uaddr_value, deadline, priv);
             return 0;
 
         case BLUEY_FUTEX_WAKE:
-            return process_wake_futex(current, (uint32_t)(uintptr_t)uaddr, (int)val, priv, 0);
+            return process_wake_futex(current, uaddr_value, (int)val, priv, 0);
 
         case BLUEY_FUTEX_REQUEUE:
             if (!uaddr2) return -BLUEY_EINVAL;
+            uaddr2_value = (uint32_t)(uintptr_t)uaddr2;
+            if ((uaddr2_value & (sizeof(uint32_t) - 1u)) != 0) return -BLUEY_EINVAL;
             return process_requeue_futex(current,
-                                         (uint32_t)(uintptr_t)uaddr,
+                                         uaddr_value,
                                          (int)val,
                                          (int)val3,
-                                         (uint32_t)(uintptr_t)uaddr2,
+                                         uaddr2_value,
                                          priv);
 
         default:

@@ -21,8 +21,6 @@
 #define BLUEY_EAGAIN 11
 #define BLUEY_ENOMEM 12
 #define BLUEY_EPERM   1
-#define BLUEY_ETIMEDOUT 110
-
 #define PROCESS_RLIMIT_NOFILE_DEFAULT_CUR 256u
 #define PROCESS_RLIMIT_NOFILE_DEFAULT_MAX 1024u
 
@@ -50,10 +48,45 @@ static int process_has_shared_page_dir(process_t *process) {
     return 0;
 }
 
+static int process_user_u32_accessible(const process_t *process, uint32_t addr, int writable) {
+    uint32_t end_addr;
+    uint32_t first_page;
+    uint32_t last_page;
+    uint32_t *page_dir;
+
+    if (!process || !process->page_dir || !addr) return 0;
+
+    end_addr = addr + sizeof(uint32_t) - 1u;
+    if (end_addr < addr) return 0;
+
+    first_page = addr & ~(PAGE_SIZE - 1u);
+    last_page = end_addr & ~(PAGE_SIZE - 1u);
+    page_dir = (uint32_t *)(uintptr_t)process->page_dir;
+
+    for (uint32_t page = first_page;; page += PAGE_SIZE) {
+        uint32_t pd_idx = page >> 22;
+        uint32_t pt_idx = (page >> 12) & 0x3FFu;
+        uint32_t pd_entry = page_dir[pd_idx];
+        uint32_t *page_table;
+        uint32_t pt_entry;
+
+        if (!(pd_entry & PAGE_PRESENT) || !(pd_entry & PAGE_USER)) return 0;
+        page_table = (uint32_t *)(uintptr_t)(pd_entry & ~0xFFFu);
+        pt_entry = page_table[pt_idx];
+        if (!(pt_entry & PAGE_PRESENT) || !(pt_entry & PAGE_USER)) return 0;
+        if (writable && !(pt_entry & PAGE_WRITABLE)) return 0;
+
+        if (page == last_page) break;
+    }
+
+    return 1;
+}
+
 int process_read_user_u32(process_t *process, uint32_t addr, uint32_t *value_out) {
     uint32_t old_page_dir;
 
     if (!process || !addr || !value_out) return -1;
+    if (!process_user_u32_accessible(process, addr, 0)) return -1;
 
     old_page_dir = paging_current_directory();
     paging_switch_directory(process->page_dir);
@@ -66,6 +99,7 @@ int process_write_user_u32(process_t *process, uint32_t addr, uint32_t value) {
     uint32_t old_page_dir;
 
     if (!process || !addr) return -1;
+    if (!process_user_u32_accessible(process, addr, 1)) return -1;
 
     old_page_dir = paging_current_directory();
     paging_switch_directory(process->page_dir);
@@ -727,18 +761,21 @@ void process_set_futex_wait(process_t *process, uint32_t addr, uint32_t deadline
 
 int process_wake_futex(process_t *caller, uint32_t addr, int count, int priv, int32_t result) {
     int woken = 0;
+    uint8_t wait_priv = priv ? 1u : 0u;
 
     if (!caller || !addr || count == 0) return 0;
     if (count < 0) count = MAX_PROCESSES;
 
     for (process_t *node = proc_list; node; node = node->next) {
         if (node->state != PROC_WAITING || node->futex_wait_addr != addr) continue;
+        if (node->futex_wait_private != wait_priv) continue;
         if (priv && node->page_dir != caller->page_dir) continue;
 
         node->state = PROC_READY;
         node->futex_wait_addr = 0;
         node->futex_wait_deadline = 0;
         node->futex_wait_result = result;
+        node->futex_wait_private = 0;
         node->saved_regs.eax = (uint32_t)result;
         woken++;
         if (woken >= count) break;
@@ -750,10 +787,12 @@ int process_wake_futex(process_t *caller, uint32_t addr, int count, int priv, in
 int process_requeue_futex(process_t *caller, uint32_t addr, int wake_count,
                           int requeue_count, uint32_t new_addr, int priv) {
     int moved = 0;
+    uint8_t wait_priv = priv ? 1u : 0u;
     int woken = process_wake_futex(caller, addr, wake_count, priv, 0);
 
     for (process_t *node = proc_list; node && moved < requeue_count; node = node->next) {
         if (node->state != PROC_WAITING || node->futex_wait_addr != addr) continue;
+        if (node->futex_wait_private != wait_priv) continue;
         if (priv && node->page_dir != caller->page_dir) continue;
 
         node->futex_wait_addr = new_addr;
