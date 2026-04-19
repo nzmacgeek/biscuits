@@ -26,7 +26,7 @@ static void pmm_clear(uint32_t frame) { pmm_bitmap[frame/32] &= ~(1u << (frame%3
 static int  pmm_test(uint32_t frame)  { return (pmm_bitmap[frame/32] >> (frame%32)) & 1; }
 
 uint32_t pmm_alloc_frame(void) {
-    for (uint32_t i = 0; i < PMM_FRAMES; i++) {
+    for (uint32_t i = 1; i < PMM_FRAMES; i++) {
         if (!pmm_test(i)) { pmm_set(i); return i * PAGE_SIZE; }
     }
     return 0; // out of memory - "Bandit, we need more room!"
