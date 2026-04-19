@@ -49,6 +49,7 @@
 #define __NR_wait4         114
 #define __NR_sched_yield   158
 #define __NR_nanosleep     162
+#define __NR_futex         240
 #define __NR_exit_group    252
 #define __NR_set_tid_address 258
 #define __NR_set_robust_list 311

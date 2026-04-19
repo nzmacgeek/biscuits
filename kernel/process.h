@@ -9,6 +9,7 @@
 #define MAX_PROCESSES  64
 #define PROC_STACK_SIZE 8192   // 8 KiB per process stack
 #define PROC_MAX_GROUPS 8
+#define BLUEY_ETIMEDOUT 110
 
 typedef enum {
     PROC_READY,     // ready to run - like Bluey ready for a new game
@@ -28,6 +29,7 @@ typedef struct {
 
 typedef struct process {
     uint32_t      pid;
+    uint32_t      thread_group_id;
     uint32_t      parent_pid;
     char          name[32];
     proc_state_t  state;
@@ -45,6 +47,7 @@ typedef struct process {
     uint32_t      tls_base;          // thread-local storage base for GDT entry 6
     uint32_t      robust_list_head;  // userspace head for set_robust_list(2)
     uint32_t      robust_list_len;
+    uint32_t      clear_child_tid;
     uint32_t      rseq_area;
     uint32_t      rseq_len;
     uint32_t      rseq_sig;
@@ -72,6 +75,10 @@ typedef struct process {
     int32_t       wait_pid;
     uint32_t      wait_status_ptr;
     uint32_t      wait_options;
+    uint32_t      futex_wait_addr;
+    uint32_t      futex_wait_deadline;
+    int32_t       futex_wait_result;
+    uint8_t       futex_wait_private;
     char          cwd[256];          // current working directory
     registers_t   saved_regs;
     process_sigaction_t signal_actions[32];
@@ -82,6 +89,9 @@ typedef struct process {
 #define PROC_FLAG_USER_MODE 0x00000001u
 #define PROC_FLAG_SIGNAL_ACTIVE 0x00000002u
 #define PROC_FLAG_VFORK_SHARED_VM 0x00000004u
+#define PROC_FLAG_SHARED_VM 0x00000008u
+#define PROC_FLAG_THREAD    0x00000010u
+#define PROC_FLAG_LINUX_ABI 0x00000020u
 
 void       process_init(void);
 process_t *process_create(const char *name, void (*entry)(void), uint32_t uid, uint32_t gid);
@@ -90,6 +100,8 @@ process_t *process_create_image(const char *name, uint32_t entry, uint32_t user_
                                 uint32_t page_dir,
                                 uint32_t uid, uint32_t gid);
 process_t *process_fork_current(const registers_t *regs, int32_t *error_out);
+process_t *process_clone_current(const registers_t *regs, uint32_t child_stack,
+                                 int share_vm, int32_t *error_out);
 process_t *process_vfork_current(const registers_t *regs, int32_t *error_out);
 void       process_vfork_execve_failed(process_t *child);
 void       process_exec_replace(process_t *process, const char *name,
@@ -102,6 +114,12 @@ void       process_exit(int code);
 process_t *process_current(void);
 void       process_set_current(process_t *p);
 void       process_set_waiting(process_t *p);   // block a process until an event wakes it
+void       process_set_futex_wait(process_t *process, uint32_t addr, uint32_t deadline, int priv);
+int        process_wake_futex(process_t *caller, uint32_t addr, int count, int priv, int32_t result);
+int        process_requeue_futex(process_t *caller, uint32_t addr, int wake_count,
+                                 int requeue_count, uint32_t new_addr, int priv);
+int        process_read_user_u32(process_t *process, uint32_t addr, uint32_t *value_out);
+int        process_write_user_u32(process_t *process, uint32_t addr, uint32_t value);
 process_t *process_get_by_pid(uint32_t pid);
 process_t *process_first(void);
 process_t *process_next(process_t *p);

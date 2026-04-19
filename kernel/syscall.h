@@ -35,6 +35,7 @@
 #define SYS_GETGID        47
 #define SYS_MMAP          90
 #define SYS_MMAP2         192
+#define SYS_OPENAT        295
 #define SYS_MUNMAP        91
 #define SYS_MPROTECT      92
 #define SYS_KILL          62
@@ -81,6 +82,7 @@
 #define SYS_SCHED_YIELD   158
 #define SYS_NANOSLEEP     162
 #define SYS_CHOWN         182
+#define SYS_FUTEX         240
 #define SYS_EXIT_GROUP    252
 #define SYS_SET_TID_ADDRESS 258
 #define SYS_SET_ROBUST_LIST 311

@@ -261,13 +261,42 @@ def write_partition_region(image: Path, offset_lba: int, partition_image: Path) 
         shutil.copyfileobj(part_fp, disk_fp)
 
 
+def find_grub_boot_img() -> Path:
+    candidates = (
+        Path("/usr/lib/grub/i386-pc/boot.img"),
+        Path("/var/lib/snapd/hostfs/usr/lib/grub/i386-pc/boot.img"),
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    tried = ", ".join(str(candidate) for candidate in candidates)
+    raise SystemExit(f"missing GRUB BIOS boot image (tried: {tried})")
+
+
+def find_grub_module_dir() -> Path:
+    candidates = (
+        Path("/usr/lib/grub/i386-pc"),
+        Path("/var/lib/snapd/hostfs/usr/lib/grub/i386-pc"),
+    )
+
+    for candidate in candidates:
+        if (candidate / "moddep.lst").exists():
+            return candidate
+
+    tried = ", ".join(str(candidate) for candidate in candidates)
+    raise SystemExit(f"missing GRUB module directory (tried: {tried})")
+
+
 def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sectors: int, root_device: str, root_fstype: str, boot_extra_dir: str | None = None, init_kernel_path: str = "/sbin/claw", grub_default: int = 0) -> None:
     boot_size_bytes = boot_sectors * SECTOR_SIZE
     boot_img = image.with_suffix(".boot.tmp")
     boot_stage = image.parent / ".boot-stage"
     core_img = image.with_suffix(".core.tmp")
     early_cfg = image.with_suffix(".early.cfg.tmp")
-    boot_img_src = Path("/usr/lib/grub/i386-pc/boot.img")
+    boot_img_src = find_grub_boot_img()
+    grub_module_dir = find_grub_module_dir()
     modules = [
         "biosdisk",
         "part_msdos",
@@ -281,9 +310,6 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sector
         "vbe",
         "echo",
     ]
-
-    if not boot_img_src.exists():
-        raise SystemExit(f"missing GRUB BIOS boot image: {boot_img_src}")
 
     if boot_stage.exists():
         shutil.rmtree(boot_stage)
@@ -375,6 +401,8 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sector
 
     run([
         "grub-mkimage",
+        "-d",
+        str(grub_module_dir),
         "-O",
         "i386-pc",
         "-c",
