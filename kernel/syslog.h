@@ -32,6 +32,7 @@
 // Maximum length of the message payload stored in each ring entry.
 // The total number of entries in the ring is managed internally by syslog.c.
 #define SYSLOG_MSG_MAX      256   /* maximum length of a single log line       */
+#define SYSLOG_RING_ENTRIES 128   /* total number of in-memory ring entries     */
 
 // ---------------------------------------------------------------------------
 // Log entry (stored in the ring buffer as a packed record)

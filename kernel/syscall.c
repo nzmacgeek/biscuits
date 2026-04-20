@@ -2056,24 +2056,29 @@ static int32_t sys_faccessat2(int dirfd, const char *path, int mode, int flags) 
 //   9  SIZE_UNREAD — return number of characters in the ring (approx)
 //  10  SIZE_BUFFER — return maximum buffer size
 
-// Include syslog.h for syslog_read_entries
-#include "syslog.h"
-
 #define KLOG_READ        2
 #define KLOG_READ_ALL    3
 #define KLOG_SIZE_UNREAD 9
 #define KLOG_SIZE_BUFFER 10
 
-// Maximum text size we'll ever return (~128 entries * ~160 bytes each)
-#define KLOG_MAX_TEXT    (128 * 160)
+/* Maximum formatted overhead added by syslog_read_entries() per entry.
+ * Keep this conservative so klogctl size queries return a safe buffer size. */
+#define KLOG_PREFIX_MAX  256
+#define KLOG_MAX_TEXT    (SYSLOG_RING_ENTRIES * (SYSLOG_MSG_MAX + KLOG_PREFIX_MAX))
 
 static int32_t sys_syslog(int type, char *buf, int len) {
     switch (type) {
         case KLOG_READ:
         case KLOG_READ_ALL: {
-            if (!buf || len <= 0) return -BLUEY_EINVAL;
+            int read_ret;
+
             if (!buf) return -BLUEY_EFAULT;
-            return (int32_t)syslog_read_entries(buf, len);
+            if (len <= 0) return -BLUEY_EINVAL;
+
+            read_ret = (int)syslog_read_entries(buf, len);
+            if (read_ret < 0) return -BLUEY_EIO;
+
+            return (int32_t)read_ret;
         }
         case KLOG_SIZE_UNREAD:
         case KLOG_SIZE_BUFFER:

@@ -24,10 +24,7 @@
 // ---------------------------------------------------------------------------
 
 // We store entries in a flat array (not a byte ring) for simplicity.
-// With SYSLOG_RING_ENTRIES entries of ~296 bytes each this is ~30 KB —
-// acceptable for a kernel research OS with a 1 MB heap.
-#define SYSLOG_RING_ENTRIES  128
-
+// With SYSLOG_RING_ENTRIES entries this is acceptable for a kernel research OS.
 static syslog_entry_t syslog_ring[SYSLOG_RING_ENTRIES];
 static uint32_t       syslog_head  = 0;   /* next slot to write into */
 static uint32_t       syslog_count_val = 0;
@@ -294,7 +291,7 @@ void syslog_dmesg(void) {
     uint32_t start = (syslog_head - n) % SYSLOG_RING_ENTRIES;
 
     vga_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
-    kprintf("-- Kernel log (%u entries) --\n", n);
+    kprintf_direct("-- Kernel log (%u entries) --\n", n);
     vga_set_color(VGA_WHITE, VGA_BLACK);
 
     for (uint32_t i = 0; i < n; i++) {
@@ -305,10 +302,10 @@ void syslog_dmesg(void) {
         else if (e->level == LOG_DEBUG)   vga_set_color(VGA_DARK_GREY,   VGA_BLACK);
         else                              vga_set_color(VGA_WHITE,       VGA_BLACK);
 
-        kprintf("[%u] [T+%us] %s [%s] %s\n",
-                e->seq, e->timestamp, level_str((int)e->level), e->tag, e->msg);
+        kprintf_direct("[%u] [T+%us] %s [%s] %s\n",
+                       e->seq, e->timestamp, level_str((int)e->level), e->tag, e->msg);
         if (g_verbose_level >= VERBOSE_INFO && e->src_file[0] != '\0') {
-            kprintf("         src: %s:%s\n", e->src_file, e->src_func);
+            kprintf_direct("         src: %s:%s\n", e->src_file, e->src_func);
         }
     }
     vga_set_color(VGA_WHITE, VGA_BLACK);
@@ -388,33 +385,60 @@ void syslog_install_kprintf_hook(void) {
 int syslog_read_entries(char *buf, int bufsize) {
     if (!buf || bufsize <= 0) return -1;
 
-    uint32_t n = syslog_count_val;
-    uint32_t start = (syslog_head - n) % SYSLOG_RING_ENTRIES;
-    int pos = 0;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        uint32_t snap_head = syslog_head;
+        uint32_t snap_count = syslog_count_val;
+        uint32_t snap_seq = syslog_seq;
+        uint32_t n = snap_count;
+        uint32_t start = (snap_head + SYSLOG_RING_ENTRIES -
+                          (n % SYSLOG_RING_ENTRIES)) % SYSLOG_RING_ENTRIES;
+        int pos = 0;
+        int retry = 0;
 
-    for (uint32_t i = 0; i < n && pos < bufsize - 1; i++) {
-        syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
-        char line[SYSLOG_MSG_MAX + 160];
-        int len;
-        if (e->src_file[0] != '\0') {
-            len = syslog_snprintf(line, sizeof(line),
-                                  "[%u] [T+%us] %s [%s](%s:%s) %s\n",
-                                  e->seq, e->timestamp,
-                                  level_str((int)e->level), e->tag,
-                                  e->src_file, e->src_func, e->msg);
-        } else {
-            len = syslog_snprintf(line, sizeof(line),
-                                  "[%u] [T+%us] %s [%s] %s\n",
-                                  e->seq, e->timestamp,
-                                  level_str((int)e->level), e->tag, e->msg);
+        for (uint32_t i = 0; i < n && pos < bufsize - 1; i++) {
+            uint32_t idx = (start + i) % SYSLOG_RING_ENTRIES;
+            syslog_entry_t entry_a;
+            syslog_entry_t entry_b;
+            char line[SYSLOG_MSG_MAX + 160];
+            int len;
+
+            memcpy(&entry_a, &syslog_ring[idx], sizeof(syslog_entry_t));
+            memcpy(&entry_b, &syslog_ring[idx], sizeof(syslog_entry_t));
+            if (memcmp(&entry_a, &entry_b, sizeof(syslog_entry_t)) != 0) {
+                retry = 1;
+                break;
+            }
+
+            if (entry_a.src_file[0] != '\0') {
+                len = syslog_snprintf(line, sizeof(line),
+                                      "[%u] [T+%us] %s [%s](%s:%s) %s\n",
+                                      entry_a.seq, entry_a.timestamp,
+                                      level_str((int)entry_a.level), entry_a.tag,
+                                      entry_a.src_file, entry_a.src_func, entry_a.msg);
+            } else {
+                len = syslog_snprintf(line, sizeof(line),
+                                      "[%u] [T+%us] %s [%s] %s\n",
+                                      entry_a.seq, entry_a.timestamp,
+                                      level_str((int)entry_a.level), entry_a.tag, entry_a.msg);
+            }
+
+            int copy = len;
+            if (pos + copy > bufsize - 1) copy = bufsize - 1 - pos;
+            memcpy(buf + pos, line, (size_t)copy);
+            pos += copy;
         }
-        int copy = len;
-        if (pos + copy > bufsize - 1) copy = bufsize - 1 - pos;
-        memcpy(buf + pos, line, (size_t)copy);
-        pos += copy;
+
+        if (!retry &&
+            snap_head == syslog_head &&
+            snap_count == syslog_count_val &&
+            snap_seq == syslog_seq) {
+            buf[pos] = '\0';
+            return pos;
+        }
     }
-    buf[pos] = '\0';
-    return pos;
+
+    buf[0] = '\0';
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
