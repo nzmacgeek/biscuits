@@ -2061,9 +2061,7 @@ static int32_t sys_faccessat2(int dirfd, const char *path, int mode, int flags) 
 #define KLOG_SIZE_UNREAD 9
 #define KLOG_SIZE_BUFFER 10
 
-/* Maximum formatted overhead added by syslog_read_entries() per entry.
- * Keep this conservative so klogctl size queries return a safe buffer size. */
-#define KLOG_PREFIX_MAX  256
+#define KLOG_PREFIX_MAX  SYSLOG_FMT_OVERHEAD
 #define KLOG_MAX_TEXT    (SYSLOG_RING_ENTRIES * (SYSLOG_MSG_MAX + KLOG_PREFIX_MAX))
 
 static int32_t sys_syslog(int type, char *buf, int len) {

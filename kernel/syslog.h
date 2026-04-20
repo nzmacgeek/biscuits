@@ -33,6 +33,7 @@
 // The total number of entries in the ring is managed internally by syslog.c.
 #define SYSLOG_MSG_MAX      256   /* maximum length of a single log line       */
 #define SYSLOG_RING_ENTRIES 128   /* total number of in-memory ring entries     */
+#define SYSLOG_FMT_OVERHEAD 160   /* fixed formatting overhead per rendered line */
 
 // ---------------------------------------------------------------------------
 // Log entry (stored in the ring buffer as a packed record)

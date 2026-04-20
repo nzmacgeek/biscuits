@@ -385,60 +385,61 @@ void syslog_install_kprintf_hook(void) {
 int syslog_read_entries(char *buf, int bufsize) {
     if (!buf || bufsize <= 0) return -1;
 
-    for (int attempt = 0; attempt < 4; attempt++) {
-        uint32_t snap_head = syslog_head;
-        uint32_t snap_count = syslog_count_val;
-        uint32_t snap_seq = syslog_seq;
-        uint32_t n = snap_count;
-        uint32_t start = (snap_head + SYSLOG_RING_ENTRIES -
-                          (n % SYSLOG_RING_ENTRIES)) % SYSLOG_RING_ENTRIES;
-        int pos = 0;
-        int retry = 0;
+    uint32_t flags = 0;
+    uint32_t alloc_n = SYSLOG_RING_ENTRIES;
+    uint32_t snap_head = 0;
+    uint32_t snap_count = 0;
+    uint32_t start = 0;
+    int pos = 0;
+    syslog_entry_t *snapshot;
 
-        for (uint32_t i = 0; i < n && pos < bufsize - 1; i++) {
-            uint32_t idx = (start + i) % SYSLOG_RING_ENTRIES;
-            syslog_entry_t entry_a;
-            syslog_entry_t entry_b;
-            char line[SYSLOG_MSG_MAX + 160];
-            int len;
-
-            memcpy(&entry_a, &syslog_ring[idx], sizeof(syslog_entry_t));
-            memcpy(&entry_b, &syslog_ring[idx], sizeof(syslog_entry_t));
-            if (memcmp(&entry_a, &entry_b, sizeof(syslog_entry_t)) != 0) {
-                retry = 1;
-                break;
-            }
-
-            if (entry_a.src_file[0] != '\0') {
-                len = syslog_snprintf(line, sizeof(line),
-                                      "[%u] [T+%us] %s [%s](%s:%s) %s\n",
-                                      entry_a.seq, entry_a.timestamp,
-                                      level_str((int)entry_a.level), entry_a.tag,
-                                      entry_a.src_file, entry_a.src_func, entry_a.msg);
-            } else {
-                len = syslog_snprintf(line, sizeof(line),
-                                      "[%u] [T+%us] %s [%s] %s\n",
-                                      entry_a.seq, entry_a.timestamp,
-                                      level_str((int)entry_a.level), entry_a.tag, entry_a.msg);
-            }
-
-            int copy = len;
-            if (pos + copy > bufsize - 1) copy = bufsize - 1 - pos;
-            memcpy(buf + pos, line, (size_t)copy);
-            pos += copy;
-        }
-
-        if (!retry &&
-            snap_head == syslog_head &&
-            snap_count == syslog_count_val &&
-            snap_seq == syslog_seq) {
-            buf[pos] = '\0';
-            return pos;
-        }
+    snapshot = kheap_alloc((size_t)alloc_n * sizeof(syslog_entry_t), 0);
+    if (!snapshot) {
+        return -1;
     }
 
-    buf[0] = '\0';
-    return -1;
+    __asm__ volatile("pushf; cli; pop %0" : "=r"(flags) : : "memory", "cc");
+    snap_head = syslog_head;
+    snap_count = syslog_count_val;
+    if (snap_count > SYSLOG_RING_ENTRIES) snap_count = SYSLOG_RING_ENTRIES;
+    if (snap_count > alloc_n) snap_count = alloc_n;
+    start = (snap_head + SYSLOG_RING_ENTRIES - snap_count) % SYSLOG_RING_ENTRIES;
+    for (uint32_t i = 0; i < snap_count; i++) {
+        memcpy(&snapshot[i], &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES],
+               sizeof(syslog_entry_t));
+    }
+    __asm__ volatile("push %0; popf" : : "r"(flags) : "memory", "cc");
+
+    if (snap_count == 0) {
+        kheap_free(snapshot);
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < snap_count && pos < bufsize - 1; i++) {
+        const syslog_entry_t *e = &snapshot[i];
+        char line[SYSLOG_MSG_MAX + SYSLOG_FMT_OVERHEAD];
+        int len;
+        if (e->src_file[0] != '\0') {
+            len = syslog_snprintf(line, sizeof(line),
+                                  "[%u] [T+%us] %s [%s](%s:%s) %s\n",
+                                  e->seq, e->timestamp,
+                                  level_str((int)e->level), e->tag,
+                                  e->src_file, e->src_func, e->msg);
+        } else {
+            len = syslog_snprintf(line, sizeof(line),
+                                  "[%u] [T+%us] %s [%s] %s\n",
+                                  e->seq, e->timestamp,
+                                  level_str((int)e->level), e->tag, e->msg);
+        }
+        int copy = len;
+        if (pos + copy > bufsize - 1) copy = bufsize - 1 - pos;
+        memcpy(buf + pos, line, (size_t)copy);
+        pos += copy;
+    }
+
+    buf[pos] = '\0';
+    kheap_free(snapshot);
+    return pos;
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +528,7 @@ void syslog_flush_to_fs(void) {
         }
 
         /* Now write out the snapshot without holding locks or disabling IRQs. */
-        char line[SYSLOG_MSG_MAX + 160];
+        char line[SYSLOG_MSG_MAX + SYSLOG_FMT_OVERHEAD];
         for (uint32_t i = 0; i < n; i++) {
             syslog_entry_t *e = &snapshot[i];
             char lvlbuf[16];
@@ -554,7 +555,7 @@ void syslog_flush_to_fs(void) {
         kheap_free(snapshot);
     } else {
         /* Allocation failed: fall back to direct writes but be defensive. */
-        char line[SYSLOG_MSG_MAX + 160];
+        char line[SYSLOG_MSG_MAX + SYSLOG_FMT_OVERHEAD];
         for (uint32_t i = 0; i < n; i++) {
             syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
             char lvlbuf[16];
