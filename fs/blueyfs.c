@@ -931,14 +931,20 @@ static int biscuitfs_open_cb(const char *path, int flags) {
         if (!fd_table[i].used) {
             biscuitfs_inode_t inode;
             read_inode(ino, &inode);
+            if (flags & VFS_O_TRUNC) {
+                biscuitfs_journal_begin();
+                inode.size_lo = 0;
+                write_inode(ino, &inode);
+                biscuitfs_journal_commit();
+            }
             fd_table[i].used     = 1;
             fd_table[i].inode_no = ino;
-            fd_table[i].offset   = 0;
+            fd_table[i].offset   = (flags & VFS_O_APPEND) ? inode.size_lo : 0;
             fd_table[i].size     = inode.size_lo;
             fd_table[i].flags    = (uint32_t)flags;
             if (flags & VFS_O_TRUNC) {
-                /* Would free data blocks and reset size; omitted for brevity */
                 fd_table[i].size = 0;
+                fd_table[i].offset = 0;
             }
             biscuitfs_dbg_check_canary("biscuitfs_open_cb", parent_guard.head, parent_guard.tail);
             return i;
@@ -1091,6 +1097,10 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
 
     biscuitfs_inode_t inode;
     read_inode(f->inode_no, &inode);
+    if (f->flags & VFS_O_APPEND) {
+        f->offset = inode.size_lo;
+        f->size = inode.size_lo;
+    }
 
     biscuitfs_journal_begin();
 
