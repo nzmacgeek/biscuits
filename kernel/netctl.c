@@ -328,6 +328,7 @@ static int netctl_handle_netdev_set(const netctl_msg_header_t *req,
 
     while (remaining >= sizeof(netctl_attr_header_t)) {
         const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
 
         if (attr->attr_type == NETCTL_ATTR_IFINDEX && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
@@ -401,9 +402,8 @@ static int netctl_handle_addr_new(const netctl_msg_header_t *req,
             prefix_len = *payload;
         }
 
-        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
-        if (aligned_len == 0 || aligned_len > remaining) break;
+        if (aligned_len > remaining) break;
         attr_data += aligned_len;
         remaining -= aligned_len;
     }
@@ -452,6 +452,7 @@ static int netctl_handle_addr_del(const netctl_msg_header_t *req,
 
     while (remaining >= sizeof(netctl_attr_header_t)) {
         const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
 
         if (attr->attr_type == NETCTL_ATTR_IFINDEX && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
@@ -462,9 +463,8 @@ static int netctl_handle_addr_del(const netctl_msg_header_t *req,
             memcpy(&addr_value, payload, sizeof(uint32_t));
         }
 
-        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
-        if (aligned_len == 0 || aligned_len > remaining) break;
+        if (aligned_len > remaining) break;
         attr_data += aligned_len;
         remaining -= aligned_len;
     }
@@ -501,6 +501,7 @@ static int netctl_handle_addr_list(const netctl_msg_header_t *req,
 
     while (remaining >= sizeof(netctl_attr_header_t)) {
         const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
 
         if (attr->attr_type == NETCTL_ATTR_IFINDEX &&
@@ -508,9 +509,8 @@ static int netctl_handle_addr_list(const netctl_msg_header_t *req,
             memcpy(&ifindex, payload, sizeof(uint32_t));
         }
 
-        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
-        if (aligned_len == 0 || aligned_len > remaining) break;
+        if (aligned_len > remaining) break;
         attr_data += aligned_len;
         remaining -= aligned_len;
     }
@@ -571,6 +571,7 @@ static int netctl_handle_route_new(const netctl_msg_header_t *req,
 
     while (remaining >= sizeof(netctl_attr_header_t)) {
         const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
 
         if (attr->attr_type == NETCTL_ATTR_ROUTE_FAMILY &&
@@ -594,9 +595,8 @@ static int netctl_handle_route_new(const netctl_msg_header_t *req,
             memcpy(&metric, payload, sizeof(uint32_t));
         }
 
-        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
-        if (aligned_len == 0 || aligned_len > remaining) break;
+        if (aligned_len > remaining) break;
         attr_data += aligned_len;
         remaining -= aligned_len;
     }
@@ -642,6 +642,7 @@ static int netctl_handle_route_del(const netctl_msg_header_t *req,
 
     while (remaining >= sizeof(netctl_attr_header_t)) {
         const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
 
         if (attr->attr_type == NETCTL_ATTR_ROUTE_FAMILY &&
@@ -656,9 +657,8 @@ static int netctl_handle_route_del(const netctl_msg_header_t *req,
             prefix_len = *payload;
         }
 
-        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
-        if (aligned_len == 0 || aligned_len > remaining) break;
+        if (aligned_len > remaining) break;
         attr_data += aligned_len;
         remaining -= aligned_len;
     }

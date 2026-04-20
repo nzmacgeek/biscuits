@@ -256,10 +256,6 @@ def apply_metadata(dest: Path, inode: Inode, *, follow_symlinks: bool) -> None:
 def safe_child_path(dest: Path, name: str) -> Path:
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         raise ValueError(f"unsafe directory entry name: {name!r}")
-    if os.path.sep and os.path.sep in name:
-        raise ValueError(f"unsafe directory entry name: {name!r}")
-    if os.path.altsep and os.path.altsep in name:
-        raise ValueError(f"unsafe directory entry name: {name!r}")
     return dest / name
 
 
