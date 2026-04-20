@@ -433,6 +433,9 @@ disk-musl: $(TARGET) $(MUSL_INIT_TARGET) $(RESCUE_SH_TARGET) ensure-disk-sysroot
 fat-log-disk:
 	@bash tools/mkfat_logs_disk.sh "$(LOG_DISK_IMAGE)"
 
+extract-var-log:
+	@$(PYTHON) tools/extract_var_log.py --image "$(DISK_IMAGE)" --output-dir debug/var-log
+
 run: disk ; @if [ "$(ARCH)" != "i386" ]; then echo "  [RUN]  QEMU run is only supported for ARCH=i386"; exit 1; fi; BUILD_DIR=$(BUILD_DIR) bash tools/qemu-run.sh
 
 run-m68k: $(BUILD_DIR)/blueyos-m68k.elf

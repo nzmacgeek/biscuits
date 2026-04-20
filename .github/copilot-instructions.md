@@ -12,16 +12,21 @@
 
 ## Ecosystem repos
 
-| Repo | Role |
-|------|------|
-| **nzmacgeek/biscuits** | i386 kernel, VFS, syscalls, drivers |
-| **nzmacgeek/claw** | PID 1 init daemon |
-| **nzmacgeek/walkies** | Network configuration (netctl client) |
-| **nzmacgeek/scout** | DHCP and DNS client daemon |
-| **nzmacgeek/yap** | Syslog daemon |
-| **nzmacgeek/dimsim** | Package manager |
-| **nzmacgeek/musl-blueyos** | musl libc for BlueyOS |
-| **nzmacgeek/blueyos-bash** | Bash 5 for BlueyOS |
+The authoritative repo-purpose mapping lives in `AGENT_INSTRUCTIONS.md`. Use the
+list below as a quick repo index only, and refer to the root instructions file
+for each repo's current purpose/role.
+
+| Repo |
+|------|
+| `nzmacgeek/biscuits` |
+| `nzmacgeek/claw` |
+| `nzmacgeek/matey` |
+| `nzmacgeek/walkies` |
+| `nzmacgeek/yap` |
+| `nzmacgeek/dimsim` |
+| `nzmacgeek/musl-blueyos` |
+| `nzmacgeek/blueyos-bash` |
+| `nzmacgeek/scout` |
 
 ## Key conventions
 
