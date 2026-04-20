@@ -2046,6 +2046,43 @@ static int32_t sys_faccessat2(int dirfd, const char *path, int mode, int flags) 
 }
 #undef FACCESSAT2_VALID_FLAGS
 
+// ---------------------------------------------------------------------------
+// sys_syslog — klogctl(2) / dmesg ring-buffer access (NR 103)
+// ---------------------------------------------------------------------------
+// Implements the Linux syslog(2) interface (subset).
+// type values:
+//   2  READ        — copy up to `len` unread bytes to buf; we treat as READ_ALL
+//   3  READ_ALL    — copy the whole ring buffer to buf
+//   9  SIZE_UNREAD — return number of characters in the ring (approx)
+//  10  SIZE_BUFFER — return maximum buffer size
+
+// Include syslog.h for syslog_read_entries
+#include "syslog.h"
+
+#define KLOG_READ        2
+#define KLOG_READ_ALL    3
+#define KLOG_SIZE_UNREAD 9
+#define KLOG_SIZE_BUFFER 10
+
+// Maximum text size we'll ever return (~128 entries * ~160 bytes each)
+#define KLOG_MAX_TEXT    (128 * 160)
+
+static int32_t sys_syslog(int type, char *buf, int len) {
+    switch (type) {
+        case KLOG_READ:
+        case KLOG_READ_ALL: {
+            if (!buf || len <= 0) return -BLUEY_EINVAL;
+            if (!buf) return -BLUEY_EFAULT;
+            return (int32_t)syslog_read_entries(buf, len);
+        }
+        case KLOG_SIZE_UNREAD:
+        case KLOG_SIZE_BUFFER:
+            return KLOG_MAX_TEXT;
+        default:
+            return -BLUEY_EINVAL;
+    }
+}
+
 /* Minimal fcntl: F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL */
 #define FCNTL_F_DUPFD   0
 #define FCNTL_F_GETFD   1
@@ -3530,6 +3567,9 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_FACCESSAT2:
             ret = sys_faccessat2((int)regs->ebx, (const char*)regs->ecx,
                                  (int)regs->edx, (int)regs->esi);
+            break;
+        case SYS_SYSLOG:
+            ret = sys_syslog((int)regs->ebx, (char*)regs->ecx, (int)regs->edx);
             break;
         default: {
             /* Unknown syscall - don't crash. Log caller info to help mapping. */

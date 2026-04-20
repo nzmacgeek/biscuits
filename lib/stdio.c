@@ -317,6 +317,14 @@ void kprintf_direct(const char *fmt, ...) {
     kprintf_backend_flush();
 }
 
+void kprintf_putchar(char c) {
+    kprintf_backend_putc(c);
+}
+
+void kprintf_flush(void) {
+    kprintf_backend_flush();
+}
+
 void kprintf(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

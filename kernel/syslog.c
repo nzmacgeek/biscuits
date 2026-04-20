@@ -241,11 +241,11 @@ static void syslog_write_loc_va(int level, const char *tag, const char *file,
         else if (level == LOG_DEBUG)    vga_set_color(VGA_DARK_GREY,   VGA_BLACK);
         else                            vga_set_color(VGA_WHITE,       VGA_BLACK);
         if (g_verbose_level >= VERBOSE_INFO && entry->src_file[0] != '\0') {
-            kprintf("[%4u][%s](%s:%s) %s\n",
+            kprintf_direct("[%4u][%s](%s:%s) %s\n",
                     entry->timestamp, entry->tag,
                     entry->src_file, entry->src_func, entry->msg);
         } else {
-            kprintf("[%4u][%s] %s\n", entry->timestamp, entry->tag, entry->msg);
+            kprintf_direct("[%4u][%s] %s\n", entry->timestamp, entry->tag, entry->msg);
         }
         vga_set_color(VGA_WHITE, VGA_BLACK);
     }
@@ -312,7 +312,7 @@ void syslog_dmesg(void) {
         }
     }
     vga_set_color(VGA_WHITE, VGA_BLACK);
-    kprintf("-- end of kernel log --\n");
+    kprintf_direct("-- end of kernel log --\n");
 }
 
 // Lightweight helper to let other subsystems record a caller address into
@@ -324,6 +324,97 @@ void syslog_record_caller(void *caller) {
     syslog_flush_hist[fh_idx].caller = caller;
     syslog_flush_hist_head++;
     if (syslog_flush_hist_count < FLUSH_HIST_ENTRIES) syslog_flush_hist_count++;
+}
+
+// ---------------------------------------------------------------------------
+// kprintf hook — capture all kprintf output into the ring buffer
+// ---------------------------------------------------------------------------
+
+// When the hook is active it REPLACES VGA output, so each char must be
+// forwarded to the VGA backend (via kprintf_putchar) and also buffered into
+// a line buffer.  On newline (or overflow) the accumulated line is committed
+// to the ring buffer as a LOG_INFO "KERN" entry without going back through
+// kprintf (which would recurse).
+
+#define KPRINTF_HOOK_BUF 256
+static char   kprintf_hook_buf[KPRINTF_HOOK_BUF];
+static int    kprintf_hook_pos = 0;
+static int    kprintf_hook_in  = 0; // recursion guard
+
+static void kprintf_syslog_hook(char c, void *ctx) {
+    (void)ctx;
+
+    // Always emit to VGA (hook replaces the normal VGA path)
+    kprintf_putchar(c);
+
+    // Guard against re-entrancy (syslog -> kprintf_direct is fine, but any
+    // path that called kprintf would recurse back here)
+    if (kprintf_hook_in) return;
+
+    // Buffer the character
+    if (kprintf_hook_pos < KPRINTF_HOOK_BUF - 1) {
+        kprintf_hook_buf[kprintf_hook_pos++] = c;
+    }
+
+    // Flush on newline or when the buffer is nearly full
+    if (c == '\n' || kprintf_hook_pos >= KPRINTF_HOOK_BUF - 1) {
+        kprintf_hook_buf[kprintf_hook_pos] = '\0';
+        // Strip trailing newline for cleaner storage
+        int end = kprintf_hook_pos - 1;
+        while (end >= 0 && (kprintf_hook_buf[end] == '\n' || kprintf_hook_buf[end] == '\r'))
+            kprintf_hook_buf[end--] = '\0';
+
+        if (kprintf_hook_buf[0] != '\0') {
+            kprintf_hook_in = 1;
+            syslog_write(LOG_INFO, "KERN", "%s", kprintf_hook_buf);
+            kprintf_hook_in = 0;
+        }
+        kprintf_hook_pos = 0;
+    }
+}
+
+void syslog_install_kprintf_hook(void) {
+    kprintf_hook_pos = 0;
+    kprintf_hook_in  = 0;
+    kprintf_set_output_hook(kprintf_syslog_hook, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// syslog_read_entries — copy ring buffer as text to a userspace buffer
+// ---------------------------------------------------------------------------
+// Used by the sys_syslog syscall (type=3 READ_ALL).
+// Returns the number of bytes written (not including NUL), or -1 on error.
+
+int syslog_read_entries(char *buf, int bufsize) {
+    if (!buf || bufsize <= 0) return -1;
+
+    uint32_t n = syslog_count_val;
+    uint32_t start = (syslog_head - n) % SYSLOG_RING_ENTRIES;
+    int pos = 0;
+
+    for (uint32_t i = 0; i < n && pos < bufsize - 1; i++) {
+        syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
+        char line[SYSLOG_MSG_MAX + 160];
+        int len;
+        if (e->src_file[0] != '\0') {
+            len = syslog_snprintf(line, sizeof(line),
+                                  "[%u] [T+%us] %s [%s](%s:%s) %s\n",
+                                  e->seq, e->timestamp,
+                                  level_str((int)e->level), e->tag,
+                                  e->src_file, e->src_func, e->msg);
+        } else {
+            len = syslog_snprintf(line, sizeof(line),
+                                  "[%u] [T+%us] %s [%s] %s\n",
+                                  e->seq, e->timestamp,
+                                  level_str((int)e->level), e->tag, e->msg);
+        }
+        int copy = len;
+        if (pos + copy > bufsize - 1) copy = bufsize - 1 - pos;
+        memcpy(buf + pos, line, (size_t)copy);
+        pos += copy;
+    }
+    buf[pos] = '\0';
+    return pos;
 }
 
 // ---------------------------------------------------------------------------

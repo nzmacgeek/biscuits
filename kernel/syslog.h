@@ -86,6 +86,17 @@ void syslog_dmesg(void);
 // Return the number of entries currently in the ring buffer.
 uint32_t syslog_count(void);
 
+// Install a kprintf hook so that all kprintf() output is also captured into
+// the ring buffer at LOG_INFO level.  Call once after syslog_init().
+// After this call, kprintf() and kprintf_direct() both reach VGA; only
+// kprintf() output is additionally stored in the ring.
+void syslog_install_kprintf_hook(void);
+
+// Copy all ring-buffer entries to buf as human-readable text (one line per
+// entry).  Used by the sys_syslog syscall (type=3 READ_ALL).
+// Returns bytes written (excluding NUL), or -1 on invalid args.
+int syslog_read_entries(char *buf, int bufsize);
+
 // Lightweight hook for other subsystems to record a caller into the
 // syslog flush history buffer. Callers should pass their return address
 // (e.g. __builtin_return_address(0)). This is useful for short-lived

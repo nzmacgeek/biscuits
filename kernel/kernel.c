@@ -163,6 +163,9 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 1b: Syslog — initialise ring buffer before any other subsystem
     syslog_init();
     syslog_set_verbose(boot_args.verbose);
+    // Redirect all kprintf() output into the ring buffer so kernel.log
+    // captures the full boot sequence, not just explicit syslog_* calls.
+    syslog_install_kprintf_hook();
     syslog_info("KERN", "BlueyOS kernel starting up (verbose=%d)", boot_args.verbose);
 
     kprintf("  %s\n", BLUEYOS_VERSION_STRING);
