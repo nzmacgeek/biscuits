@@ -111,6 +111,7 @@ make BUILD_NUMBER=42   # Build with a specific build number
 make iso               # Create bootable ISO
 make disk              # Create build/blueyos-disk.img with BlueyFS root + swap
 make run               # Launch in QEMU
+make extract-var-log   # Extract /var/log from build/blueyos-disk.img to debug/var-log
 make version           # Print version info
 make clean             # Clean build artifacts
 ```
@@ -124,6 +125,7 @@ Host-side filesystem tools:
 ```bash
 make tools-host
 ./build/tools/fsck_blueyfs -o 67584 build/blueyos-disk.img   # 67584 = default BlueyFS root partition LBA
+make extract-var-log                                         # Host helper for /var/log extraction
 ```
 
 The default disk layout is:
@@ -136,6 +138,15 @@ GRUB now boots with `root=/dev/hda2 rootfstype=blueyfs`, and the kernel reads `/
 after mounting root to enable swap and any additional simple mounts. The full loader-provided
 kernel command line is also preserved in `/proc/cmdline`, so Claw-specific boot options such as
 `claw.target=multi-user` or `claw.single=1` should be passed directly on the kernel command line.
+Generated GRUB entries default to `verbose=2` for debug-friendly boot logging.
+
+## Networking control plane (`netctl`)
+
+The `AF_BLUEY_NETCTL` / `SOCK_NETCTL` control-plane socket in the kernel supports:
+
+- Netdev list/get/set
+- Address add/del/list (IPv4)
+- Route add/del/list (IPv4)
 
 See [TESTING.md](TESTING.md) for detailed testing instructions and expected output.
 

@@ -93,14 +93,14 @@ compatibility.
 - [x] Report link state
 
 ### Address Operations
-- [ ] Add address
-- [ ] Remove address
-- [ ] Enumerate addresses per interface
+- [x] Add address
+- [x] Remove address
+- [x] Enumerate addresses per interface
 
 ### Routing Operations
-- [ ] Add route
-- [ ] Remove route
-- [ ] Enumerate routes
+- [x] Add route
+- [x] Remove route
+- [x] Enumerate routes
 
 All operations must be accessible via the Netlink-like socket.
 

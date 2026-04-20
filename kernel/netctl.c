@@ -328,6 +328,7 @@ static int netctl_handle_netdev_set(const netctl_msg_header_t *req,
 
     while (remaining >= sizeof(netctl_attr_header_t)) {
         const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
         const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
 
         if (attr->attr_type == NETCTL_ATTR_IFINDEX && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
@@ -369,6 +370,363 @@ static int netctl_handle_netdev_set(const netctl_msg_header_t *req,
     // Send ACK
     netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
     netctl_msg_init(resp, NETCTL_MSG_DONE, 0, req->msg_seq, 0);
+    return (int)resp->msg_len;
+}
+
+// Helper: Process ADDR_NEW request
+static int netctl_handle_addr_new(const netctl_msg_header_t *req,
+                                   const void *msg, size_t len,
+                                   void *response, size_t response_maxlen) {
+    (void)len;
+
+    const uint8_t *attr_data = (const uint8_t *)msg + sizeof(netctl_msg_header_t);
+    uint32_t remaining = req->msg_len - sizeof(netctl_msg_header_t);
+    uint32_t ifindex = 0;
+    uint16_t family = NETDEV_AF_INET;
+    uint32_t addr_value = 0;
+    uint8_t prefix_len = 0;
+    int has_addr = 0;
+
+    while (remaining >= sizeof(netctl_attr_header_t)) {
+        const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
+
+        if (attr->attr_type == NETCTL_ATTR_IFINDEX && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&ifindex, payload, sizeof(uint32_t));
+        } else if (attr->attr_type == NETCTL_ATTR_ADDR_FAMILY && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint16_t)) {
+            memcpy(&family, payload, sizeof(uint16_t));
+        } else if (attr->attr_type == NETCTL_ATTR_ADDR_VALUE && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&addr_value, payload, sizeof(uint32_t));
+            has_addr = 1;
+        } else if (attr->attr_type == NETCTL_ATTR_ADDR_PREFIX && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint8_t)) {
+            prefix_len = *payload;
+        }
+
+        uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
+        if (aligned_len > remaining) break;
+        attr_data += aligned_len;
+        remaining -= aligned_len;
+    }
+
+    if (ifindex == 0) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "No ifindex specified");
+    }
+
+    if (family != NETDEV_AF_INET) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Unsupported address family");
+    }
+
+    if (!has_addr) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "No address specified");
+    }
+
+    if (prefix_len > 32) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Invalid IPv4 prefix length");
+    }
+
+    if (netdev_addr_add(ifindex, (uint16_t)family, &addr_value, prefix_len) < 0) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Failed to add address");
+    }
+
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_DONE, 0, req->msg_seq, 0);
+    return (int)resp->msg_len;
+}
+
+// Helper: Process ADDR_DEL request
+static int netctl_handle_addr_del(const netctl_msg_header_t *req,
+                                   const void *msg, size_t len,
+                                   void *response, size_t response_maxlen) {
+    (void)len;
+
+    const uint8_t *attr_data = (const uint8_t *)msg + sizeof(netctl_msg_header_t);
+    uint32_t remaining = req->msg_len - sizeof(netctl_msg_header_t);
+    uint32_t ifindex = 0;
+    uint16_t family = NETDEV_AF_INET;
+    uint32_t addr_value = 0;
+
+    while (remaining >= sizeof(netctl_attr_header_t)) {
+        const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
+        const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
+
+        if (attr->attr_type == NETCTL_ATTR_IFINDEX && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&ifindex, payload, sizeof(uint32_t));
+        } else if (attr->attr_type == NETCTL_ATTR_ADDR_FAMILY && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint16_t)) {
+            memcpy(&family, payload, sizeof(uint16_t));
+        } else if (attr->attr_type == NETCTL_ATTR_ADDR_VALUE && attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&addr_value, payload, sizeof(uint32_t));
+        }
+
+        uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
+        if (aligned_len > remaining) break;
+        attr_data += aligned_len;
+        remaining -= aligned_len;
+    }
+
+    if (ifindex == 0) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "No ifindex specified");
+    }
+
+    if (family != NETDEV_AF_INET) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Unsupported address family");
+    }
+
+    if (netdev_addr_del(ifindex, (uint16_t)family, &addr_value) < 0) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Failed to delete address");
+    }
+
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_DONE, 0, req->msg_seq, 0);
+    return (int)resp->msg_len;
+}
+
+// Helper: Process ADDR_LIST request
+static int netctl_handle_addr_list(const netctl_msg_header_t *req,
+                                    const void *msg, size_t len,
+                                    void *response, size_t response_maxlen) {
+    (void)len;
+
+    const uint8_t *attr_data = (const uint8_t *)msg + sizeof(netctl_msg_header_t);
+    uint32_t remaining = req->msg_len - sizeof(netctl_msg_header_t);
+    uint32_t ifindex = 0;
+
+    while (remaining >= sizeof(netctl_attr_header_t)) {
+        const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
+        const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
+
+        if (attr->attr_type == NETCTL_ATTR_IFINDEX &&
+            attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&ifindex, payload, sizeof(uint32_t));
+        }
+
+        uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
+        if (aligned_len > remaining) break;
+        attr_data += aligned_len;
+        remaining -= aligned_len;
+    }
+
+    if (ifindex == 0) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "No ifindex specified");
+    }
+
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_ADDR_LIST, 0, req->msg_seq, 0);
+
+    netdev_addr_t addrs[NETDEV_MAX_ADDRS];
+    int count = netdev_addr_list(ifindex, addrs, NETDEV_MAX_ADDRS);
+
+    for (int i = 0; i < count; i++) {
+        uint8_t entry_buf[128];
+        netctl_msg_header_t *ehdr = (netctl_msg_header_t *)entry_buf;
+        netctl_msg_init(ehdr, 0, 0, 0, 0);
+
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_IFINDEX,
+                            &addrs[i].ifindex, sizeof(addrs[i].ifindex));
+        uint16_t fam = addrs[i].family;
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ADDR_FAMILY, &fam, sizeof(fam));
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ADDR_PREFIX,
+                            &addrs[i].prefix_len, sizeof(addrs[i].prefix_len));
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ADDR_VALUE,
+                            &addrs[i].addr.ipv4, sizeof(addrs[i].addr.ipv4));
+
+        const uint8_t *payload = entry_buf + sizeof(netctl_msg_header_t);
+        uint16_t plen = (uint16_t)(ehdr->msg_len - sizeof(netctl_msg_header_t));
+        netctl_msg_add_attr(response, response_maxlen,
+                            NETCTL_ATTR_NESTED, payload, plen);
+    }
+
+    return (int)resp->msg_len;
+}
+
+// Helper: Process ROUTE_NEW request
+static int netctl_handle_route_new(const netctl_msg_header_t *req,
+                                    const void *msg, size_t len,
+                                    void *response, size_t response_maxlen) {
+    (void)len;
+
+    const uint8_t *attr_data = (const uint8_t *)msg + sizeof(netctl_msg_header_t);
+    uint32_t remaining = req->msg_len - sizeof(netctl_msg_header_t);
+    uint16_t family = NETDEV_AF_INET;
+    uint32_t dest = 0;
+    uint8_t prefix_len = 0;
+    uint32_t gateway = 0;
+    uint32_t oif = 0;
+    uint32_t metric = 0;
+    int has_dest = 0;
+
+    while (remaining >= sizeof(netctl_attr_header_t)) {
+        const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
+        const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
+
+        if (attr->attr_type == NETCTL_ATTR_ROUTE_FAMILY &&
+            attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint16_t)) {
+            memcpy(&family, payload, sizeof(uint16_t));
+        } else if (attr->attr_type == NETCTL_ATTR_ROUTE_DST &&
+                   attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&dest, payload, sizeof(uint32_t));
+            has_dest = 1;
+        } else if (attr->attr_type == NETCTL_ATTR_ROUTE_PREFIX &&
+                   attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint8_t)) {
+            prefix_len = *payload;
+        } else if (attr->attr_type == NETCTL_ATTR_ROUTE_GW &&
+                   attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&gateway, payload, sizeof(uint32_t));
+        } else if (attr->attr_type == NETCTL_ATTR_ROUTE_OIF &&
+                   attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&oif, payload, sizeof(uint32_t));
+        } else if (attr->attr_type == NETCTL_ATTR_ROUTE_METRIC &&
+                   attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&metric, payload, sizeof(uint32_t));
+        }
+
+        uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
+        if (aligned_len > remaining) break;
+        attr_data += aligned_len;
+        remaining -= aligned_len;
+    }
+
+    if (!has_dest) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "No destination specified");
+    }
+
+    if (family != NETDEV_AF_INET) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Unsupported route family");
+    }
+
+    if (prefix_len > 32) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Invalid IPv4 prefix length");
+    }
+
+    const void *gw_ptr = gateway ? &gateway : NULL;
+    if (netdev_route_add(family, &dest, prefix_len, gw_ptr, oif, metric) < 0) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Failed to add route");
+    }
+
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_DONE, 0, req->msg_seq, 0);
+    return (int)resp->msg_len;
+}
+
+// Helper: Process ROUTE_DEL request
+static int netctl_handle_route_del(const netctl_msg_header_t *req,
+                                    const void *msg, size_t len,
+                                    void *response, size_t response_maxlen) {
+    (void)len;
+
+    const uint8_t *attr_data = (const uint8_t *)msg + sizeof(netctl_msg_header_t);
+    uint32_t remaining = req->msg_len - sizeof(netctl_msg_header_t);
+    uint16_t family = NETDEV_AF_INET;
+    uint32_t dest = 0;
+    uint8_t prefix_len = 0;
+    int has_dest = 0;
+
+    while (remaining >= sizeof(netctl_attr_header_t)) {
+        const netctl_attr_header_t *attr = (const netctl_attr_header_t *)attr_data;
+        if (attr->attr_len < NETCTL_ATTR_HDRLEN) break;
+        const uint8_t *payload = attr_data + sizeof(netctl_attr_header_t);
+
+        if (attr->attr_type == NETCTL_ATTR_ROUTE_FAMILY &&
+            attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint16_t)) {
+            memcpy(&family, payload, sizeof(uint16_t));
+        } else if (attr->attr_type == NETCTL_ATTR_ROUTE_DST &&
+                   attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint32_t)) {
+            memcpy(&dest, payload, sizeof(uint32_t));
+            has_dest = 1;
+        } else if (attr->attr_type == NETCTL_ATTR_ROUTE_PREFIX &&
+                   attr->attr_len >= sizeof(netctl_attr_header_t) + sizeof(uint8_t)) {
+            prefix_len = *payload;
+        }
+
+        uint16_t aligned_len = NETCTL_ATTR_ALIGN(attr->attr_len);
+        if (aligned_len > remaining) break;
+        attr_data += aligned_len;
+        remaining -= aligned_len;
+    }
+
+    if (!has_dest) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "No destination specified");
+    }
+
+    if (family != NETDEV_AF_INET) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Unsupported route family");
+    }
+
+    if (prefix_len > 32) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Invalid IPv4 prefix length");
+    }
+
+    if (netdev_route_del(family, &dest, prefix_len) < 0) {
+        return netctl_build_error(response, response_maxlen, req->msg_seq,
+                                  -1, "Route not found");
+    }
+
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_DONE, 0, req->msg_seq, 0);
+    return (int)resp->msg_len;
+}
+
+// Helper: Process ROUTE_LIST request
+static int netctl_handle_route_list(const netctl_msg_header_t *req,
+                                     void *response, size_t response_maxlen) {
+    netctl_msg_header_t *resp = (netctl_msg_header_t *)response;
+    netctl_msg_init(resp, NETCTL_MSG_ROUTE_LIST, 0, req->msg_seq, 0);
+
+    netdev_route_t routes[NETDEV_MAX_ROUTES];
+    int count = netdev_route_list(routes, NETDEV_MAX_ROUTES);
+
+    for (int i = 0; i < count; i++) {
+        uint8_t entry_buf[192];
+        netctl_msg_header_t *ehdr = (netctl_msg_header_t *)entry_buf;
+        netctl_msg_init(ehdr, 0, 0, 0, 0);
+
+        uint16_t fam = routes[i].family;
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ROUTE_FAMILY, &fam, sizeof(fam));
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ROUTE_DST,
+                            &routes[i].dest.ipv4, sizeof(routes[i].dest.ipv4));
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ROUTE_PREFIX,
+                            &routes[i].prefix_len, sizeof(routes[i].prefix_len));
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ROUTE_GW,
+                            &routes[i].gateway.ipv4, sizeof(routes[i].gateway.ipv4));
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ROUTE_OIF,
+                            &routes[i].oif, sizeof(routes[i].oif));
+        netctl_msg_add_attr(entry_buf, sizeof(entry_buf),
+                            NETCTL_ATTR_ROUTE_METRIC,
+                            &routes[i].metric, sizeof(routes[i].metric));
+
+        const uint8_t *payload = entry_buf + sizeof(netctl_msg_header_t);
+        uint16_t plen = (uint16_t)(ehdr->msg_len - sizeof(netctl_msg_header_t));
+        netctl_msg_add_attr(response, response_maxlen,
+                            NETCTL_ATTR_NESTED, payload, plen);
+    }
+
     return (int)resp->msg_len;
 }
 
@@ -414,14 +772,22 @@ int netctl_process_message(const void *msg, size_t len, void *response,
             return netctl_handle_netdev_set(hdr, msg, len, response, response_maxlen);
 
         case NETCTL_MSG_ADDR_NEW:
+            return netctl_handle_addr_new(hdr, msg, len, response, response_maxlen);
+
         case NETCTL_MSG_ADDR_DEL:
+            return netctl_handle_addr_del(hdr, msg, len, response, response_maxlen);
+
         case NETCTL_MSG_ADDR_LIST:
+            return netctl_handle_addr_list(hdr, msg, len, response, response_maxlen);
+
         case NETCTL_MSG_ROUTE_NEW:
+            return netctl_handle_route_new(hdr, msg, len, response, response_maxlen);
+
         case NETCTL_MSG_ROUTE_DEL:
+            return netctl_handle_route_del(hdr, msg, len, response, response_maxlen);
+
         case NETCTL_MSG_ROUTE_LIST:
-            // Not yet implemented
-            return netctl_build_error(response, response_maxlen, hdr->msg_seq,
-                                      -1, "Operation not yet implemented");
+            return netctl_handle_route_list(hdr, response, response_maxlen);
 
         default:
             return netctl_build_error(response, response_maxlen, hdr->msg_seq,

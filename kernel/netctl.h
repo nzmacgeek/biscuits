@@ -104,6 +104,8 @@ typedef struct {
 #define NETCTL_ATTR_ROUTE_GW    31  // Gateway address
 #define NETCTL_ATTR_ROUTE_OIF   32  // Output interface index
 #define NETCTL_ATTR_ROUTE_METRIC 33 // Route metric (uint32_t)
+#define NETCTL_ATTR_ROUTE_PREFIX 34 // Route prefix length (uint8_t)
+#define NETCTL_ATTR_ROUTE_FAMILY 35 // Route address family (uint16_t)
 
 // TLV attribute header
 // attr_len stores the actual attribute length (header + payload), NOT including

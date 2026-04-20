@@ -16,7 +16,8 @@ repos and consult the relevant repo:
 | **nzmacgeek/biscuits** | i386 kernel, VFS, syscalls, drivers | `kernel/`, `drivers/`, `fs/`, `net/` |
 | **nzmacgeek/claw** | PID 1 init daemon (service manager) | `src/claw/main.c`, `src/core/service/supervisor.c` |
 | **nzmacgeek/matey** | getty / login prompt | `matey.c` |
-| **nzmacgeek/walkies** | Network configuration tool (netctl) | see WALKIES_PROMPT.md in biscuits |
+| **nzmacgeek/walkies** | Network configuration tool (netctl) | `src/walkies.c`, or see WALKIES_PROMPT.md in biscuits |
+| **nzmacgeek/scout** | DHCP and DNS client daemon | `src/`, key files TBD |
 | **nzmacgeek/yap** | Syslog daemon / log rotation | `yap.c` (or equivalent) |
 | **nzmacgeek/dimsim** | Package manager / firstboot scripts | `cmd/`, `internal/`, `template/` |
 | **nzmacgeek/musl-blueyos** | musl libc patched for BlueyOS syscalls | `arch/i386/`, `src/` |
@@ -24,6 +25,8 @@ repos and consult the relevant repo:
 
 **When working on a kernel syscall, always check musl-blueyos and blueyos-bash
 to understand the caller expectations.**
+
+**When working on DHCP/DNS client, coordinate with scout**. Scout is a userspace daemon that uses the netctl control plane (AF_BLUEY_NETCTL sockets) to implement DHCP and DNS resolution for BlueyOS.
 
 ---
 
