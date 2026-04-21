@@ -24,10 +24,7 @@
 // ---------------------------------------------------------------------------
 
 // We store entries in a flat array (not a byte ring) for simplicity.
-// With SYSLOG_RING_ENTRIES entries of ~296 bytes each this is ~30 KB —
-// acceptable for a kernel research OS with a 1 MB heap.
-#define SYSLOG_RING_ENTRIES  128
-
+// With SYSLOG_RING_ENTRIES entries this is acceptable for a kernel research OS.
 static syslog_entry_t syslog_ring[SYSLOG_RING_ENTRIES];
 static uint32_t       syslog_head  = 0;   /* next slot to write into */
 static uint32_t       syslog_count_val = 0;
@@ -241,11 +238,11 @@ static void syslog_write_loc_va(int level, const char *tag, const char *file,
         else if (level == LOG_DEBUG)    vga_set_color(VGA_DARK_GREY,   VGA_BLACK);
         else                            vga_set_color(VGA_WHITE,       VGA_BLACK);
         if (g_verbose_level >= VERBOSE_INFO && entry->src_file[0] != '\0') {
-            kprintf("[%4u][%s](%s:%s) %s\n",
+            kprintf_direct("[%4u][%s](%s:%s) %s\n",
                     entry->timestamp, entry->tag,
                     entry->src_file, entry->src_func, entry->msg);
         } else {
-            kprintf("[%4u][%s] %s\n", entry->timestamp, entry->tag, entry->msg);
+            kprintf_direct("[%4u][%s] %s\n", entry->timestamp, entry->tag, entry->msg);
         }
         vga_set_color(VGA_WHITE, VGA_BLACK);
     }
@@ -294,7 +291,7 @@ void syslog_dmesg(void) {
     uint32_t start = (syslog_head - n) % SYSLOG_RING_ENTRIES;
 
     vga_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
-    kprintf("-- Kernel log (%u entries) --\n", n);
+    kprintf_direct("-- Kernel log (%u entries) --\n", n);
     vga_set_color(VGA_WHITE, VGA_BLACK);
 
     for (uint32_t i = 0; i < n; i++) {
@@ -305,14 +302,14 @@ void syslog_dmesg(void) {
         else if (e->level == LOG_DEBUG)   vga_set_color(VGA_DARK_GREY,   VGA_BLACK);
         else                              vga_set_color(VGA_WHITE,       VGA_BLACK);
 
-        kprintf("[%u] [T+%us] %s [%s] %s\n",
-                e->seq, e->timestamp, level_str((int)e->level), e->tag, e->msg);
+        kprintf_direct("[%u] [T+%us] %s [%s] %s\n",
+                       e->seq, e->timestamp, level_str((int)e->level), e->tag, e->msg);
         if (g_verbose_level >= VERBOSE_INFO && e->src_file[0] != '\0') {
-            kprintf("         src: %s:%s\n", e->src_file, e->src_func);
+            kprintf_direct("         src: %s:%s\n", e->src_file, e->src_func);
         }
     }
     vga_set_color(VGA_WHITE, VGA_BLACK);
-    kprintf("-- end of kernel log --\n");
+    kprintf_direct("-- end of kernel log --\n");
 }
 
 // Lightweight helper to let other subsystems record a caller address into
@@ -324,6 +321,125 @@ void syslog_record_caller(void *caller) {
     syslog_flush_hist[fh_idx].caller = caller;
     syslog_flush_hist_head++;
     if (syslog_flush_hist_count < FLUSH_HIST_ENTRIES) syslog_flush_hist_count++;
+}
+
+// ---------------------------------------------------------------------------
+// kprintf hook — capture all kprintf output into the ring buffer
+// ---------------------------------------------------------------------------
+
+// When the hook is active it REPLACES VGA output, so each char must be
+// forwarded to the VGA backend (via kprintf_putchar) and also buffered into
+// a line buffer.  On newline (or overflow) the accumulated line is committed
+// to the ring buffer as a LOG_INFO "KERN" entry without going back through
+// kprintf (which would recurse).
+
+#define KPRINTF_HOOK_BUF 256
+static char   kprintf_hook_buf[KPRINTF_HOOK_BUF];
+static int    kprintf_hook_pos = 0;
+static int    kprintf_hook_in  = 0; // recursion guard
+
+static void kprintf_syslog_hook(char c, void *ctx) {
+    (void)ctx;
+
+    // Always emit to VGA (hook replaces the normal VGA path)
+    kprintf_putchar(c);
+
+    // Guard against re-entrancy (syslog -> kprintf_direct is fine, but any
+    // path that called kprintf would recurse back here)
+    if (kprintf_hook_in) return;
+
+    // Buffer the character
+    if (kprintf_hook_pos < KPRINTF_HOOK_BUF - 1) {
+        kprintf_hook_buf[kprintf_hook_pos++] = c;
+    }
+
+    // Flush on newline or when the buffer is nearly full
+    if (c == '\n' || kprintf_hook_pos >= KPRINTF_HOOK_BUF - 1) {
+        kprintf_hook_buf[kprintf_hook_pos] = '\0';
+        // Strip trailing newline for cleaner storage
+        int end = kprintf_hook_pos - 1;
+        while (end >= 0 && (kprintf_hook_buf[end] == '\n' || kprintf_hook_buf[end] == '\r'))
+            kprintf_hook_buf[end--] = '\0';
+
+        if (kprintf_hook_buf[0] != '\0') {
+            kprintf_hook_in = 1;
+            syslog_write(LOG_INFO, "KERN", "%s", kprintf_hook_buf);
+            kprintf_hook_in = 0;
+        }
+        kprintf_hook_pos = 0;
+    }
+}
+
+void syslog_install_kprintf_hook(void) {
+    kprintf_hook_pos = 0;
+    kprintf_hook_in  = 0;
+    kprintf_set_output_hook(kprintf_syslog_hook, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// syslog_read_entries — copy ring buffer as text to a userspace buffer
+// ---------------------------------------------------------------------------
+// Used by the sys_syslog syscall (type=3 READ_ALL).
+// Returns the number of bytes written (not including NUL), or -1 on error.
+
+int syslog_read_entries(char *buf, int bufsize) {
+    if (!buf || bufsize <= 0) return -1;
+
+    uint32_t flags = 0;
+    uint32_t alloc_n = SYSLOG_RING_ENTRIES;
+    uint32_t snap_head = 0;
+    uint32_t snap_count = 0;
+    uint32_t start = 0;
+    int pos = 0;
+    syslog_entry_t *snapshot;
+
+    snapshot = kheap_alloc((size_t)alloc_n * sizeof(syslog_entry_t), 0);
+    if (!snapshot) {
+        return -1;
+    }
+
+    __asm__ volatile("pushf; cli; pop %0" : "=r"(flags) : : "memory", "cc");
+    snap_head = syslog_head;
+    snap_count = syslog_count_val;
+    if (snap_count > SYSLOG_RING_ENTRIES) snap_count = SYSLOG_RING_ENTRIES;
+    if (snap_count > alloc_n) snap_count = alloc_n;
+    start = (snap_head + SYSLOG_RING_ENTRIES - snap_count) % SYSLOG_RING_ENTRIES;
+    for (uint32_t i = 0; i < snap_count; i++) {
+        memcpy(&snapshot[i], &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES],
+               sizeof(syslog_entry_t));
+    }
+    __asm__ volatile("push %0; popf" : : "r"(flags) : "memory", "cc");
+
+    if (snap_count == 0) {
+        kheap_free(snapshot);
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < snap_count && pos < bufsize - 1; i++) {
+        const syslog_entry_t *e = &snapshot[i];
+        char line[SYSLOG_MSG_MAX + SYSLOG_FMT_OVERHEAD];
+        int len;
+        if (e->src_file[0] != '\0') {
+            len = syslog_snprintf(line, sizeof(line),
+                                  "[%u] [T+%us] %s [%s](%s:%s) %s\n",
+                                  e->seq, e->timestamp,
+                                  level_str((int)e->level), e->tag,
+                                  e->src_file, e->src_func, e->msg);
+        } else {
+            len = syslog_snprintf(line, sizeof(line),
+                                  "[%u] [T+%us] %s [%s] %s\n",
+                                  e->seq, e->timestamp,
+                                  level_str((int)e->level), e->tag, e->msg);
+        }
+        int copy = len;
+        if (pos + copy > bufsize - 1) copy = bufsize - 1 - pos;
+        memcpy(buf + pos, line, (size_t)copy);
+        pos += copy;
+    }
+
+    buf[pos] = '\0';
+    kheap_free(snapshot);
+    return pos;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +528,7 @@ void syslog_flush_to_fs(void) {
         }
 
         /* Now write out the snapshot without holding locks or disabling IRQs. */
-        char line[SYSLOG_MSG_MAX + 160];
+        char line[SYSLOG_MSG_MAX + SYSLOG_FMT_OVERHEAD];
         for (uint32_t i = 0; i < n; i++) {
             syslog_entry_t *e = &snapshot[i];
             char lvlbuf[16];
@@ -439,7 +555,7 @@ void syslog_flush_to_fs(void) {
         kheap_free(snapshot);
     } else {
         /* Allocation failed: fall back to direct writes but be defensive. */
-        char line[SYSLOG_MSG_MAX + 160];
+        char line[SYSLOG_MSG_MAX + SYSLOG_FMT_OVERHEAD];
         for (uint32_t i = 0; i < n; i++) {
             syslog_entry_t *e = &syslog_ring[(start + i) % SYSLOG_RING_ENTRIES];
             char lvlbuf[16];
