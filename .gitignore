@@ -49,3 +49,14 @@ user/init.elf
 qemu*.log
 qemu*.out
 qemu*.pid
+
+# Toolchain build artifacts (downloaded/extracted by baker build process)
+binutils-*/
+gcc-*/
+musl-*/
+glibc-*/
+build-gcc/
+build-binutils/
+*.tar.xz
+*.tar.bz2
+*.tar.gz
