@@ -60,6 +60,7 @@
 #include "netcfg.h"
 #include "devev.h"
 #include "socket.h"
+#include "acpi.h"
 
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002u
 #define MULTIBOOT_INFO_MEMORY 0x00000001u
@@ -207,6 +208,10 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
 
     // Step 6: Keyboard - PS/2, IRQ1 (module)
     module_load("keyboard");
+
+    // Step 6b: ACPI table parse — must run before paging_init() so all
+    // physical memory is accessible in flat protected mode.
+    acpi_init();
 
     // Step 7: Paging / virtual memory
     paging_init();

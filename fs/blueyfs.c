@@ -768,6 +768,10 @@ static int dir_remove_entry(uint32_t dir_ino, const char *name, uint32_t ino) {
             biscuitfs_dirent_t *de = (biscuitfs_dirent_t *)(blkbuf + off);
             if (de->rec_len == 0) break;
 
+            if (de->inode != 0 && de->name_len > 0)
+                kprintf("[BISCUITFS] dir_remove_entry: de->inode=%u name_len=%u rec_len=%u name=%.16s (want ino=%u name=%s)\n",
+                        de->inode, de->name_len, de->rec_len, de->name, ino, name);
+
             if (de->inode == ino && de->name_len == namelen &&
                 memcmp(de->name, name, namelen) == 0) {
                 if (prev) {
@@ -1183,7 +1187,7 @@ static int biscuitfs_readdir_cb(const char *path, vfs_dirent_t *out, int max) {
 }
 
 static int biscuitfs_mkdir_cb(const char *path) {
-    if (path_to_inode(path)) return -1;
+    if (path_to_inode(path)) return -BLUEY_EEXIST;
 
     // Check if parent exists
     char parent_path[256];
@@ -1280,11 +1284,13 @@ static int biscuitfs_unlink_cb(const char *path) {
     char *slash;
     const char *name;
     uint32_t dir_ino;
-    if (!ino) return -1;
+    kprintf("[BISCUITFS] unlink_cb: path=%s ino=%u\n", path, ino);
+    if (!ino) { kprintf("[BISCUITFS] unlink_cb: path not found\n"); return -1; }
 
     biscuitfs_inode_t inode;
-    if (read_inode(ino, &inode) != 0) return -1;
-    if ((inode.mode & BISCUITFS_IFMT) == BISCUITFS_IFDIR) return -1;
+    if (read_inode(ino, &inode) != 0) { kprintf("[BISCUITFS] unlink_cb: read_inode failed\n"); return -1; }
+    kprintf("[BISCUITFS] unlink_cb: mode=0x%x links=%u size=%u\n", inode.mode, inode.links_count, inode.size_lo);
+    if ((inode.mode & BISCUITFS_IFMT) == BISCUITFS_IFDIR) { kprintf("[BISCUITFS] unlink_cb: is a directory\n"); return -1; }
 
     strncpy(parent_path, path, sizeof(parent_path) - 1);
     parent_path[sizeof(parent_path) - 1] = '\0';
@@ -1292,11 +1298,13 @@ static int biscuitfs_unlink_cb(const char *path) {
     name = slash ? slash + 1 : path;
     if (slash) *slash = '\0';
     dir_ino = path_to_inode(parent_path[0] ? parent_path : "/");
-    if (!dir_ino) return -1;
+    kprintf("[BISCUITFS] unlink_cb: parent=%s dir_ino=%u name=%s\n", parent_path, dir_ino, name);
+    if (!dir_ino) { kprintf("[BISCUITFS] unlink_cb: parent dir not found\n"); return -1; }
 
     biscuitfs_journal_begin();
 
     if (dir_remove_entry(dir_ino, name, ino) != 0) {
+        kprintf("[BISCUITFS] unlink_cb: dir_remove_entry failed dir_ino=%u name=%s ino=%u\n", dir_ino, name, ino);
         biscuitfs_journal_abort();
         return -1;
     }

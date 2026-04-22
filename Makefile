@@ -202,6 +202,7 @@ I386_C_SOURCES = \
     kernel/scheduler.c \
     kernel/signal.c \
   kernel/syscall.c \
+  kernel/acpi.c \
   kernel/elf.c \
   kernel/sha256.c \
   kernel/password.c \

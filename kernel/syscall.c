@@ -33,6 +33,8 @@
 #include "syslog.h"
 #include "../net/tcpip.h"
 #include "../fs/vfs.h"
+#include "../fs/blueyfs.h"
+#include "acpi.h"
 
 extern void syscall_stub(void);
 extern void syscall_enter_user_frame(const registers_t *regs);
@@ -1084,8 +1086,11 @@ static int32_t sys_rmdir(const char *path) {
     if (!path) return -BLUEY_EFAULT;
     char _rpath[512];
     if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
+    vfs_stat_t st;
+    if (vfs_stat(_rpath, &st) != 0) return -BLUEY_ENOENT;
+    if (!st.is_dir) return -BLUEY_ENOTDIR;
     int32_t res = vfs_rmdir(_rpath);
-    return res;
+    return (res == 0) ? 0 : -BLUEY_EPERM;
 }
 
 typedef struct {
@@ -2681,11 +2686,17 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
     return -BLUEY_EBADF;
 }
 
+/* O_DIRECTORY (0x10000): caller requires the path to be a directory.
+ * Our VFS strips this flag before calling the FS backend, so we must
+ * enforce the ENOTDIR semantics here explicitly. */
+#define LINUX_O_DIRECTORY  0x10000
+
 static int32_t sys_open(const char *path, int flags) {
     vfs_stat_t stat;
     int access_mode;
     int vfs_flags;
     int fd;
+    int stat_ok;
 
     if (!path) return -BLUEY_EFAULT;
 
@@ -2696,8 +2707,15 @@ static int32_t sys_open(const char *path, int flags) {
     access_mode = flags & 0x3;
     vfs_flags = access_mode | (flags & (VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND));
 
-    if (vfs_stat(path, &stat) != 0) {
+    memset(&stat, 0, sizeof(stat));
+    stat_ok = (vfs_stat(path, &stat) == 0);
+    if (!stat_ok) {
         if (!(vfs_flags & VFS_O_CREAT)) return -BLUEY_ENOENT;
+    }
+
+    /* O_DIRECTORY: if the path exists and is not a directory, fail. */
+    if ((flags & LINUX_O_DIRECTORY) && stat_ok && !stat.is_dir) {
+        return -BLUEY_ENOTDIR;
     }
 
     fd = vfs_open(path, vfs_flags);
@@ -2934,21 +2952,20 @@ static int32_t sys_getpgrp(void) {
 
 /* ---- Mount / umount ---------------------------------------------------- */
 
-static int32_t sys_sync(void) {
-    process_t *caller = process_current();
-    int ata_ret;
-
-    if (!caller) return -BLUEY_EPERM;
-    if (caller->euid != 0 && caller->pid != 1) return -BLUEY_EPERM;
-
-    /* tty/syslog flush APIs are best-effort and currently void-returning. */
+/* Flush all kernel state to disk.  Called from both sys_sync() and
+ * sys_reboot() — no permission check, caller is responsible. */
+static void kernel_sync(void) {
     tty_flush();
     syslog_flush_to_fs();
-    ata_ret = ata_flush_cache();
-    if (ata_ret != 0) {
-        kprintf("[SYS]  sync(): ATA cache flush failed (%d)\n", ata_ret);
-        return -BLUEY_EIO;
-    }
+    biscuitfs_journal_commit();   // flush any pending journal transaction
+    ata_flush_cache();            // flush ATA write cache to platter
+}
+
+static int32_t sys_sync(void) {
+    process_t *caller = process_current();
+    if (!caller) return -BLUEY_EPERM;
+    if (caller->euid != 0 && caller->pid != 1) return -BLUEY_EPERM;
+    kernel_sync();
     return 0;
 }
 
@@ -3000,21 +3017,24 @@ static int32_t sys_devev_open(void) {
 static int32_t sys_reboot(uint32_t magic1, uint32_t magic2, uint32_t cmd) {
     if (magic1 != REBOOT_MAGIC1 || magic2 != REBOOT_MAGIC2) return -BLUEY_EINVAL;
 
-    kprintf("[SYS]  Reboot/poweroff requested (cmd=0x%x) - bye bye!\n", cmd);
+    /* Only root or PID 1 may reboot/poweroff */
+    process_t *caller = process_current();
+    if (caller && caller->euid != 0 && caller->pid != 1) return -BLUEY_EPERM;
+    if (cmd != REBOOT_CMD_RESTART && cmd != REBOOT_CMD_POWER_OFF) return -BLUEY_EINVAL;
+
+    kprintf("[SYS]  %s requested — syncing filesystem...\n",
+            cmd == REBOOT_CMD_RESTART ? "Reboot" : "Poweroff");
+
+    /* Flush journals and ATA cache before pulling the plug */
+    kernel_sync();
+
+    kprintf("[SYS]  Sync complete — goodbye!\n");
     __asm__ volatile("cli");
 
     if (cmd == REBOOT_CMD_RESTART) {
-        /* Keyboard controller CPU reset (works on real PC and QEMU) */
-        uint8_t val;
-        do { val = inb(0x64); } while (val & 0x02u);
-        outb(0x64, 0xFE);
-        /* Fallback: port 0xCF9 hard reset */
-        outb(0xCF9, 0x06u);
+        acpi_reset();
     } else {
-        /* ACPI S5 poweroff — tried in order of most-to-least likely */
-        outw(0x604, 0x2000);
-        outw(0xB004, 0x2000);  /* older QEMU / Bochs */
-        outw(0x4004, 0x3400);  /* SeaBIOS */
+        acpi_poweroff();
     }
 
     /* Should never reach here */
