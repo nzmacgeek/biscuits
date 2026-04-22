@@ -28,7 +28,9 @@
 // ---------------------------------------------------------------------------
 
 #define PROCFS_MAX_OPEN  1024
-#define PROCFS_BUF_MAX   2048   /* max bytes for any pre-rendered proc file */
+#define PROCFS_BUF_MAX   2048   /* max bytes for any pre-rendered proc file;
+                                 * sufficient for net/dev: 2-line header (~140 B)
+                                 * + NETDEV_MAX_DEVICES(8) * ~100 B/line < 2048 */
 
 // Node type constants
 #define PROCFS_NODE_NONE        0
@@ -176,7 +178,7 @@ static char procfs_state_char(proc_state_t s) {
 static const char *procfs_state_name(proc_state_t s) {
     switch (s) {
         case PROC_RUNNING:  return "running";
-        case PROC_READY:    return "sleeping";
+        case PROC_READY:    return "running";   /* runnable, waiting for CPU */
         case PROC_SLEEPING: return "sleeping";
         case PROC_WAITING:  return "disk sleep";
         case PROC_STOPPED:  return "stopped";
@@ -190,6 +192,7 @@ static const char *procfs_state_name(proc_state_t s) {
 // ---------------------------------------------------------------------------
 
 static void render_uptime(pbuf_t *b) {
+    /* timer_init(1000) gives 1000 Hz (1 ms per tick); hundredths = ms / 10 */
     uint32_t secs       = rtc_get_uptime_seconds();
     uint32_t hundredths = (timer_get_ticks() % 1000u) / 10u;
     pbuf_uint32(b, secs);
@@ -499,7 +502,15 @@ static int procfs_readdir_cb(const char *path, vfs_dirent_t *out, int max) {
             n++;
         }
 
-        /* Per-process directories (one entry per live process) */
+        /* Per-process directories (one entry per live process).
+         * Inode ranges (no overlap):
+         *   1-8     : /proc root + static files
+         *   9       : /proc/net directory
+         *   10-19   : /proc/net files (/proc/net/dev = 10)
+         *   1000+pid: /proc/<pid>/ directory
+         *   2000+pid: /proc/<pid>/status
+         *   3000+pid: /proc/<pid>/cmdline
+         * MAX_PROCESSES=64, so max pid inode is 3064 — no overlap. */
         process_t *p = process_first();
         while (p && n < max) {
             if (p->state != PROC_DEAD) {
@@ -507,7 +518,7 @@ static int procfs_readdir_cb(const char *path, vfs_dirent_t *out, int max) {
                 u32_to_str(p->pid, pid_str, sizeof(pid_str));
                 memset(&out[n], 0, sizeof(out[n]));
                 strncpy(out[n].name, pid_str, sizeof(out[n].name) - 1);
-                out[n].inode  = 100u + p->pid;   /* offset to avoid clash with static inodes */
+                out[n].inode  = 1000u + p->pid;
                 out[n].is_dir = 1;
                 n++;
             }
@@ -521,7 +532,7 @@ static int procfs_readdir_cb(const char *path, vfs_dirent_t *out, int max) {
         if (max < 1) return 0;
         memset(&out[0], 0, sizeof(out[0]));
         strncpy(out[0].name, "dev", sizeof(out[0].name) - 1);
-        out[0].inode  = 1;
+        out[0].inode  = 10;   /* /proc/net/dev: inode 10 (range 10-19 reserved for /proc/net) */
         out[0].is_dir = 0;
         return 1;
     }
@@ -536,7 +547,8 @@ static int procfs_readdir_cb(const char *path, vfs_dirent_t *out, int max) {
             for (int i = 0; i < 2 && n < max; i++) {
                 memset(&out[n], 0, sizeof(out[n]));
                 strncpy(out[n].name, pid_entries[i], sizeof(out[n].name) - 1);
-                out[n].inode  = pid * 10u + (uint32_t)(i + 1u);
+                /* status → 2000+pid, cmdline → 3000+pid */
+                out[n].inode  = (i == 0 ? 2000u : 3000u) + pid;
                 out[n].is_dir = 0;
                 n++;
             }
@@ -567,7 +579,7 @@ static int procfs_stat_cb(const char *path, vfs_stat_t *out) {
                       VFS_S_IRGRP | VFS_S_IXGRP |
                       VFS_S_IROTH | VFS_S_IXOTH;
         out->is_dir = 1;
-        out->inode  = 6;
+        out->inode  = 9;   /* /proc/net: inode 9 */
         return 0;
     }
 
@@ -605,7 +617,7 @@ static int procfs_stat_cb(const char *path, vfs_stat_t *out) {
                               VFS_S_IROTH | VFS_S_IXOTH;
                 out->uid    = p->uid;
                 out->gid    = p->gid;
-                out->inode  = 100u + pid;
+                out->inode  = 1000u + pid;
                 out->is_dir = 1;
                 return 0;
             }
@@ -613,7 +625,7 @@ static int procfs_stat_cb(const char *path, vfs_stat_t *out) {
                 out->mode  = VFS_S_IFREG | VFS_S_IRUSR | VFS_S_IRGRP | VFS_S_IROTH;
                 out->uid   = p->uid;
                 out->gid   = p->gid;
-                out->inode = pid * 10u + (strcmp(sub, "status") == 0 ? 1u : 2u);
+                out->inode = strcmp(sub, "status") == 0 ? 2000u + pid : 3000u + pid;
                 return 0;
             }
         }
