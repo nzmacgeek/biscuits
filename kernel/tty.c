@@ -282,3 +282,9 @@ int tty_input_pending(void) {
     tty_poll_input_sources();
     return tty_input_available();
 }
+
+void tty_inject_raw(const char *buf, int len) {
+    if (!buf || len <= 0) return;
+    for (int i = 0; i < len; i++)
+        tty_input_push(buf[i]);
+}

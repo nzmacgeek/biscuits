@@ -11,6 +11,7 @@
 #include "../include/types.h"
 #include "vga.h"
 #include "vt100.h"
+#include "../kernel/tty.h"
 
 // ---------------------------------------------------------------------------
 // State machine states
@@ -240,9 +241,26 @@ static void vt_handle_csi(char cmd) {
         /* --- DSR — Device Status Report ------------------------------------ */
 
         case 'n':
-            // ESC [ 6 n — report cursor position as ESC [ row ; col R
-            // (We can't send characters back easily without a TTY;
-            //  this is a no-op stub for now.)
+            // ESC[6n — report cursor position as ESC[row;colR (1-based).
+            // Inject the response directly into the TTY input buffer so that
+            // userspace programs (bash readline) reading back the CPR reply
+            // don't block indefinitely.
+            if (p0 == 6) {
+                char resp[16];
+                int pos = 0;
+                int row = vt_cur_row + 1;   /* 1-based */
+                int col = vt_cur_col + 1;   /* 1-based */
+
+                resp[pos++] = '\x1b';
+                resp[pos++] = '[';
+                if (row >= 10) resp[pos++] = '0' + (row / 10);
+                resp[pos++] = '0' + (row % 10);
+                resp[pos++] = ';';
+                if (col >= 10) resp[pos++] = '0' + (col / 10);
+                resp[pos++] = '0' + (col % 10);
+                resp[pos++] = 'R';
+                tty_inject_raw(resp, pos);
+            }
             break;
 
         /* --- Scroll -------------------------------------------------------- */
