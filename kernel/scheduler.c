@@ -216,7 +216,15 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
                 (current->flags & PROC_FLAG_USER_MODE) &&
                 ((regs->cs & 0x3u) == 0x3u);
 
-    if (!user_trap) {
+    /*
+     * Allow scheduling from the idle fallback (current == NULL).  When all
+     * processes were sleeping, scheduler_prepare_fallback_frame() set current
+     * to NULL and returned to scheduler_idle_fallback.  The next timer tick
+     * calls scheduler_tick() which wakes any process whose sleep_until has
+     * elapsed.  Without this exception the early-return would prevent those
+     * freshly-woken processes from ever being dispatched.
+     */
+    if (!user_trap && current != NULL) {
         return;
     }
 

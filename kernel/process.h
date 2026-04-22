@@ -5,6 +5,7 @@
 // licensed by BBC Studios. BlueyOS is an unofficial fan/research project.
 #include "../include/types.h"
 #include "idt.h"
+#include "../fs/vfs.h"
 
 #define MAX_PROCESSES  64
 #define PROC_STACK_SIZE 8192   // 8 KiB per process stack
@@ -80,6 +81,7 @@ typedef struct process {
     int32_t       futex_wait_result;
     uint8_t       futex_wait_private;
     char          cwd[256];          // current working directory
+    vfs_fd_t      fd_table[VFS_MAX_OPEN]; // per-process file descriptor table
     registers_t   saved_regs;
     process_sigaction_t signal_actions[32];
     struct process *next;

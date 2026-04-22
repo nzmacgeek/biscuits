@@ -71,6 +71,17 @@ uint32_t syscall_saved_gs = 0;
 #define BLUEY_ECONNREFUSED 111
 #define BLUEY_ENOMEM 12
 
+/*
+ * Kernel-internal restart code.  When a blocking syscall (read on an empty
+ * pipe, poll with no ready fds, …) needs to sleep and retry, it calls
+ * process_sleep() then returns -BLUEY_ERESTART.  The syscall dispatcher
+ * detects this value, backs up EIP by 2 bytes (the size of `int 0x80`) so
+ * that the instruction is re-executed after the sleep expires, and lets the
+ * scheduler switch to another process.  This value is never visible in user
+ * space.
+ */
+#define BLUEY_ERESTART 512
+
 #define EXEC_COPY_MAX_STRINGS    64u
 #define EXEC_COPY_MAX_STRING_LEN 256u
 
@@ -1523,6 +1534,7 @@ static int32_t sys_select(int nfds,
             else if (vfs_fd_is_devev(fd)) is_ready = devev_pending();
             else if (vfs_fd_is_tty(fd)) is_ready = tty_input_pending();
             else if (vfs_fd_is_socket(fd)) is_ready = socket_is_readable(vfs_socket_id(fd));
+            else if (vfs_fd_is_pipe(fd)) is_ready = vfs_pipe_readable(fd);
             else if (fd >= 3 && vfs_fd_is_open(fd)) is_ready = 1;
 
             if (is_ready) {
@@ -1536,6 +1548,7 @@ static int32_t sys_select(int nfds,
             if (fd == 1 || fd == 2) is_ready = 1;
             else if (vfs_fd_is_tty(fd)) is_ready = 1;
             else if (vfs_fd_is_socket(fd)) is_ready = socket_is_writable(vfs_socket_id(fd));
+            else if (vfs_fd_is_pipe(fd)) is_ready = vfs_pipe_writable(fd);
             else if (fd >= 3 && vfs_fd_is_open(fd)) is_ready = 1;
 
             if (is_ready) {
@@ -1545,16 +1558,18 @@ static int32_t sys_select(int nfds,
         }
     }
 
-    if (rfds) memcpy(rfds, ready_read, sizeof(ready_read));
-    if (wfds) memcpy(wfds, ready_write, sizeof(ready_write));
-
-    if (ready > 0) return (int32_t)ready;
+    if (ready > 0) {
+        /* Write results to user space only when returning success. */
+        if (rfds) memcpy(rfds, ready_read, sizeof(ready_read));
+        if (wfds) memcpy(wfds, ready_write, sizeof(ready_write));
+        return (int32_t)ready;
+    }
 
     /* claw currently uses select(0, NULL, NULL, NULL, &tv) as a timed sleep. */
     if (nfds == 0) {
         if (!timeout) {
-            process_set_waiting(process_current());
-            return 0;
+            process_sleep(50);
+            return -BLUEY_ERESTART;
         }
 
         if (timeout->tv_sec < 0 || timeout->tv_usec < 0 || timeout->tv_usec >= 1000000) {
@@ -1568,8 +1583,10 @@ static int32_t sys_select(int nfds,
     }
 
     if (!timeout) {
-        process_set_waiting(process_current());
-        return 0;
+        /* Infinite wait: sleep 50 ms then retry via the ERESTART mechanism.
+         * Do NOT write to rfds/wfds — they must be intact for the restart. */
+        process_sleep(50);
+        return -BLUEY_ERESTART;
     }
 
     if (timeout->tv_sec < 0 || timeout->tv_usec < 0 || timeout->tv_usec >= 1000000) {
@@ -1582,6 +1599,7 @@ static int32_t sys_select(int nfds,
         if (ms) process_sleep(ms);
     }
 
+    /* Timeout expired with no ready fds — zero the output sets. */
     if (rfds) memset(rfds, 0, sizeof(ready_read));
     if (wfds) memset(wfds, 0, sizeof(ready_write));
     return 0;
@@ -2845,6 +2863,8 @@ static int32_t sys_execve(registers_t *regs,
         process_set_effective_ids(process, new_euid, new_egid);
     }
     result = 0;
+    kprintf("[SYS] execve: launched pid=%u name=%s entry=0x%x esp=0x%x\n",
+            process->pid, process->name, process->eip, process->esp);
 
     if (old_page_dir && old_page_dir != image.page_dir) {
         if (!had_vfork_shared_vm) {
@@ -2874,23 +2894,54 @@ static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
     if (vfs_fd_is_open((int)fd)) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
-        return vfs_read((int)fd, (uint8_t *)buf, len);
+        if (vfs_fd_is_tty((int)fd)) {
+            /* Non-blocking TTY read: if no data is ready, sleep 1 ms and
+             * restart the syscall so the scheduler can run other processes. */
+            int r = tty_read_nb(buf, len);
+            if (r == 0) {
+                process_sleep(1);
+                return -BLUEY_ERESTART;
+            }
+            return r;
+        }
+        int r = vfs_read((int)fd, (uint8_t *)buf, len);
+        /* Blocking pipe: empty with writers — sleep 1 ms and restart. */
+        if (r == -BLUEY_EAGAIN && vfs_fd_is_pipe((int)fd)) {
+            process_sleep(1);
+            return -BLUEY_ERESTART;
+        }
+        return r;
     }
 
     if (fd == 0) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
-        return tty_read(buf, len);
+        /* Non-blocking TTY read for fd 0 (unmapped stdin). */
+        int r = tty_read_nb(buf, len);
+        if (r == 0) {
+            process_sleep(1);
+            return -BLUEY_ERESTART;
+        }
+        return r;
     }
     if (vfs_fd_is_tty((int)fd)) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
-        return vfs_read((int)fd, (uint8_t *)buf, len);
+        int r = tty_read_nb(buf, len);
+        if (r == 0) {
+            process_sleep(1);
+            return -BLUEY_ERESTART;
+        }
+        return r;
     }
     if (fd >= 3) {
         if (!buf) return -BLUEY_EFAULT;
         if (len == 0) return 0;
         int r = vfs_read((int)fd, (uint8_t *)buf, len);
+        if (r == -BLUEY_EAGAIN && vfs_fd_is_pipe((int)fd)) {
+            process_sleep(1);
+            return -BLUEY_ERESTART;
+        }
         return r;
     }
     return -BLUEY_EBADF;
@@ -3091,8 +3142,11 @@ static int32_t sys_delete_module(const char *name, uint32_t flags) {
 // regs.eax = syscall number, regs.ebx = arg1, regs.ecx = arg2, regs.edx = arg3
 int32_t syscall_dispatch(registers_t *regs) {
     int32_t ret = -1;
+    uint32_t syscall_num;
     process_t *current;
     if (!regs) return -1;
+
+    syscall_num = regs->eax;
 
     current = process_current();
     if (current && (current->flags & PROC_FLAG_LINUX_ABI)) {
@@ -3610,7 +3664,18 @@ int32_t syscall_dispatch(registers_t *regs) {
         }
     }
 syscall_out:
-    regs->eax = ret;
+    if (ret == -BLUEY_ERESTART) {
+        /*
+         * The syscall needs to be retried after the current process wakes
+         * from its sleep.  Back EIP up by 2 bytes (size of `int 0x80`) so
+         * the instruction is re-executed, and restore the original syscall
+         * number in eax so the dispatcher routes correctly on retry.
+         */
+        regs->eax = syscall_num;
+        if (regs->eip >= 2u) regs->eip -= 2u;
+    } else {
+        regs->eax = (uint32_t)ret;
+    }
     scheduler_handle_trap(regs, 0);
     return ret;
 }

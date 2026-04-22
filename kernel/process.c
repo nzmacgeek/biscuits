@@ -16,6 +16,7 @@
 #include "gdt.h"
 #include "multiuser.h"
 #include "devev.h"
+#include "../fs/vfs.h"
 
 #define BLUEY_ECHILD 10
 #define BLUEY_EAGAIN 11
@@ -460,6 +461,7 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     child->blocked_signals = parent->blocked_signals;
     memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
     memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    vfs_inherit_fd_table(parent, child);
     child->saved_regs = *regs;
     child->saved_regs.eax = 0;
     child->eip = child->saved_regs.eip;
@@ -688,6 +690,9 @@ void process_mark_exited(process_t *process, int code) {
     process->state = PROC_ZOMBIE;
     process->exit_code = code;
     process->pending_signals = 0;
+
+    /* Close all open file descriptors — release pipe/socket refcounts. */
+    vfs_close_all_fds_for_process(process);
 
     if (process->clear_child_tid) {
         process_write_user_u32(process, process->clear_child_tid, 0);

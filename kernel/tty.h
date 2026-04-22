@@ -30,7 +30,9 @@ int  tty_is_ready(void);
 void tty_putchar(char c);
 void tty_write(const char *buf, size_t len);
 char tty_getchar(void);
+int  tty_getchar_nb(char *out); /* non-blocking: 0=no data, 1=got char */
 int  tty_read(char *buf, size_t len);
+int  tty_read_nb(char *buf, size_t len); /* non-blocking: 0=no data */
 void tty_flush(void);
 void tty_input_char(char c);
 int  tty_device_path_kind(const char *path);

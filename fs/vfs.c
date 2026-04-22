@@ -30,16 +30,6 @@ static int vfs_dbg_log_limited(int *counter, int limit) {
 }
 
 // Open file descriptor table
-typedef struct {
-    int      used;
-    int      fs_idx;        // which mount point
-    int      fs_fd;         // fd returned by the underlying fs / pipe index
-    char     path[VFS_PATH_LEN];
-    uint8_t  fd_type;       // VFS_FD_TYPE_FILE, VFS_FD_TYPE_DEVEV, or VFS_FD_TYPE_PIPE
-    uint8_t  pipe_is_write; // 1 = write end of a pipe, 0 = read end
-    uint32_t offset;        // current seek position (for lseek / sequential reads)
-} vfs_fd_t;
-
 static vfs_fd_t fd_table_static[VFS_MAX_OPEN];
 static vfs_fd_t *fd_table = fd_table_static;
 static int vfs_fd_capacity = VFS_MAX_OPEN;
@@ -61,6 +51,23 @@ typedef struct {
 
 static vfs_pipe_t pipe_pool[VFS_MAX_PIPES];
 
+/*
+ * Return the fd table for the currently executing process.
+ * Before any user process runs (proc_current is NULL or not yet in user mode),
+ * fall back to the global boot table so kernel init code still works.
+ */
+static vfs_fd_t *current_fd_table(void) {
+    process_t *p = process_current();
+    if (p && (p->flags & PROC_FLAG_USER_MODE)) return p->fd_table;
+    return fd_table;
+}
+
+static int current_fd_capacity(void) {
+    process_t *p = process_current();
+    if (p && (p->flags & PROC_FLAG_USER_MODE)) return VFS_MAX_OPEN;
+    return vfs_fd_capacity;
+}
+
 int vfs_get_last_error(void) {
     return vfs_last_error;
 }
@@ -71,6 +78,8 @@ static void vfs_set_last_error(int err) {
 
 static int vfs_effective_fd_limit(void) {
     process_t *current = process_current();
+    /* Per-process tables are fixed at VFS_MAX_OPEN entries. */
+    if (current && (current->flags & PROC_FLAG_USER_MODE)) return VFS_MAX_OPEN;
     uint32_t limit = current ? current->rlimit_nofile_cur : VFS_MAX_OPEN;
 
     if (limit == 0xFFFFFFFFu || limit > (uint32_t)VFS_MAX_OPEN_HARD) {
@@ -298,9 +307,9 @@ static int vfs_alloc_fd(void) {
     int limit = vfs_effective_fd_limit();
 
     for (;;) {
-        int search_limit = vfs_fd_capacity < limit ? vfs_fd_capacity : limit;
+        int search_limit = current_fd_capacity() < limit ? current_fd_capacity() : limit;
         for (int i = 3; i < search_limit; i++) {  // 0,1,2 = stdin/stdout/stderr
-            if (!fd_table[i].used) {
+            if (!current_fd_table()[i].used) {
                 vfs_set_last_error(VFS_ERR_NONE);
                 return i;
             }
@@ -322,12 +331,12 @@ int vfs_devev_open(void) {
     int fd = vfs_alloc_fd();
     if (fd < 0) { kprintf("[VFS]  Out of file descriptors!\n"); return -1; }
 
-    fd_table[fd].used    = 1;
-    fd_table[fd].fd_type = VFS_FD_TYPE_DEVEV;
-    fd_table[fd].fs_idx  = -1;
-    fd_table[fd].fs_fd   = -1;
-    fd_table[fd].offset  = 0;
-    fd_table[fd].path[0] = '\0';
+    current_fd_table()[fd].used    = 1;
+    current_fd_table()[fd].fd_type = VFS_FD_TYPE_DEVEV;
+    current_fd_table()[fd].fs_idx  = -1;
+    current_fd_table()[fd].fs_fd   = -1;
+    current_fd_table()[fd].offset  = 0;
+    current_fd_table()[fd].path[0] = '\0';
     return fd;
 }
 
@@ -339,39 +348,62 @@ int vfs_socket_open(int socket_id) {
         return -1;
     }
 
-    fd_table[fd].used = 1;
-    fd_table[fd].fd_type = VFS_FD_TYPE_SOCKET;
-    fd_table[fd].pipe_is_write = 0;
-    fd_table[fd].fs_idx = -1;
-    fd_table[fd].fs_fd = socket_id;
-    fd_table[fd].offset = 0;
-    fd_table[fd].path[0] = '\0';
+    current_fd_table()[fd].used = 1;
+    current_fd_table()[fd].fd_type = VFS_FD_TYPE_SOCKET;
+    current_fd_table()[fd].pipe_is_write = 0;
+    current_fd_table()[fd].fs_idx = -1;
+    current_fd_table()[fd].fs_fd = socket_id;
+    current_fd_table()[fd].offset = 0;
+    current_fd_table()[fd].path[0] = '\0';
     return fd;
 }
 
 int vfs_fd_is_devev(int fd) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return 0;
-    return fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV;
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return 0;
+    return current_fd_table()[fd].fd_type == VFS_FD_TYPE_DEVEV;
 }
 
 int vfs_fd_is_tty(int fd) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return 0;
-    return fd_table[fd].fd_type == VFS_FD_TYPE_TTY;
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return 0;
+    return current_fd_table()[fd].fd_type == VFS_FD_TYPE_TTY;
 }
 
 int vfs_fd_is_socket(int fd) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return 0;
-    return fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET;
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return 0;
+    return current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET;
+}
+
+int vfs_fd_is_pipe(int fd) {
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return 0;
+    return current_fd_table()[fd].fd_type == VFS_FD_TYPE_PIPE;
+}
+
+/* Returns 1 if the pipe fd has data available to read (or EOF), 0 otherwise. */
+int vfs_pipe_readable(int fd) {
+    if (!vfs_fd_is_pipe(fd)) return 0;
+    int pipe_idx = current_fd_table()[fd].fs_fd;
+    if (pipe_idx < 0 || pipe_idx >= VFS_MAX_PIPES) return 0;
+    vfs_pipe_t *p = &pipe_pool[pipe_idx];
+    return (p->count > 0 || p->write_refcount == 0);
+}
+
+/* Returns 1 if the pipe fd has space to write, 0 otherwise. */
+int vfs_pipe_writable(int fd) {
+    if (!vfs_fd_is_pipe(fd)) return 0;
+    int pipe_idx = current_fd_table()[fd].fs_fd;
+    if (pipe_idx < 0 || pipe_idx >= VFS_MAX_PIPES) return 0;
+    vfs_pipe_t *p = &pipe_pool[pipe_idx];
+    return (p->count < VFS_PIPE_BUF_SIZE && p->read_refcount > 0);
 }
 
 int vfs_fd_is_open(int fd) {
-    if (fd < 0 || fd >= vfs_fd_capacity) return 0;
-    return fd_table[fd].used;
+    if (fd < 0 || fd >= current_fd_capacity()) return 0;
+    return current_fd_table()[fd].used;
 }
 
 int vfs_socket_id(int fd) {
     if (!vfs_fd_is_socket(fd)) return -1;
-    return fd_table[fd].fs_fd;
+    return current_fd_table()[fd].fs_fd;
 }
 
 int vfs_open(const char *path, int flags) {
@@ -386,14 +418,14 @@ int vfs_open(const char *path, int flags) {
     if (tty_kind != TTY_PATH_NONE) {
         fd = vfs_alloc_fd();
         if (fd < 0) return -1;
-        fd_table[fd].used = 1;
-        fd_table[fd].fd_type = VFS_FD_TYPE_TTY;
-        fd_table[fd].pipe_is_write = 0;
-        fd_table[fd].fs_idx = -1;
-        fd_table[fd].fs_fd = tty_kind;
-        fd_table[fd].offset = 0;
-        strncpy(fd_table[fd].path, path, VFS_PATH_LEN - 1);
-        fd_table[fd].path[VFS_PATH_LEN - 1] = '\0';
+        current_fd_table()[fd].used = 1;
+        current_fd_table()[fd].fd_type = VFS_FD_TYPE_TTY;
+        current_fd_table()[fd].pipe_is_write = 0;
+        current_fd_table()[fd].fs_idx = -1;
+        current_fd_table()[fd].fs_fd = tty_kind;
+        current_fd_table()[fd].offset = 0;
+        strncpy(current_fd_table()[fd].path, path, VFS_PATH_LEN - 1);
+        current_fd_table()[fd].path[VFS_PATH_LEN - 1] = '\0';
         return fd;
     }
 
@@ -440,16 +472,16 @@ int vfs_open(const char *path, int flags) {
             int fd = vfs_alloc_fd();
             if (fd < 0) { kprintf("[VFS]  Out of file descriptors for %s!\n", path); return -1; }
 
-            fd_table[fd].used    = 1;
-            fd_table[fd].fd_type = VFS_FD_TYPE_FILE; /* directory represented as file FD */
-            fd_table[fd].fs_fd   = -1; /* no per-FS handle */
-            fd_table[fd].offset  = 0;
-            fd_table[fd].fs_idx  = -1; /* initialise before scan */
-            strncpy(fd_table[fd].path, path, VFS_PATH_LEN - 1);
-            fd_table[fd].path[VFS_PATH_LEN - 1] = '\0';
+            current_fd_table()[fd].used    = 1;
+            current_fd_table()[fd].fd_type = VFS_FD_TYPE_FILE; /* directory represented as file FD */
+            current_fd_table()[fd].fs_fd   = -1; /* no per-FS handle */
+            current_fd_table()[fd].offset  = 0;
+            current_fd_table()[fd].fs_idx  = -1; /* initialise before scan */
+            strncpy(current_fd_table()[fd].path, path, VFS_PATH_LEN - 1);
+            current_fd_table()[fd].path[VFS_PATH_LEN - 1] = '\0';
             // find mount index
             for (int i = 0; i < mount_count; i++) {
-                if (&mounts[i] == m) { fd_table[fd].fs_idx = i; break; }
+                if (&mounts[i] == m) { current_fd_table()[fd].fs_idx = i; break; }
             }
             return fd;
         }
@@ -477,28 +509,28 @@ int vfs_open(const char *path, int flags) {
         return -1;
     }
 
-    fd_table[fd].used    = 1;
-    fd_table[fd].fd_type = VFS_FD_TYPE_FILE;
-    fd_table[fd].fs_fd   = fs_fd;
-    fd_table[fd].offset  = 0;
-    strncpy(fd_table[fd].path, path, VFS_PATH_LEN - 1);
+    current_fd_table()[fd].used    = 1;
+    current_fd_table()[fd].fd_type = VFS_FD_TYPE_FILE;
+    current_fd_table()[fd].fs_fd   = fs_fd;
+    current_fd_table()[fd].offset  = 0;
+    strncpy(current_fd_table()[fd].path, path, VFS_PATH_LEN - 1);
     // find mount index
     for (int i = 0; i < mount_count; i++) {
-        if (&mounts[i] == m) { fd_table[fd].fs_idx = i; break; }
+        if (&mounts[i] == m) { current_fd_table()[fd].fs_idx = i; break; }
     }
     return fd;
 }
 
 int vfs_read(int fd, uint8_t *buf, size_t len) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV)
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_DEVEV)
         return devev_read_bytes(buf, len);
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET)
-        return socket_read(fd_table[fd].fs_fd, buf, len);
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY)
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET)
+        return socket_read(current_fd_table()[fd].fs_fd, buf, len);
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_TTY)
         return tty_read((char*)buf, len);
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) {
-        int pipe_idx = fd_table[fd].fs_fd;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_PIPE) {
+        int pipe_idx = current_fd_table()[fd].fs_fd;
         if (pipe_idx < 0 || pipe_idx >= VFS_MAX_PIPES) return -1;
         vfs_pipe_t *p = &pipe_pool[pipe_idx];
         size_t avail = p->count < len ? p->count : len;
@@ -515,45 +547,45 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
         p->count -= (uint32_t)avail;
         return (int)avail;
     }
-    vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
+    vfs_mount_t *m = &mounts[current_fd_table()[fd].fs_idx];
     if (!m->fs->read_at) {
         if (!m->fs->read) return -1;
-        int r = m->fs->read(fd_table[fd].fs_fd, buf, len);
-        if (r > 0) fd_table[fd].offset += (uint32_t)r;
+        int r = m->fs->read(current_fd_table()[fd].fs_fd, buf, len);
+        if (r > 0) current_fd_table()[fd].offset += (uint32_t)r;
         return r;
     }
-    int r = m->fs->read_at(fd_table[fd].fs_fd, buf, len, fd_table[fd].offset);
-    if (r > 0) fd_table[fd].offset += (uint32_t)r;
+    int r = m->fs->read_at(current_fd_table()[fd].fs_fd, buf, len, current_fd_table()[fd].offset);
+    if (r > 0) current_fd_table()[fd].offset += (uint32_t)r;
     return r;
 }
 
 int vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) return -1;
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) return -1;
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) return -1;
-    vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET) return -1;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_TTY) return -1;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_PIPE) return -1;
+    vfs_mount_t *m = &mounts[current_fd_table()[fd].fs_idx];
     if (!m->fs->read_at) {
         /* Fallback: try to emulate by reading from current offset (best-effort) */
         if (!m->fs->read) return -1;
         return -1; /* explicit failure to avoid surprising side-effects */
     }
-    return m->fs->read_at(fd_table[fd].fs_fd, buf, len, offset);
+    return m->fs->read_at(current_fd_table()[fd].fs_fd, buf, len, offset);
 }
 
 int vfs_write(int fd, const uint8_t *buf, size_t len) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) {
-        return socket_write(fd_table[fd].fs_fd, buf, len);
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET) {
+        return socket_write(current_fd_table()[fd].fs_fd, buf, len);
     }
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) {
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_TTY) {
         tty_write((const char*)buf, len);
         tty_flush();
         return (int)len;
     }
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) {
-        int pipe_idx = fd_table[fd].fs_fd;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_PIPE) {
+        int pipe_idx = current_fd_table()[fd].fs_fd;
         if (pipe_idx < 0 || pipe_idx >= VFS_MAX_PIPES) return -1;
         vfs_pipe_t *p = &pipe_pool[pipe_idx];
         size_t space = VFS_PIPE_BUF_SIZE - p->count;
@@ -565,8 +597,8 @@ int vfs_write(int fd, const uint8_t *buf, size_t len) {
         p->count += (uint32_t)towrite;
         return (int)towrite;
     }
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
-    vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_DEVEV) return -1;
+    vfs_mount_t *m = &mounts[current_fd_table()[fd].fs_idx];
     if (!m->fs->write) return -1;
 #ifdef DEBUG
     /* Lightweight instrumentation: record the caller of vfs_write so we can
@@ -577,23 +609,23 @@ int vfs_write(int fd, const uint8_t *buf, size_t len) {
     kprintf("[VFS DBG] vfs_write caller=%p fd=%d len=%u\n", caller, fd, (unsigned)len);
 #endif
 
-    int r = m->fs->write(fd_table[fd].fs_fd, buf, len);
-    if (r > 0) fd_table[fd].offset += (uint32_t)r;
+    int r = m->fs->write(current_fd_table()[fd].fs_fd, buf, len);
+    if (r > 0) current_fd_table()[fd].offset += (uint32_t)r;
     return r;
 }
 
 int vfs_close(int fd) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_FILE) {
-        vfs_mount_t *m = &mounts[fd_table[fd].fs_idx];
-        if (m->fs->close) m->fs->close(fd_table[fd].fs_fd);
-    } else if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) {
-        socket_close(fd_table[fd].fs_fd);
-    } else if (fd_table[fd].fd_type == VFS_FD_TYPE_PIPE) {
-        int pipe_idx = fd_table[fd].fs_fd;
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_FILE) {
+        vfs_mount_t *m = &mounts[current_fd_table()[fd].fs_idx];
+        if (m->fs->close) m->fs->close(current_fd_table()[fd].fs_fd);
+    } else if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET) {
+        socket_close(current_fd_table()[fd].fs_fd);
+    } else if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_PIPE) {
+        int pipe_idx = current_fd_table()[fd].fs_fd;
         if (pipe_idx >= 0 && pipe_idx < VFS_MAX_PIPES) {
             vfs_pipe_t *p = &pipe_pool[pipe_idx];
-            if (fd_table[fd].pipe_is_write) {
+            if (current_fd_table()[fd].pipe_is_write) {
                 if (p->write_refcount > 0) p->write_refcount--;
             } else {
                 if (p->read_refcount > 0) p->read_refcount--;
@@ -601,20 +633,20 @@ int vfs_close(int fd) {
             if (p->read_refcount == 0 && p->write_refcount == 0) p->used = 0;
         }
     }
-    fd_table[fd].used = 0;
+    current_fd_table()[fd].used = 0;
     return 0;
 }
 
 int32_t vfs_lseek(int fd, int32_t offset, int whence) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
-    if (fd_table[fd].fd_type != VFS_FD_TYPE_FILE) return -1;
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
+    if (current_fd_table()[fd].fd_type != VFS_FD_TYPE_FILE) return -1;
 
     uint32_t new_offset;
     if (whence == VFS_SEEK_SET) {
         if (offset < 0) return -1;
         new_offset = (uint32_t)offset;
     } else if (whence == VFS_SEEK_CUR) {
-        int32_t cur = (int32_t)fd_table[fd].offset;
+        int32_t cur = (int32_t)current_fd_table()[fd].offset;
         int32_t result = cur + offset;
         if (result < 0) return -1; /* would underflow */
         new_offset = (uint32_t)result;
@@ -628,26 +660,26 @@ int32_t vfs_lseek(int fd, int32_t offset, int whence) {
     } else {
         return -1;
     }
-    fd_table[fd].offset = new_offset;
+    current_fd_table()[fd].offset = new_offset;
     return (int32_t)new_offset;
 }
 
 int vfs_dup(int oldfd) {
-    if (oldfd < 0 || oldfd >= vfs_fd_capacity || !fd_table[oldfd].used) {
+    if (oldfd < 0 || oldfd >= current_fd_capacity() || !current_fd_table()[oldfd].used) {
         vfs_set_last_error(VFS_ERR_EBADF);
         return -1;
     }
     int newfd = vfs_alloc_fd();
     if (newfd < 0) return -1;
-    fd_table[newfd] = fd_table[oldfd];
-    if (fd_table[newfd].fd_type == VFS_FD_TYPE_SOCKET) {
-        socket_add_ref(fd_table[newfd].fs_fd);
+    current_fd_table()[newfd] = current_fd_table()[oldfd];
+    if (current_fd_table()[newfd].fd_type == VFS_FD_TYPE_SOCKET) {
+        socket_add_ref(current_fd_table()[newfd].fs_fd);
     }
     /* For pipes, increment the appropriate reference count */
-    if (fd_table[newfd].fd_type == VFS_FD_TYPE_PIPE) {
-        int pipe_idx = fd_table[newfd].fs_fd;
+    if (current_fd_table()[newfd].fd_type == VFS_FD_TYPE_PIPE) {
+        int pipe_idx = current_fd_table()[newfd].fs_fd;
         if (pipe_idx >= 0 && pipe_idx < VFS_MAX_PIPES) {
-            if (fd_table[newfd].pipe_is_write)
+            if (current_fd_table()[newfd].pipe_is_write)
                 pipe_pool[pipe_idx].write_refcount++;
             else
                 pipe_pool[pipe_idx].read_refcount++;
@@ -660,7 +692,7 @@ int vfs_dup(int oldfd) {
 int vfs_dup2(int oldfd, int newfd) {
     int limit = vfs_effective_fd_limit();
 
-    if (oldfd < 0 || oldfd >= vfs_fd_capacity || !fd_table[oldfd].used) {
+    if (oldfd < 0 || oldfd >= current_fd_capacity() || !current_fd_table()[oldfd].used) {
         vfs_set_last_error(VFS_ERR_EBADF);
         return -1;
     }
@@ -668,21 +700,21 @@ int vfs_dup2(int oldfd, int newfd) {
         vfs_set_last_error(VFS_ERR_EBADF);
         return -1;
     }
-    if (newfd >= vfs_fd_capacity && !vfs_grow_fd_capacity(newfd + 1)) {
+    if (newfd >= current_fd_capacity() && !vfs_grow_fd_capacity(newfd + 1)) {
         vfs_set_last_error(VFS_ERR_ENFILE);
         return -1;
     }
     if (oldfd == newfd) return newfd;
-    if (fd_table[newfd].used) vfs_close(newfd);
-    fd_table[newfd] = fd_table[oldfd];
-    if (fd_table[newfd].fd_type == VFS_FD_TYPE_SOCKET) {
-        socket_add_ref(fd_table[newfd].fs_fd);
+    if (current_fd_table()[newfd].used) vfs_close(newfd);
+    current_fd_table()[newfd] = current_fd_table()[oldfd];
+    if (current_fd_table()[newfd].fd_type == VFS_FD_TYPE_SOCKET) {
+        socket_add_ref(current_fd_table()[newfd].fs_fd);
     }
     /* For pipes, increment the appropriate reference count */
-    if (fd_table[newfd].fd_type == VFS_FD_TYPE_PIPE) {
-        int pipe_idx = fd_table[newfd].fs_fd;
+    if (current_fd_table()[newfd].fd_type == VFS_FD_TYPE_PIPE) {
+        int pipe_idx = current_fd_table()[newfd].fs_fd;
         if (pipe_idx >= 0 && pipe_idx < VFS_MAX_PIPES) {
-            if (fd_table[newfd].pipe_is_write)
+            if (current_fd_table()[newfd].pipe_is_write)
                 pipe_pool[pipe_idx].write_refcount++;
             else
                 pipe_pool[pipe_idx].read_refcount++;
@@ -705,29 +737,29 @@ int vfs_pipe(int fds[2]) {
     if (rfd < 0) { pipe_pool[pipe_idx].used = 0; return -1; }
 
     /* Temporarily mark rfd used so vfs_alloc_fd skips it for wfd */
-    fd_table[rfd].used = 1;
+    current_fd_table()[rfd].used = 1;
     int wfd = vfs_alloc_fd();
     if (wfd < 0) {
-        fd_table[rfd].used = 0;
+        current_fd_table()[rfd].used = 0;
         pipe_pool[pipe_idx].used = 0;
         return -1;
     }
 
-    fd_table[rfd].used         = 1;
-    fd_table[rfd].fd_type      = VFS_FD_TYPE_PIPE;
-    fd_table[rfd].pipe_is_write = 0;
-    fd_table[rfd].fs_fd        = pipe_idx;
-    fd_table[rfd].fs_idx       = -1;
-    fd_table[rfd].offset       = 0;
-    fd_table[rfd].path[0]      = '\0';
+    current_fd_table()[rfd].used         = 1;
+    current_fd_table()[rfd].fd_type      = VFS_FD_TYPE_PIPE;
+    current_fd_table()[rfd].pipe_is_write = 0;
+    current_fd_table()[rfd].fs_fd        = pipe_idx;
+    current_fd_table()[rfd].fs_idx       = -1;
+    current_fd_table()[rfd].offset       = 0;
+    current_fd_table()[rfd].path[0]      = '\0';
 
-    fd_table[wfd].used         = 1;
-    fd_table[wfd].fd_type      = VFS_FD_TYPE_PIPE;
-    fd_table[wfd].pipe_is_write = 1;
-    fd_table[wfd].fs_fd        = pipe_idx;
-    fd_table[wfd].fs_idx       = -1;
-    fd_table[wfd].offset       = 0;
-    fd_table[wfd].path[0]      = '\0';
+    current_fd_table()[wfd].used         = 1;
+    current_fd_table()[wfd].fd_type      = VFS_FD_TYPE_PIPE;
+    current_fd_table()[wfd].pipe_is_write = 1;
+    current_fd_table()[wfd].fs_fd        = pipe_idx;
+    current_fd_table()[wfd].fs_idx       = -1;
+    current_fd_table()[wfd].offset       = 0;
+    current_fd_table()[wfd].path[0]      = '\0';
 
     pipe_pool[pipe_idx].read_refcount  = 1;
     pipe_pool[pipe_idx].write_refcount = 1;
@@ -739,16 +771,16 @@ int vfs_pipe(int fds[2]) {
 }
 
 const char *vfs_fd_get_path(int fd) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return NULL;
-    if (fd_table[fd].fd_type != VFS_FD_TYPE_FILE) return NULL;
-    return fd_table[fd].path;
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return NULL;
+    if (current_fd_table()[fd].fd_type != VFS_FD_TYPE_FILE) return NULL;
+    return current_fd_table()[fd].path;
 }
 
 /* Allocate the lowest free fd >= min_fd; used for F_DUPFD semantics */
 int vfs_dup_above(int oldfd, int min_fd) {
     int limit = vfs_effective_fd_limit();
 
-    if (oldfd < 0 || oldfd >= vfs_fd_capacity || !fd_table[oldfd].used) {
+    if (oldfd < 0 || oldfd >= current_fd_capacity() || !current_fd_table()[oldfd].used) {
         vfs_set_last_error(VFS_ERR_EBADF);
         return -1;
     }
@@ -756,18 +788,18 @@ int vfs_dup_above(int oldfd, int min_fd) {
         vfs_set_last_error(VFS_ERR_EMFILE);
         return -1;
     }
-    if (limit > vfs_fd_capacity) vfs_grow_fd_capacity(limit);
+    if (limit > current_fd_capacity()) vfs_grow_fd_capacity(limit);
 
-    for (int i = min_fd; i < limit && i < vfs_fd_capacity; i++) {
-        if (!fd_table[i].used) {
-            fd_table[i] = fd_table[oldfd];
-            if (fd_table[i].fd_type == VFS_FD_TYPE_SOCKET) {
-                socket_add_ref(fd_table[i].fs_fd);
+    for (int i = min_fd; i < limit && i < current_fd_capacity(); i++) {
+        if (!current_fd_table()[i].used) {
+            current_fd_table()[i] = current_fd_table()[oldfd];
+            if (current_fd_table()[i].fd_type == VFS_FD_TYPE_SOCKET) {
+                socket_add_ref(current_fd_table()[i].fs_fd);
             }
-            if (fd_table[i].fd_type == VFS_FD_TYPE_PIPE) {
-                int pipe_idx = fd_table[i].fs_fd;
+            if (current_fd_table()[i].fd_type == VFS_FD_TYPE_PIPE) {
+                int pipe_idx = current_fd_table()[i].fs_fd;
                 if (pipe_idx >= 0 && pipe_idx < VFS_MAX_PIPES) {
-                    if (fd_table[i].pipe_is_write)
+                    if (current_fd_table()[i].pipe_is_write)
                         pipe_pool[pipe_idx].write_refcount++;
                     else
                         pipe_pool[pipe_idx].read_refcount++;
@@ -902,10 +934,10 @@ int vfs_stat(const char *path, vfs_stat_t *out) {
 }
 
 int vfs_fstat(int fd, vfs_stat_t *out) {
-    if (fd < 0 || fd >= vfs_fd_capacity) return -1;
-    if (!fd_table[fd].used) return -1;
+    if (fd < 0 || fd >= current_fd_capacity()) return -1;
+    if (!current_fd_table()[fd].used) return -1;
     if (!out) return -1;
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_SOCKET) {
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET) {
         out->mode = VFS_S_IFCHR | VFS_S_IRUSR | VFS_S_IWUSR;
         out->uid = 0;
         out->gid = 0;
@@ -913,7 +945,7 @@ int vfs_fstat(int fd, vfs_stat_t *out) {
         out->is_dir = 0;
         return 0;
     }
-    if (fd_table[fd].fd_type == VFS_FD_TYPE_TTY) {
+    if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_TTY) {
         out->mode = VFS_S_IFCHR | VFS_S_IRUSR | VFS_S_IWUSR |
                     VFS_S_IRGRP | VFS_S_IWGRP |
                     VFS_S_IROTH | VFS_S_IWOTH;
@@ -923,7 +955,7 @@ int vfs_fstat(int fd, vfs_stat_t *out) {
         out->is_dir = 0;
         return 0;
     }
-    return vfs_stat(fd_table[fd].path, out);
+    return vfs_stat(current_fd_table()[fd].path, out);
 }
 
 int vfs_access(const char *path, uint8_t access) {
@@ -988,8 +1020,8 @@ int vfs_chmod(const char *path, uint16_t mode) {
 }
 
 int vfs_fchmod(int fd, uint16_t mode) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
-    const char *path = fd_table[fd].path;
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
+    const char *path = current_fd_table()[fd].path;
     if (!path || !path[0]) return -1;
     return vfs_chmod(path, mode);
 }
@@ -1016,8 +1048,8 @@ int vfs_lchown(const char *path, uint32_t uid, uint32_t gid) {
 }
 
 int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
-    if (fd < 0 || fd >= vfs_fd_capacity || !fd_table[fd].used) return -1;
-    const char *path = fd_table[fd].path;
+    if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
+    const char *path = current_fd_table()[fd].path;
     if (!path || !path[0]) return -1;
     return vfs_chown(path, uid, gid);
 }
@@ -1030,4 +1062,59 @@ void vfs_print_mounts(void) {
                     mounts[i].mountpoint, mounts[i].fs->name, mounts[i].start_lba);
     }
     if (!mount_count) kprintf("  (none)\n");
+}
+
+/*
+ * Copy the parent's fd table into the child's and increment refcounts for
+ * any inherited pipe/socket fds.  Called from process_fork_current().
+ */
+void vfs_inherit_fd_table(process_t *parent, process_t *child) {
+    memcpy(child->fd_table, parent->fd_table, sizeof(child->fd_table));
+    for (int i = 0; i < VFS_MAX_OPEN; i++) {
+        if (!child->fd_table[i].used) continue;
+        if (child->fd_table[i].fd_type == VFS_FD_TYPE_PIPE) {
+            int idx = child->fd_table[i].fs_fd;
+            if (idx >= 0 && idx < VFS_MAX_PIPES) {
+                if (child->fd_table[i].pipe_is_write)
+                    pipe_pool[idx].write_refcount++;
+                else
+                    pipe_pool[idx].read_refcount++;
+            }
+        }
+        if (child->fd_table[i].fd_type == VFS_FD_TYPE_SOCKET) {
+            socket_add_ref(child->fd_table[i].fs_fd);
+        }
+    }
+}
+
+/*
+ * Close all open fds in the given process's table, decrementing pipe/socket
+ * refcounts.  Must operate on the explicit process table — NOT current_fd_table()
+ * — because this may be called on a non-current process (e.g. clone failure).
+ */
+void vfs_close_all_fds_for_process(process_t *p) {
+    vfs_fd_t *table = p->fd_table;
+    for (int i = 0; i < VFS_MAX_OPEN; i++) {
+        if (!table[i].used) continue;
+        if (table[i].fd_type == VFS_FD_TYPE_FILE) {
+            if (table[i].fs_idx >= 0 && table[i].fs_idx < VFS_MAX_MOUNTS) {
+                vfs_mount_t *m = &mounts[table[i].fs_idx];
+                if (m->fs && m->fs->close) m->fs->close(table[i].fs_fd);
+            }
+        } else if (table[i].fd_type == VFS_FD_TYPE_PIPE) {
+            int pipe_idx = table[i].fs_fd;
+            if (pipe_idx >= 0 && pipe_idx < VFS_MAX_PIPES) {
+                vfs_pipe_t *pp = &pipe_pool[pipe_idx];
+                if (table[i].pipe_is_write) {
+                    if (pp->write_refcount > 0) pp->write_refcount--;
+                } else {
+                    if (pp->read_refcount > 0) pp->read_refcount--;
+                }
+                if (pp->read_refcount == 0 && pp->write_refcount == 0) pp->used = 0;
+            }
+        } else if (table[i].fd_type == VFS_FD_TYPE_SOCKET) {
+            socket_close(table[i].fs_fd);
+        }
+        table[i].used = 0;
+    }
 }

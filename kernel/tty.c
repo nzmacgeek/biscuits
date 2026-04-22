@@ -150,12 +150,37 @@ char tty_getchar(void) {
     return ch;
 }
 
+/* Non-blocking variant: polls once then returns immediately.
+ * Returns 1 and sets *out if a character was available, 0 otherwise. */
+int tty_getchar_nb(char *out) {
+    tty_poll_input_sources();
+    if (!tty_input_available()) return 0;
+    *out = (char)tty_input_pop();
+    return 1;
+}
+
 int tty_read(char *buf, size_t len) {
     if (!buf || len == 0) return 0;
 
     size_t nread = 0;
     while (nread < len) {
         char ch = tty_getchar();
+        buf[nread++] = ch;
+        if ((tty_console.termios.c_lflag & TTY_LFLAG_ICANON) && ch == '\n') break;
+    }
+
+    return (int)nread;
+}
+
+/* Non-blocking read: tries to fill buf with whatever is immediately available.
+ * Returns 0 if no input is ready, otherwise returns the number of bytes read. */
+int tty_read_nb(char *buf, size_t len) {
+    if (!buf || len == 0) return 0;
+
+    size_t nread = 0;
+    while (nread < len) {
+        char ch;
+        if (!tty_getchar_nb(&ch)) break;
         buf[nread++] = ch;
         if ((tty_console.termios.c_lflag & TTY_LFLAG_ICANON) && ch == '\n') break;
     }

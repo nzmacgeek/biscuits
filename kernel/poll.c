@@ -12,8 +12,10 @@
 #include "tty.h"
 #include "../fs/vfs.h"
 
-#define BLUEY_EAGAIN 11
-#define BLUEY_EINVAL 22
+#define BLUEY_EAGAIN  11
+#define BLUEY_EINVAL  22
+/* Kernel-internal: must match the value in syscall.c */
+#define BLUEY_ERESTART 512
 
 /*
  * Determine readiness of a single fd.
@@ -55,6 +57,18 @@ static int16_t poll_check_fd(int32_t fd, int16_t events) {
         return ready;
     }
 
+    if (vfs_fd_is_pipe(fd)) {
+        /* Read end: data available or EOF (all writers closed). */
+        if (events & POLLIN) {
+            if (vfs_pipe_readable(fd)) ready |= POLLIN;
+        }
+        /* Write end: space available and at least one reader open. */
+        if (events & POLLOUT) {
+            if (vfs_pipe_writable(fd)) ready |= POLLOUT;
+        }
+        return ready;
+    }
+
     /* Generic VFS file: assume readable/writable (basic approximation) */
     if (events & POLLIN)  ready |= POLLIN;
     if (events & POLLOUT) ready |= POLLOUT;
@@ -77,19 +91,16 @@ int kernel_poll(pollfd_t *fds, uint32_t nfds, int32_t timeout_ms) {
     if (ready > 0 || timeout_ms == 0) return ready;
 
     /*
-     * Nothing is ready and the caller wants to wait.
-     * Put the process to sleep for min(timeout_ms, 50) ms so other
-     * processes can run, then signal the caller to retry via -EAGAIN.
-     * (The syscall wrapper in userspace must loop on EAGAIN.)
+     * Nothing is ready and the caller wants to wait.  Sleep for
+     * min(|timeout_ms|, 50) ms so other processes can run, then signal
+     * the syscall dispatcher to retry the entire poll syscall via the
+     * kernel-internal ERESTART mechanism (invisible to user space).
      */
-    if (timeout_ms < 0) {
-        /* Infinite wait — block until woken by an event */
-        process_set_waiting(process_current());
-    } else {
-        uint32_t sleep_ms = (uint32_t)timeout_ms;
+    {
+        uint32_t sleep_ms = (timeout_ms < 0) ? 50u : (uint32_t)timeout_ms;
         if (sleep_ms > 50u) sleep_ms = 50u;
         process_sleep(sleep_ms);
     }
 
-    return -BLUEY_EAGAIN;
+    return -BLUEY_ERESTART;
 }

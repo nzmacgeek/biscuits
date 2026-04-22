@@ -107,10 +107,25 @@ typedef struct {
 #define VFS_FD_TYPE_TTY   3   // kernel console/tty device
 #define VFS_FD_TYPE_SOCKET 4  // in-kernel local socket endpoint
 
+// Per-process file descriptor entry (one slot in a process's fd table)
+typedef struct {
+    int      used;
+    int      fs_idx;        // which mount point (-1 for non-file types)
+    int      fs_fd;         // fd returned by underlying fs, pipe index, or socket id
+    char     path[VFS_PATH_LEN];
+    uint8_t  fd_type;       // VFS_FD_TYPE_*
+    uint8_t  pipe_is_write; // 1 = write end of a pipe, 0 = read end
+    uint32_t offset;        // current seek position
+} vfs_fd_t;
+
 // lseek whence values (POSIX-compatible)
 #define VFS_SEEK_SET 0
 #define VFS_SEEK_CUR 1
 #define VFS_SEEK_END 2
+
+/* Forward declaration so vfs_inherit_fd_table / vfs_close_all_fds_for_process
+ * can take process_t * without creating a circular header dependency. */
+struct process;
 
 void vfs_init(void);
 void vfs_register_fs(filesystem_t *fs);
@@ -122,6 +137,9 @@ int  vfs_socket_open(int socket_id); // attach a kernel socket to a VFS fd
 int  vfs_fd_is_devev(int fd);        // 1 if the fd is a device event channel
 int  vfs_fd_is_tty(int fd);          // 1 if the fd is a tty/console device
 int  vfs_fd_is_socket(int fd);       // 1 if the fd is a socket endpoint
+int  vfs_fd_is_pipe(int fd);         // 1 if the fd is a pipe
+int  vfs_pipe_readable(int fd);      // 1 if pipe has data (or EOF)
+int  vfs_pipe_writable(int fd);      // 1 if pipe has write space
 int  vfs_fd_is_open(int fd);         // 1 if descriptor exists and is open
 int  vfs_socket_id(int fd);          // backend socket id for a socket fd
 int  vfs_get_last_error(void);       // last VFS fd-allocation related errno code
@@ -152,3 +170,7 @@ int  vfs_chown(const char *path, uint32_t uid, uint32_t gid);
 int  vfs_lchown(const char *path, uint32_t uid, uint32_t gid);
 int  vfs_fchown(int fd, uint32_t uid, uint32_t gid);
 void vfs_print_mounts(void);
+
+/* Per-process fd-table lifecycle — called from process management. */
+void vfs_inherit_fd_table(struct process *parent, struct process *child);
+void vfs_close_all_fds_for_process(struct process *p);
