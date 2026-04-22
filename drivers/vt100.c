@@ -12,6 +12,7 @@
 #include "vga.h"
 #include "vt100.h"
 #include "../kernel/tty.h"
+#include "../lib/stdio.h"
 
 // ---------------------------------------------------------------------------
 // State machine states
@@ -242,24 +243,31 @@ static void vt_handle_csi(char cmd) {
 
         case 'n':
             // ESC[6n — report cursor position as ESC[row;colR (1-based).
-            // Inject the response directly into the TTY input buffer so that
-            // userspace programs (bash readline) reading back the CPR reply
-            // don't block indefinitely.
+            // Only inject when ICANON is disabled (raw/readline mode).  When
+            // ICANON is active the terminal is in cooked login mode and injecting
+            // CPR bytes would corrupt the username read by matey.
             if (p0 == 6) {
-                char resp[16];
-                int pos = 0;
+                tty_termios_t cur_termios;
+                tty_get_termios(&cur_termios);
                 int row = vt_cur_row + 1;   /* 1-based */
                 int col = vt_cur_col + 1;   /* 1-based */
+                kprintf("[VT100] ESC[6n rcvd row=%d col=%d icanon=%d\n",
+                        row, col,
+                        (cur_termios.c_lflag & TTY_LFLAG_ICANON) ? 1 : 0);
+                if (!(cur_termios.c_lflag & TTY_LFLAG_ICANON)) {
+                    char resp[16];
+                    int pos = 0;
 
-                resp[pos++] = '\x1b';
-                resp[pos++] = '[';
-                if (row >= 10) resp[pos++] = '0' + (row / 10);
-                resp[pos++] = '0' + (row % 10);
-                resp[pos++] = ';';
-                if (col >= 10) resp[pos++] = '0' + (col / 10);
-                resp[pos++] = '0' + (col % 10);
-                resp[pos++] = 'R';
-                tty_inject_raw(resp, pos);
+                    resp[pos++] = '\x1b';
+                    resp[pos++] = '[';
+                    if (row >= 10) resp[pos++] = '0' + (row / 10);
+                    resp[pos++] = '0' + (row % 10);
+                    resp[pos++] = ';';
+                    if (col >= 10) resp[pos++] = '0' + (col / 10);
+                    resp[pos++] = '0' + (col % 10);
+                    resp[pos++] = 'R';
+                    tty_inject_raw(resp, pos);
+                }
             }
             break;
 

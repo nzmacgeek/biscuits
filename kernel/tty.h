@@ -49,3 +49,6 @@ int tty_input_pending(void);
 /* Inject raw bytes directly into the TTY input buffer, bypassing ICANON/ECHO.
  * Used by the VT100 emulator to inject terminal responses (e.g. ESC[6n CPR). */
 void tty_inject_raw(const char *buf, int len);
+
+/* TTY termios l-flag bits exposed for drivers */
+#define TTY_LFLAG_ICANON 0x00000002u

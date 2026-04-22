@@ -9,6 +9,7 @@
 #include "signal.h"
 #include "tty.h"
 #include "../lib/string.h"
+#include "../lib/stdio.h"
 
 static int tty_ready = 0;
 #define TTY_SERIAL_PORT 0x3F8
@@ -193,6 +194,15 @@ void tty_flush(void) {
 }
 
 void tty_input_char(char c) {
+    static uint32_t tty_in_count = 0;
+    if (tty_in_count < 50) {
+        kprintf("[TTY-IN#%u] 0x%02x '%c'\n",
+                tty_in_count,
+                (unsigned char)c,
+                (c >= 0x20 && c < 0x7f) ? c : '.');
+        tty_in_count++;
+    }
+
     if (tty_console.termios.c_iflag & TTY_IFLAG_ICRNL) {
         if (c == '\r') c = '\n';
     }
@@ -310,6 +320,10 @@ int tty_input_pending(void) {
 
 void tty_inject_raw(const char *buf, int len) {
     if (!buf || len <= 0) return;
+    kprintf("[TTY-INJECT] %d bytes:", len);
+    for (int i = 0; i < len && i < 8; i++)
+        kprintf(" %02x", (unsigned char)buf[i]);
+    kprintf("\n");
     for (int i = 0; i < len; i++)
         tty_input_push(buf[i]);
 }

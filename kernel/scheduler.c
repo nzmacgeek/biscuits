@@ -16,6 +16,10 @@
 
 static process_t *run_queue   = NULL;   // circular linked list of runnable processes
 static process_t *sched_current = NULL;
+/* Set to 1 when the scheduler has entered the idle fallback loop.
+ * Only when this flag is set is it safe to replace the interrupt frame
+ * with a user-mode context (the idle loop has nothing to clean up). */
+static volatile int sched_in_idle_fallback = 0;
 
 /* ---------------------------------------------------------------------------
  * Completely Fair Scheduler (CFS)
@@ -74,6 +78,7 @@ static uint64_t cfs_min_vruntime(void) {
 }
 
 static void scheduler_idle_fallback(void) {
+    sched_in_idle_fallback = 1;
     for (;;) __asm__ volatile("sti; hlt");
 }
 
@@ -217,14 +222,18 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
                 ((regs->cs & 0x3u) == 0x3u);
 
     /*
-     * Allow scheduling from the idle fallback (current == NULL).  When all
-     * processes were sleeping, scheduler_prepare_fallback_frame() set current
-     * to NULL and returned to scheduler_idle_fallback.  The next timer tick
-     * calls scheduler_tick() which wakes any process whose sleep_until has
-     * elapsed.  Without this exception the early-return would prevent those
-     * freshly-woken processes from ever being dispatched.
+     * Allow scheduling from the idle fallback (current == NULL and
+     * sched_in_idle_fallback == 1).  When all user processes were sleeping,
+     * scheduler_prepare_fallback_frame() set current to NULL and redirected
+     * execution to scheduler_idle_fallback.  The next timer tick calls
+     * scheduler_tick() which wakes any process whose sleep_until has elapsed.
+     * Without this exception the early-return would prevent those freshly-woken
+     * processes from ever being dispatched.
+     *
+     * The flag check prevents accidentally hijacking kernel bootstrap code that
+     * runs with current==NULL before any user process is created.
      */
-    if (!user_trap && current != NULL) {
+    if (!user_trap && !(current == NULL && sched_in_idle_fallback)) {
         return;
     }
 
@@ -288,6 +297,7 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
         process_set_current(next);
         /* start accounting from current tick */
         next->cpu_last_tick = timer_get_ticks();
+        sched_in_idle_fallback = 0;   /* leaving idle fallback, if we were in it */
         *regs = frame;
         return;
     }

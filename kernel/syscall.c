@@ -2160,6 +2160,13 @@ typedef struct { uint16_t ws_row; uint16_t ws_col;
                  uint16_t ws_xpixel; uint16_t ws_ypixel; } k_winsize_t;
 
 static int32_t sys_ioctl(int fd, uint32_t request, void *arg) {
+    /* Bash ioctl tracing: log key terminal control calls. */
+    {
+        process_t *_tp = process_current();
+        if (_tp && strcmp(_tp->name, "bash") == 0)
+            kprintf("[BTRACE] bash ioctl fd=%d req=0x%04x arg=%p\n",
+                    fd, request, arg);
+    }
     if (fd == 0 || fd == 1 || fd == 2 || vfs_fd_is_tty(fd)) {
         if ((request == IOCTL_TIOCGWINSZ || request == IOCTL_TCGETS ||
              request == IOCTL_TCSETS || request == IOCTL_TCSETSW ||
@@ -2649,6 +2656,20 @@ void syscall_init(void) {
 
 // SYS_WRITE (1): fd=1/2 -> stdout/stderr -> TTY; fd>=3 -> VFS
 static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
+    /* Bash write tracing: log every write from bash so we can confirm whether
+     * bash is calling write() and whether the TTY path is delivering output. */
+    {
+        process_t *_tp = process_current();
+        if (_tp && strcmp(_tp->name, "bash") == 0) {
+            char _pb[17];
+            int  _pn = (int)len < 16 ? (int)len : 16;
+            for (int _i = 0; _i < _pn; _i++)
+                _pb[_i] = (buf && buf[_i] >= 32 && (unsigned char)buf[_i] < 127) ? buf[_i] : '.';
+            _pb[_pn] = '\0';
+            kprintf("[BTRACE] bash write fd=%d len=%u vfs=%d preview='%s'\n",
+                    (int)fd, (unsigned)len, vfs_fd_is_open((int)fd), _pb);
+        }
+    }
     /* If userspace remapped this descriptor via dup/dup2/fcntl(F_DUPFD),
      * honor the VFS binding first (including fd 0/1/2). */
     if (vfs_fd_is_open((int)fd)) {
@@ -2710,6 +2731,14 @@ static int32_t sys_write(uint32_t fd, const char *buf, size_t len) {
 #define LINUX_O_DIRECTORY  0x10000
 
 static int32_t sys_open(const char *path, int flags) {
+    /* Bash open tracing: log every open() from bash to track init script
+     * reading and library/data file access. */
+    {
+        process_t *_tp = process_current();
+        if (_tp && strcmp(_tp->name, "bash") == 0)
+            kprintf("[BTRACE] bash open path=%s flags=0x%x\n",
+                    path ? path : "(null)", flags);
+    }
     vfs_stat_t stat;
     int access_mode;
     int vfs_flags;
@@ -3149,6 +3178,17 @@ int32_t syscall_dispatch(registers_t *regs) {
     syscall_num = regs->eax;
 
     current = process_current();
+
+    /* Bash-specific syscall tracing: log the first 20 syscalls and every 200th
+     * to confirm bash is running and show its early initialisation sequence. */
+    if (current && strcmp(current->name, "bash") == 0) {
+        static uint32_t bash_sc_count = 0;
+        bash_sc_count++;
+        if (bash_sc_count <= 20 || bash_sc_count % 200 == 0)
+            kprintf("[BTRACE] bash syscall #%u type=%u eip=0x%08x ebx=0x%x ecx=0x%x\n",
+                    bash_sc_count, syscall_num, regs->eip, regs->ebx, regs->ecx);
+    }
+
     if (current && (current->flags & PROC_FLAG_LINUX_ABI)) {
         switch (regs->eax) {
             case 1:
