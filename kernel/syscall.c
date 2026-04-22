@@ -2756,6 +2756,10 @@ static int32_t sys_open(const char *path, int flags) {
 
     memset(&stat, 0, sizeof(stat));
     stat_ok = (vfs_stat(path, &stat) == 0);
+    /* Debug logging for /dev/ paths to trace open failures */
+    if (path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
+        kprintf("[OPEN_DBG] path=%s flags=0x%x stat_ok=%d\n", path, flags, stat_ok);
+    }
     if (!stat_ok) {
         if (!(vfs_flags & VFS_O_CREAT)) return -BLUEY_ENOENT;
     }
@@ -2766,6 +2770,9 @@ static int32_t sys_open(const char *path, int flags) {
     }
 
     fd = vfs_open(path, vfs_flags);
+    if (path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
+        kprintf("[OPEN_DBG] vfs_open path=%s fd=%d lasterr=%d\n", path, fd, vfs_get_last_error());
+    }
     if (fd >= 0) return fd;
 
     if (vfs_get_last_error() == VFS_ERR_EMFILE || vfs_get_last_error() == VFS_ERR_ENFILE) {

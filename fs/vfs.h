@@ -81,6 +81,7 @@ typedef struct filesystem {
     int (*read_at)(int fd, uint8_t *buf, size_t len, uint32_t offset);
     int (*write)(int fd, const uint8_t *buf, size_t len);
     int (*close)(int fd);
+    int (*addref)(int fd);   /* increment refcount of an open backend fd (for fork/dup) */
     int (*readdir)(const char *path, vfs_dirent_t *out, int max);
     int (*mkdir)(const char *path);
     int (*unlink)(const char *path);

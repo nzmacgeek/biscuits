@@ -63,7 +63,10 @@ static void tty_serial_init(void) {
     outb(TTY_SERIAL_PORT + 0, 0x01);
     outb(TTY_SERIAL_PORT + 1, 0x00);
     outb(TTY_SERIAL_PORT + 3, 0x03);
-    outb(TTY_SERIAL_PORT + 2, 0xC7);
+    /* FCR = 0xC5: enable FIFO (bit0), clear TX only (bit2), 14-byte trigger (bits6-7).
+     * Bit1 (clear RX) is NOT set so bytes that arrived during GRUB's countdown
+     * are preserved in the FIFO for early userspace (matey) to read. */
+    outb(TTY_SERIAL_PORT + 2, 0xC5);
     outb(TTY_SERIAL_PORT + 4, 0x0B);
 }
 
@@ -272,18 +275,31 @@ int tty_ioctl(uint32_t request, void *arg) {
         case 0x5404:
             if (arg) memcpy(&tty_console.termios, arg, sizeof(tty_console.termios));
             return 0;
-        case 0x540F:
+        case 0x540F: {  /* TIOCGPGRP */
+            static uint32_t tiocgpgrp_count = 0;
             if (!arg) return -1;
             *(uint32_t*)arg = tty_console.fg_pgid;
+            if (tiocgpgrp_count++ < 5)
+                kprintf("[TTY] TIOCGPGRP: returning fg_pgid=%u\n", tty_console.fg_pgid);
             return 0;
-        case 0x5410:
+        }
+        case 0x5410: {  /* TIOCSPGRP */
             if (!arg) return -1;
+            kprintf("[TTY] TIOCSPGRP: fg_pgid %u -> %u\n",
+                    tty_console.fg_pgid, *(uint32_t*)arg);
             tty_console.fg_pgid = *(uint32_t*)arg;
             return 0;
+        }
         case 0x540E:
             return 0;
-        case 0x5422:
+        case 0x5422: {  /* TIOCSCTTY */
+            process_t *p = process_current();
+            if (p) {
+                tty_console.fg_pgid = p->pgid;
+                kprintf("[TTY] TIOCSCTTY: fg_pgid set to %u\n", p->pgid);
+            }
             return 0;
+        }
         default:
             return -1;
     }

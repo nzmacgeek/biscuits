@@ -299,6 +299,11 @@ static vfs_mount_t *vfs_find_mount(const char *path) {
             best_len = mlen;
         }
     }
+    if (path && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
+        kprintf("[MOUNT_DBG] path=%s mount_count=%d best=%p mp=%s\n",
+                path, mount_count, (void*)best,
+                best ? best->mountpoint : "(none)");
+    }
     return best;
 }
 
@@ -617,8 +622,11 @@ int vfs_write(int fd, const uint8_t *buf, size_t len) {
 int vfs_close(int fd) {
     if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
     if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_FILE) {
-        vfs_mount_t *m = &mounts[current_fd_table()[fd].fs_idx];
-        if (m->fs->close) m->fs->close(current_fd_table()[fd].fs_fd);
+        int fs_idx = current_fd_table()[fd].fs_idx;
+        if (fs_idx >= 0) {
+            vfs_mount_t *m = &mounts[fs_idx];
+            if (m->fs->close) m->fs->close(current_fd_table()[fd].fs_fd);
+        }
     } else if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET) {
         socket_close(current_fd_table()[fd].fs_fd);
     } else if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_PIPE) {
@@ -672,6 +680,13 @@ int vfs_dup(int oldfd) {
     int newfd = vfs_alloc_fd();
     if (newfd < 0) return -1;
     current_fd_table()[newfd] = current_fd_table()[oldfd];
+    if (current_fd_table()[newfd].fd_type == VFS_FD_TYPE_FILE) {
+        int fs_idx = current_fd_table()[newfd].fs_idx;
+        if (fs_idx >= 0 && fs_idx < VFS_MAX_MOUNTS) {
+            vfs_mount_t *m = &mounts[fs_idx];
+            if (m->fs && m->fs->addref) m->fs->addref(current_fd_table()[newfd].fs_fd);
+        }
+    }
     if (current_fd_table()[newfd].fd_type == VFS_FD_TYPE_SOCKET) {
         socket_add_ref(current_fd_table()[newfd].fs_fd);
     }
@@ -707,6 +722,13 @@ int vfs_dup2(int oldfd, int newfd) {
     if (oldfd == newfd) return newfd;
     if (current_fd_table()[newfd].used) vfs_close(newfd);
     current_fd_table()[newfd] = current_fd_table()[oldfd];
+    if (current_fd_table()[newfd].fd_type == VFS_FD_TYPE_FILE) {
+        int fs_idx = current_fd_table()[newfd].fs_idx;
+        if (fs_idx >= 0 && fs_idx < VFS_MAX_MOUNTS) {
+            vfs_mount_t *m = &mounts[fs_idx];
+            if (m->fs && m->fs->addref) m->fs->addref(current_fd_table()[newfd].fs_fd);
+        }
+    }
     if (current_fd_table()[newfd].fd_type == VFS_FD_TYPE_SOCKET) {
         socket_add_ref(current_fd_table()[newfd].fs_fd);
     }
@@ -793,6 +815,13 @@ int vfs_dup_above(int oldfd, int min_fd) {
     for (int i = min_fd; i < limit && i < current_fd_capacity(); i++) {
         if (!current_fd_table()[i].used) {
             current_fd_table()[i] = current_fd_table()[oldfd];
+            if (current_fd_table()[i].fd_type == VFS_FD_TYPE_FILE) {
+                int fs_idx = current_fd_table()[i].fs_idx;
+                if (fs_idx >= 0 && fs_idx < VFS_MAX_MOUNTS) {
+                    vfs_mount_t *m = &mounts[fs_idx];
+                    if (m->fs && m->fs->addref) m->fs->addref(current_fd_table()[i].fs_fd);
+                }
+            }
             if (current_fd_table()[i].fd_type == VFS_FD_TYPE_SOCKET) {
                 socket_add_ref(current_fd_table()[i].fs_fd);
             }
@@ -929,8 +958,16 @@ int vfs_unlink(const char *path) {
 
 int vfs_stat(const char *path, vfs_stat_t *out) {
     vfs_mount_t *m = vfs_find_mount(path);
+    if (path && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
+        kprintf("[VFS_STAT_DBG] path=%s m=%p stat_cb=%p\n",
+                path, (void*)m, m ? (void*)m->fs->stat : (void*)0);
+    }
     if (!m || !m->fs->stat) return -1;
-    return m->fs->stat(path, out);
+    int rc = m->fs->stat(path, out);
+    if (path && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
+        kprintf("[VFS_STAT_DBG] stat_cb rc=%d\n", rc);
+    }
+    return rc;
 }
 
 int vfs_fstat(int fd, vfs_stat_t *out) {
@@ -1072,6 +1109,17 @@ void vfs_inherit_fd_table(process_t *parent, process_t *child) {
     memcpy(child->fd_table, parent->fd_table, sizeof(child->fd_table));
     for (int i = 0; i < VFS_MAX_OPEN; i++) {
         if (!child->fd_table[i].used) continue;
+        if (child->fd_table[i].fd_type == VFS_FD_TYPE_FILE) {
+            int fs_idx = child->fd_table[i].fs_idx;
+            if (fs_idx >= 0 && fs_idx < VFS_MAX_MOUNTS) {
+                vfs_mount_t *m = &mounts[fs_idx];
+                if (m->fs && m->fs->addref) {
+                    kprintf("[VFS] inherit fd=%d slot=%d: addref (child pid=%u)\n",
+                            i, child->fd_table[i].fs_fd, child->pid);
+                    m->fs->addref(child->fd_table[i].fs_fd);
+                }
+            }
+        }
         if (child->fd_table[i].fd_type == VFS_FD_TYPE_PIPE) {
             int idx = child->fd_table[i].fs_fd;
             if (idx >= 0 && idx < VFS_MAX_PIPES) {

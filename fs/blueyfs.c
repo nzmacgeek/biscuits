@@ -60,6 +60,7 @@ static uint32_t        jnl_start_blk = 0;  /* first block of journal region */
 #define BISCUITFS_MAX_OPEN  1024
 typedef struct {
     int      used;
+    int      refcount;   /* number of VFS fds (across all processes) sharing this slot */
     uint32_t inode_no;
     uint32_t offset;
     uint32_t size;
@@ -936,10 +937,13 @@ static int biscuitfs_open_cb(const char *path, int flags) {
             biscuitfs_inode_t inode;
             read_inode(ino, &inode);
             fd_table[i].used     = 1;
+            fd_table[i].refcount = 1;
             fd_table[i].inode_no = ino;
-            fd_table[i].offset   = 0;
             fd_table[i].size     = inode.size_lo;
             fd_table[i].flags    = (uint32_t)flags;
+            /* O_APPEND: start writing at end of file */
+            fd_table[i].offset   = (flags & VFS_O_APPEND) ? inode.size_lo : 0;
+            kprintf("[BISCUITFS] open slot=%d ino=%u size=%u flags=0x%x\n", i, ino, inode.size_lo, (unsigned)flags);
             if (flags & VFS_O_TRUNC) {
                 /* Would free data blocks and reset size; omitted for brevity */
                 fd_table[i].size = 0;
@@ -1019,10 +1023,8 @@ static int biscuitfs_read_at_cb(int fd, uint8_t *buf, size_t len, uint32_t offse
 
     if (!blkbuf) return -1;
 
-    if (biscuitfs_dbg_log_limited(&dbg_calls, 32)) {
-        kprintf("[BISCUITFS DBG] read_at enter fd=%d buf_ptr=%p len=%u offset=%u ino=%u size=%u fs_block_size=%u\n",
-                fd, buf, (unsigned)len, offset, f->inode_no, f->size, fs_block_size);
-    }
+    kprintf("[BISCUITFS] read_at slot=%d ino=%u offset=%u size=%u len=%u\n",
+            fd, f->inode_no, offset, f->size, (unsigned)len);
 
     if (offset >= f->size) {
         biscuitfs_free_block_buf(blkbuf);
@@ -1072,15 +1074,16 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
     if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
     biscuitfs_fd_t *f = &fd_table[fd];
 
-#if BISCUITFS_DEBUG
-    /* Instrumentation: record which caller invoked BiscuitFS write. This
-     * helps correlate write attempts with syslog flush activity when
-     * tracking memory corruption sources. */
-    void *caller = __builtin_return_address(0);
-    syslog_record_caller(caller);
-    kprintf("[BISCUITFS DBG] write caller=%p fd=%d len=%u ino=%u\n",
-            caller, fd, (unsigned)len, f->inode_no);
-#endif
+    /* O_APPEND: re-seek to end before every write (atomic append semantics) */
+    if (f->flags & VFS_O_APPEND) {
+        biscuitfs_inode_t tmp_ino;
+        read_inode(f->inode_no, &tmp_ino);
+        f->offset = tmp_ino.size_lo;
+        f->size   = tmp_ino.size_lo;
+    }
+
+    kprintf("[BISCUITFS] write slot=%d ino=%u offset=%u len=%u\n",
+            fd, f->inode_no, f->offset, (unsigned)len);
 
     uint32_t done = 0;
     uint8_t *blkbuf = biscuitfs_alloc_block_buf(__func__);
@@ -1135,8 +1138,18 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
 }
 
 static int biscuitfs_close_cb(int fd) {
-    if (fd < 0 || fd >= BISCUITFS_MAX_OPEN) return -1;
-    fd_table[fd].used = 0;
+    if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    int rc = --fd_table[fd].refcount;
+    kprintf("[BISCUITFS] close slot=%d refcount->%d\n", fd, rc);
+    if (rc <= 0)
+        fd_table[fd].used = 0;
+    return 0;
+}
+
+static int biscuitfs_addref_cb(int fd) {
+    if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
+    fd_table[fd].refcount++;
+    kprintf("[BISCUITFS] addref slot=%d refcount->%d\n", fd, fd_table[fd].refcount);
     return 0;
 }
 
@@ -1557,6 +1570,7 @@ static filesystem_t biscuitfs_driver = {
     .read_at  = biscuitfs_read_at_cb,
     .write    = biscuitfs_write_cb,
     .close    = biscuitfs_close_cb,
+    .addref   = biscuitfs_addref_cb,
     .readdir  = biscuitfs_readdir_cb,
     .mkdir    = biscuitfs_mkdir_cb,
     .unlink   = biscuitfs_unlink_cb,
