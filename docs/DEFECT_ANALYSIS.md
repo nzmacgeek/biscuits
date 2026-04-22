@@ -18,6 +18,33 @@
 
 ## Kernel (nzmacgeek/biscuits)
 
+### K-12 🟢 procfs lacked monitoring files (uptime, meminfo, version, loadavg, per-pid, net/dev)
+**Status:** FIXED (this PR)
+
+The original procfs implementation only exposed `/proc/cmdline` (the boot kernel
+command line).  Userspace utilities such as `uptime`, `free`, `ps`, and network
+monitoring tools had no `/proc` files to read.
+
+**Fix applied:**
+- `/proc/uptime`       — seconds since boot (`.hundredths idle`) using `rtc_get_uptime_seconds()` + timer ticks.
+- `/proc/meminfo`      — Linux-compatible memory info: MemTotal (from multiboot RAM), MemFree / MemAvailable (kernel heap stats), plus BlueyOS-specific `KernelHeap*` fields.
+- `/proc/version`      — kernel version string including build host, user, number, date, time.
+- `/proc/loadavg`      — stub `0.00 0.00 0.00 1/N pid` (no load tracking implemented yet).
+- `/proc/<pid>/`       — per-process directory (state, uid/gid from `process_t`).
+- `/proc/<pid>/status` — Linux-compatible `Name`, `State`, `Pid`, `PPid`, `Uid`, `Gid`, `VmSize`, `VmRSS`, `Threads`.
+- `/proc/<pid>/cmdline`— process name as a NUL-terminated string (full argv not retained by kernel).
+- `/proc/self`         — alias for the current process's PID directory.
+- `/proc/net/dev`      — network interface counters from `netdev_device_t` (rx/tx bytes, packets, errors).
+- `stat()` and `readdir()` updated to expose all new paths and directories.
+
+**Known limitations:**
+- MemFree/MemAvailable reflects kernel heap free only; userspace process memory is not tracked.
+- VmSize/VmRSS is approximated from `brk` and user-stack extents; shared mappings not counted.
+- loadavg is always `0.00` (no load tracking).
+- `/proc/<pid>/cmdline` only contains the process name (argv not stored by kernel).
+
+---
+
 ### K-1 🔴 Heap initialised AFTER first module load
 **Status:** FIXED (this PR)
 
