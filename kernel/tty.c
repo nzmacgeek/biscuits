@@ -197,15 +197,6 @@ void tty_flush(void) {
 }
 
 void tty_input_char(char c) {
-    static uint32_t tty_in_count = 0;
-    if (tty_in_count < 50) {
-        kprintf("[TTY-IN#%u] 0x%02x '%c'\n",
-                tty_in_count,
-                (unsigned char)c,
-                (c >= 0x20 && c < 0x7f) ? c : '.');
-        tty_in_count++;
-    }
-
     if (tty_console.termios.c_iflag & TTY_IFLAG_ICRNL) {
         if (c == '\r') c = '\n';
     }
@@ -276,17 +267,12 @@ int tty_ioctl(uint32_t request, void *arg) {
             if (arg) memcpy(&tty_console.termios, arg, sizeof(tty_console.termios));
             return 0;
         case 0x540F: {  /* TIOCGPGRP */
-            static uint32_t tiocgpgrp_count = 0;
             if (!arg) return -1;
             *(uint32_t*)arg = tty_console.fg_pgid;
-            if (tiocgpgrp_count++ < 5)
-                kprintf("[TTY] TIOCGPGRP: returning fg_pgid=%u\n", tty_console.fg_pgid);
             return 0;
         }
         case 0x5410: {  /* TIOCSPGRP */
             if (!arg) return -1;
-            kprintf("[TTY] TIOCSPGRP: fg_pgid %u -> %u\n",
-                    tty_console.fg_pgid, *(uint32_t*)arg);
             tty_console.fg_pgid = *(uint32_t*)arg;
             return 0;
         }
@@ -296,7 +282,6 @@ int tty_ioctl(uint32_t request, void *arg) {
             process_t *p = process_current();
             if (p) {
                 tty_console.fg_pgid = p->pgid;
-                kprintf("[TTY] TIOCSCTTY: fg_pgid set to %u\n", p->pgid);
             }
             return 0;
         }
@@ -336,10 +321,6 @@ int tty_input_pending(void) {
 
 void tty_inject_raw(const char *buf, int len) {
     if (!buf || len <= 0) return;
-    kprintf("[TTY-INJECT] %d bytes:", len);
-    for (int i = 0; i < len && i < 8; i++)
-        kprintf(" %02x", (unsigned char)buf[i]);
-    kprintf("\n");
     for (int i = 0; i < len; i++)
         tty_input_push(buf[i]);
 }

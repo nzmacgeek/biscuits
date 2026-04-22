@@ -245,7 +245,7 @@ void biscuitfs_journal_replay(void) {
 
         if (read_block(data_blk, dbuf)        == 0 &&
             write_block(tags[i].t_blocknr, dbuf) == 0) {
-            kprintf("[BISCUITFS] Replayed block %d\n", tags[i].t_blocknr);
+            BISCUITFS_DEBUGF("[BISCUITFS] Replayed block %d\n", tags[i].t_blocknr);
         }
         data_blk++;
         if (flags & BISCUITFS_JNL_FLAG_LAST) break;
@@ -943,7 +943,7 @@ static int biscuitfs_open_cb(const char *path, int flags) {
             fd_table[i].flags    = (uint32_t)flags;
             /* O_APPEND: start writing at end of file */
             fd_table[i].offset   = (flags & VFS_O_APPEND) ? inode.size_lo : 0;
-            kprintf("[BISCUITFS] open slot=%d ino=%u size=%u flags=0x%x\n", i, ino, inode.size_lo, (unsigned)flags);
+            BISCUITFS_DEBUGF("[BISCUITFS] open slot=%d ino=%u size=%u flags=0x%x\n", i, ino, inode.size_lo, (unsigned)flags);
             if (flags & VFS_O_TRUNC) {
                 /* Would free data blocks and reset size; omitted for brevity */
                 fd_table[i].size = 0;
@@ -1023,7 +1023,7 @@ static int biscuitfs_read_at_cb(int fd, uint8_t *buf, size_t len, uint32_t offse
 
     if (!blkbuf) return -1;
 
-    kprintf("[BISCUITFS] read_at slot=%d ino=%u offset=%u size=%u len=%u\n",
+    BISCUITFS_DEBUGF("[BISCUITFS] read_at slot=%d ino=%u offset=%u size=%u len=%u\n",
             fd, f->inode_no, offset, f->size, (unsigned)len);
 
     if (offset >= f->size) {
@@ -1082,7 +1082,7 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
         f->size   = tmp_ino.size_lo;
     }
 
-    kprintf("[BISCUITFS] write slot=%d ino=%u offset=%u len=%u\n",
+    BISCUITFS_DEBUGF("[BISCUITFS] write slot=%d ino=%u offset=%u len=%u\n",
             fd, f->inode_no, f->offset, (unsigned)len);
 
     uint32_t done = 0;
@@ -1140,7 +1140,7 @@ static int biscuitfs_write_cb(int fd, const uint8_t *buf, size_t len) {
 static int biscuitfs_close_cb(int fd) {
     if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
     int rc = --fd_table[fd].refcount;
-    kprintf("[BISCUITFS] close slot=%d refcount->%d\n", fd, rc);
+    BISCUITFS_DEBUGF("[BISCUITFS] close slot=%d refcount->%d\n", fd, rc);
     if (rc <= 0)
         fd_table[fd].used = 0;
     return 0;
@@ -1149,7 +1149,6 @@ static int biscuitfs_close_cb(int fd) {
 static int biscuitfs_addref_cb(int fd) {
     if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return -1;
     fd_table[fd].refcount++;
-    kprintf("[BISCUITFS] addref slot=%d refcount->%d\n", fd, fd_table[fd].refcount);
     return 0;
 }
 
@@ -1298,12 +1297,12 @@ static int biscuitfs_unlink_cb(const char *path) {
     const char *name;
     uint32_t dir_ino;
     kprintf("[BISCUITFS] unlink_cb: path=%s ino=%u\n", path, ino);
-    if (!ino) { kprintf("[BISCUITFS] unlink_cb: path not found\n"); return -1; }
+    if (!ino) return -1;
 
     biscuitfs_inode_t inode;
     if (read_inode(ino, &inode) != 0) { kprintf("[BISCUITFS] unlink_cb: read_inode failed\n"); return -1; }
-    kprintf("[BISCUITFS] unlink_cb: mode=0x%x links=%u size=%u\n", inode.mode, inode.links_count, inode.size_lo);
-    if ((inode.mode & BISCUITFS_IFMT) == BISCUITFS_IFDIR) { kprintf("[BISCUITFS] unlink_cb: is a directory\n"); return -1; }
+    BISCUITFS_DEBUGF("[BISCUITFS] unlink_cb: mode=0x%x links=%u size=%u\n", inode.mode, inode.links_count, inode.size_lo);
+    if ((inode.mode & BISCUITFS_IFMT) == BISCUITFS_IFDIR) return -1;
 
     strncpy(parent_path, path, sizeof(parent_path) - 1);
     parent_path[sizeof(parent_path) - 1] = '\0';
@@ -1311,7 +1310,7 @@ static int biscuitfs_unlink_cb(const char *path) {
     name = slash ? slash + 1 : path;
     if (slash) *slash = '\0';
     dir_ino = path_to_inode(parent_path[0] ? parent_path : "/");
-    kprintf("[BISCUITFS] unlink_cb: parent=%s dir_ino=%u name=%s\n", parent_path, dir_ino, name);
+    BISCUITFS_DEBUGF("[BISCUITFS] unlink_cb: parent=%s dir_ino=%u name=%s\n", parent_path, dir_ino, name);
     if (!dir_ino) { kprintf("[BISCUITFS] unlink_cb: parent dir not found\n"); return -1; }
 
     biscuitfs_journal_begin();

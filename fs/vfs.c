@@ -299,11 +299,6 @@ static vfs_mount_t *vfs_find_mount(const char *path) {
             best_len = mlen;
         }
     }
-    if (path && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
-        kprintf("[MOUNT_DBG] path=%s mount_count=%d best=%p mp=%s\n",
-                path, mount_count, (void*)best,
-                best ? best->mountpoint : "(none)");
-    }
     return best;
 }
 
@@ -958,16 +953,8 @@ int vfs_unlink(const char *path) {
 
 int vfs_stat(const char *path, vfs_stat_t *out) {
     vfs_mount_t *m = vfs_find_mount(path);
-    if (path && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
-        kprintf("[VFS_STAT_DBG] path=%s m=%p stat_cb=%p\n",
-                path, (void*)m, m ? (void*)m->fs->stat : (void*)0);
-    }
     if (!m || !m->fs->stat) return -1;
-    int rc = m->fs->stat(path, out);
-    if (path && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
-        kprintf("[VFS_STAT_DBG] stat_cb rc=%d\n", rc);
-    }
-    return rc;
+    return m->fs->stat(path, out);
 }
 
 int vfs_fstat(int fd, vfs_stat_t *out) {
@@ -1114,8 +1101,6 @@ void vfs_inherit_fd_table(process_t *parent, process_t *child) {
             if (fs_idx >= 0 && fs_idx < VFS_MAX_MOUNTS) {
                 vfs_mount_t *m = &mounts[fs_idx];
                 if (m->fs && m->fs->addref) {
-                    kprintf("[VFS] inherit fd=%d slot=%d: addref (child pid=%u)\n",
-                            i, child->fd_table[i].fs_fd, child->pid);
                     m->fs->addref(child->fd_table[i].fs_fd);
                 }
             }
