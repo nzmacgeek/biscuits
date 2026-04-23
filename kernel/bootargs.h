@@ -8,6 +8,7 @@ typedef struct {
     const char *cmdline;
     bool        safe_mode;
     int         verbose;          /* 0=quiet (default), 1=info, 2=debug   */
+    uint32_t    kdbg_flags;       /* kdbg=0xN — initial kernel debug flags */
     char        root_device[32];
     char        root_fstype[16];
     char        init_path[64];

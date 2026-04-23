@@ -61,6 +61,7 @@
 #include "devev.h"
 #include "socket.h"
 #include "acpi.h"
+#include "kdbg.h"
 
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002u
 #define MULTIBOOT_INFO_MEMORY 0x00000001u
@@ -164,6 +165,7 @@ void kernel_main(uint32_t magic, uint32_t *mboot_info) {
     // Step 1b: Syslog — initialise ring buffer before any other subsystem
     syslog_init();
     syslog_set_verbose(boot_args.verbose);
+    kdbg_init(boot_args.kdbg_flags);
     // Redirect all kprintf() output into the ring buffer so kernel.log
     // captures the full boot sequence, not just explicit syslog_* calls.
     syslog_install_kprintf_hook();

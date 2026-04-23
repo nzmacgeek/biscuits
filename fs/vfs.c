@@ -368,6 +368,18 @@ int vfs_fd_is_tty(int fd) {
     return current_fd_table()[fd].fd_type == VFS_FD_TYPE_TTY;
 }
 
+/* Return VT index (0-based) for a TTY fd, or -1 if not a TTY.
+ * TTY_PATH_CONSOLE/TTY_PATH_TTY → VT 0 (tty1)
+ * TTY_PATH_VT2 → VT 1 (tty2)
+ * TTY_PATH_VT3 → VT 2 (tty3) */
+int vfs_fd_get_tty_vt(int fd) {
+    if (!vfs_fd_is_tty(fd)) return -1;
+    int kind = current_fd_table()[fd].fs_fd;
+    if (kind == TTY_PATH_VT2) return 1;
+    if (kind == TTY_PATH_VT3) return 2;
+    return 0;  /* TTY_PATH_CONSOLE, TTY_PATH_TTY */
+}
+
 int vfs_fd_is_socket(int fd) {
     if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return 0;
     return current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET;

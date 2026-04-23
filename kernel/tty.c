@@ -16,6 +16,7 @@ static int tty_ready = 0;
 #define TTY_MAX_CHAR 0xFF
 #define TTY_INPUT_BUF_SIZE 1024u
 #define TTY_LINE_BUF_SIZE 256u
+#define NUM_VTYS 3
 
 #define TTY_IFLAG_ICRNL  0x00000100u
 #define TTY_OFLAG_ONLCR  0x00000004u
@@ -35,26 +36,63 @@ typedef struct {
     uint32_t fg_pgid;
 } tty_console_t;
 
-static tty_console_t tty_console;
+static tty_console_t tty_consoles[NUM_VTYS];
+static int active_vt = 0;
+
+/* Per-VT off-screen VGA frame buffers (80*25 cells). */
+static uint16_t vt_vga_buf[NUM_VTYS][80 * 25];
+
+/* Per-VT vt100+vga rendering contexts. */
+static vt100_context_t vt_ctx[NUM_VTYS];
+
+static void tty_console_init(tty_console_t *c) {
+    c->input_head = 0;
+    c->input_tail = 0;
+    c->line_len   = 0;
+    c->termios.c_iflag = TTY_IFLAG_ICRNL;
+    c->termios.c_oflag = TTY_OFLAG_ONLCR;
+    c->termios.c_cflag = 0;
+    c->termios.c_lflag = TTY_LFLAG_ISIG | TTY_LFLAG_ICANON | TTY_LFLAG_ECHO;
+    c->termios.c_line  = 0;
+    c->winsize.ws_row    = 25;
+    c->winsize.ws_col    = 80;
+    c->winsize.ws_xpixel = 0;
+    c->winsize.ws_ypixel = 0;
+    c->fg_pgid = 0;
+}
+
+static int tty_input_available_vt(int vt) {
+    return tty_consoles[vt].input_head != tty_consoles[vt].input_tail;
+}
 
 static int tty_input_available(void) {
-    return tty_console.input_head != tty_console.input_tail;
+    return tty_input_available_vt(active_vt);
+}
+
+static void tty_input_push_vt(int vt, char c) {
+    tty_console_t *con = &tty_consoles[vt];
+    uint32_t next_head = (con->input_head + 1u) % TTY_INPUT_BUF_SIZE;
+    if (next_head == con->input_tail) return;
+    con->input_buf[con->input_head] = c;
+    con->input_head = next_head;
 }
 
 static void tty_input_push(char c) {
-    uint32_t next_head = (tty_console.input_head + 1u) % TTY_INPUT_BUF_SIZE;
-    if (next_head == tty_console.input_tail) return;
-    tty_console.input_buf[tty_console.input_head] = c;
-    tty_console.input_head = next_head;
+    tty_input_push_vt(active_vt, c);
+}
+
+static int tty_input_pop_vt(int vt) {
+    tty_console_t *con = &tty_consoles[vt];
+    char c;
+
+    if (!tty_input_available_vt(vt)) return -1;
+    c = con->input_buf[con->input_tail];
+    con->input_tail = (con->input_tail + 1u) % TTY_INPUT_BUF_SIZE;
+    return (int)(unsigned char)c;
 }
 
 static int tty_input_pop(void) {
-    char c;
-
-    if (!tty_input_available()) return -1;
-    c = tty_console.input_buf[tty_console.input_tail];
-    tty_console.input_tail = (tty_console.input_tail + 1u) % TTY_INPUT_BUF_SIZE;
-    return (int)(unsigned char)c;
+    return tty_input_pop_vt(active_vt);
 }
 
 static void tty_serial_init(void) {
@@ -82,39 +120,65 @@ static int tty_serial_input_available(void) {
 
 static void tty_poll_input_sources(void) {
     while (tty_serial_input_available()) {
+        /* Serial input always goes to the active VT */
         tty_input_char((char)inb(TTY_SERIAL_PORT));
     }
 }
 
+/* Low-level output character — goes to serial (VT0 only) + VGA (active VT). */
+static void tty_output_char_vt(int vt, char c) {
+    if (vt == 0) {
+        outb(0xE9, (uint8_t)c);  /* bochs/qemu debug port */
+        tty_serial_putchar(c);
+    }
+    if (vt == active_vt) {
+        if (tty_ready) vt100_putchar(c);
+        else           vga_putchar(c);
+    } else {
+        /* Write to this VT's off-screen buffer with context switch. */
+        uint32_t flags;
+        __asm__ volatile("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+        vt100_save_context(&vt_ctx[active_vt]);
+        vga_set_target(vt_vga_buf[vt]);
+        vt100_restore_context(&vt_ctx[vt]);
+        if (tty_ready) vt100_putchar(c);
+        else           vga_putchar(c);
+        vt100_save_context(&vt_ctx[vt]);
+        vga_set_target(NULL);
+        vt100_restore_context(&vt_ctx[active_vt]);
+        __asm__ volatile("push %0; popf" : : "r"(flags) : "memory");
+    }
+}
+
 static void tty_output_char(char c) {
-    outb(0xE9, (uint8_t)c);
-    tty_serial_putchar(c);
-    if (tty_ready) vt100_putchar(c);
-    else           vga_putchar(c);
+    tty_output_char_vt(active_vt, c);
+}
+
+static void tty_signal_foreground_group_vt(int vt, int sig) {
+    if (!tty_consoles[vt].fg_pgid) return;
+    signal_send_pgrp(tty_consoles[vt].fg_pgid, sig);
 }
 
 static void tty_signal_foreground_group(int sig) {
-    if (!tty_console.fg_pgid) return;
-    signal_send_pgrp(tty_console.fg_pgid, sig);
+    tty_signal_foreground_group_vt(active_vt, sig);
 }
 
 void tty_init(void) {
+    int i;
     tty_serial_init();
+    for (i = 0; i < NUM_VTYS; i++) {
+        tty_console_init(&tty_consoles[i]);
+        memset(vt_vga_buf[i], 0, sizeof(vt_vga_buf[i]));
+        memset(&vt_ctx[i], 0, sizeof(vt_ctx[i]));
+        vt_ctx[i].sgr_fg = VGA_WHITE;
+        vt_ctx[i].sgr_bg = VGA_BLACK;
+        vt_ctx[i].vga_color = (uint8_t)((VGA_BLACK << 4) | VGA_LIGHT_GREY);
+        vt_ctx[i].vga_row = 0;
+        vt_ctx[i].vga_col = 0;
+    }
     vt100_init();
     vt100_set_enabled(1);
-    tty_console.input_head = 0;
-    tty_console.input_tail = 0;
-    tty_console.line_len = 0;
-    tty_console.termios.c_iflag = TTY_IFLAG_ICRNL;
-    tty_console.termios.c_oflag = TTY_OFLAG_ONLCR;
-    tty_console.termios.c_cflag = 0;
-    tty_console.termios.c_lflag = TTY_LFLAG_ISIG | TTY_LFLAG_ICANON | TTY_LFLAG_ECHO;
-    tty_console.termios.c_line = 0;
-    tty_console.winsize.ws_row = 25;
-    tty_console.winsize.ws_col = 80;
-    tty_console.winsize.ws_xpixel = 0;
-    tty_console.winsize.ws_ypixel = 0;
-    tty_console.fg_pgid = 0;
+    active_vt = 0;
     tty_ready = 1;
 }
 
@@ -122,8 +186,33 @@ int tty_is_ready(void) {
     return tty_ready;
 }
 
+/* Atomically switch the visible virtual console to new_vt. */
+void tty_switch_vt(int new_vt) {
+    uint32_t flags;
+    if (new_vt < 0 || new_vt >= NUM_VTYS || new_vt == active_vt) return;
+
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+
+    /* Save active VT state and snapshot VGA_MEM into its buffer. */
+    vt100_save_context(&vt_ctx[active_vt]);
+    memcpy(vt_vga_buf[active_vt], (void*)0xB8000, sizeof(vt_vga_buf[0]));
+
+    /* Switch to new VT: blit its buffer to screen, restore its context. */
+    memcpy((void*)0xB8000, vt_vga_buf[new_vt], sizeof(vt_vga_buf[0]));
+    vga_set_target(NULL);  /* ensure target is VGA_MEM */
+    active_vt = new_vt;
+    vt100_restore_context(&vt_ctx[active_vt]);
+
+    __asm__ volatile("push %0; popf" : : "r"(flags) : "memory");
+}
+
+int tty_get_active_vt(void) {
+    return active_vt;
+}
+
 void tty_putchar(char c) {
-    if (c == '\n' && (tty_console.termios.c_oflag & TTY_OFLAG_ONLCR)) {
+    tty_console_t *con = &tty_consoles[active_vt];
+    if (c == '\n' && (con->termios.c_oflag & TTY_OFLAG_ONLCR)) {
         tty_output_char('\r');
     }
     tty_output_char(c);
@@ -132,6 +221,19 @@ void tty_putchar(char c) {
 void tty_write(const char *buf, size_t len) {
     if (!buf) return;
     for (size_t i = 0; i < len; i++) tty_putchar(buf[i]);
+}
+
+/* Write to a specific VT (used when a background VT has process output). */
+void tty_write_vt(int vt, const char *buf, size_t len) {
+    if (!buf || vt < 0 || vt >= NUM_VTYS) return;
+    tty_console_t *con = &tty_consoles[vt];
+    for (size_t i = 0; i < len; i++) {
+        char c = buf[i];
+        if (c == '\n' && (con->termios.c_oflag & TTY_OFLAG_ONLCR)) {
+            tty_output_char_vt(vt, '\r');
+        }
+        tty_output_char_vt(vt, c);
+    }
 }
 
 char tty_getchar(void) {
@@ -166,13 +268,30 @@ int tty_getchar_nb(char *out) {
 int tty_read(char *buf, size_t len) {
     if (!buf || len == 0) return 0;
 
+    tty_console_t *con = &tty_consoles[active_vt];
     size_t nread = 0;
     while (nread < len) {
         char ch = tty_getchar();
         buf[nread++] = ch;
-        if ((tty_console.termios.c_lflag & TTY_LFLAG_ICANON) && ch == '\n') break;
+        if ((con->termios.c_lflag & TTY_LFLAG_ICANON) && ch == '\n') break;
     }
 
+    return (int)nread;
+}
+
+/* Read from a specific VT (non-blocking for background VTs). */
+int tty_read_vt(int vt, char *buf, size_t len) {
+    if (!buf || len == 0 || vt < 0 || vt >= NUM_VTYS) return 0;
+    if (vt == active_vt) return tty_read(buf, len);
+    /* Background VT: non-blocking only */
+    tty_console_t *con = &tty_consoles[vt];
+    size_t nread = 0;
+    while (nread < len) {
+        if (!tty_input_available_vt(vt)) break;
+        char ch = (char)tty_input_pop_vt(vt);
+        buf[nread++] = ch;
+        if ((con->termios.c_lflag & TTY_LFLAG_ICANON) && ch == '\n') break;
+    }
     return (int)nread;
 }
 
@@ -181,12 +300,13 @@ int tty_read(char *buf, size_t len) {
 int tty_read_nb(char *buf, size_t len) {
     if (!buf || len == 0) return 0;
 
+    tty_console_t *con = &tty_consoles[active_vt];
     size_t nread = 0;
     while (nread < len) {
         char ch;
         if (!tty_getchar_nb(&ch)) break;
         buf[nread++] = ch;
-        if ((tty_console.termios.c_lflag & TTY_LFLAG_ICANON) && ch == '\n') break;
+        if ((con->termios.c_lflag & TTY_LFLAG_ICANON) && ch == '\n') break;
     }
 
     return (int)nread;
@@ -197,22 +317,24 @@ void tty_flush(void) {
 }
 
 void tty_input_char(char c) {
-    if (tty_console.termios.c_iflag & TTY_IFLAG_ICRNL) {
+    tty_console_t *con = &tty_consoles[active_vt];
+
+    if (con->termios.c_iflag & TTY_IFLAG_ICRNL) {
         if (c == '\r') c = '\n';
     }
 
-    if ((tty_console.termios.c_lflag & TTY_LFLAG_ISIG) && c == 3) {
-        if (tty_console.termios.c_lflag & TTY_LFLAG_ECHO) tty_write("^C\n", 3);
-        tty_console.line_len = 0;
+    if ((con->termios.c_lflag & TTY_LFLAG_ISIG) && c == 3) {
+        if (con->termios.c_lflag & TTY_LFLAG_ECHO) tty_write("^C\n", 3);
+        con->line_len = 0;
         tty_signal_foreground_group(SIGINT);
         return;
     }
 
-    if (tty_console.termios.c_lflag & TTY_LFLAG_ICANON) {
+    if (con->termios.c_lflag & TTY_LFLAG_ICANON) {
         if (c == '\b' || c == 127) {
-            if (tty_console.line_len > 0) {
-                tty_console.line_len--;
-                if (tty_console.termios.c_lflag & TTY_LFLAG_ECHO) {
+            if (con->line_len > 0) {
+                con->line_len--;
+                if (con->termios.c_lflag & TTY_LFLAG_ECHO) {
                     tty_write("\b \b", 3);
                 }
             }
@@ -220,24 +342,24 @@ void tty_input_char(char c) {
         }
 
         if (c == '\n') {
-            for (uint32_t i = 0; i < tty_console.line_len; i++) {
-                tty_input_push(tty_console.line_buf[i]);
+            for (uint32_t i = 0; i < con->line_len; i++) {
+                tty_input_push(con->line_buf[i]);
             }
             tty_input_push('\n');
-            tty_console.line_len = 0;
-            if (tty_console.termios.c_lflag & TTY_LFLAG_ECHO) tty_putchar('\n');
+            con->line_len = 0;
+            if (con->termios.c_lflag & TTY_LFLAG_ECHO) tty_putchar('\n');
             return;
         }
 
-        if (tty_console.line_len + 1u < TTY_LINE_BUF_SIZE) {
-            tty_console.line_buf[tty_console.line_len++] = c;
-            if (tty_console.termios.c_lflag & TTY_LFLAG_ECHO) tty_putchar(c);
+        if (con->line_len + 1u < TTY_LINE_BUF_SIZE) {
+            con->line_buf[con->line_len++] = c;
+            if (con->termios.c_lflag & TTY_LFLAG_ECHO) tty_putchar(c);
         }
         return;
     }
 
     tty_input_push(c);
-    if (tty_console.termios.c_lflag & TTY_LFLAG_ECHO) tty_putchar(c);
+    if (con->termios.c_lflag & TTY_LFLAG_ECHO) tty_putchar(c);
 }
 
 int tty_device_path_kind(const char *path) {
@@ -247,33 +369,38 @@ int tty_device_path_kind(const char *path) {
     if (!strcmp(path, "/dev/tty0")) return TTY_PATH_CONSOLE;
     if (!strcmp(path, "/dev/tty1")) return TTY_PATH_CONSOLE;
     if (!strcmp(path, "/dev/ttyS0")) return TTY_PATH_CONSOLE;
+    if (!strcmp(path, "/dev/tty2")) return TTY_PATH_VT2;
+    if (!strcmp(path, "/dev/tty3")) return TTY_PATH_VT3;
     return TTY_PATH_NONE;
 }
 
-int tty_ioctl(uint32_t request, void *arg) {
+/* ioctl on a specific VT (VT index 0-based). */
+int tty_ioctl_vt(int vt, uint32_t request, void *arg) {
+    if (vt < 0 || vt >= NUM_VTYS) vt = 0;
+    tty_console_t *con = &tty_consoles[vt];
     switch (request) {
         case 0x5413: {
             if (!arg) return -1;
             tty_winsize_t *ws = (tty_winsize_t*)arg;
-            *ws = tty_console.winsize;
+            *ws = con->winsize;
             return 0;
         }
         case 0x5401:
-            if (arg) memcpy(arg, &tty_console.termios, sizeof(tty_console.termios));
+            if (arg) memcpy(arg, &con->termios, sizeof(con->termios));
             return 0;
         case 0x5402:
         case 0x5403:
         case 0x5404:
-            if (arg) memcpy(&tty_console.termios, arg, sizeof(tty_console.termios));
+            if (arg) memcpy(&con->termios, arg, sizeof(con->termios));
             return 0;
         case 0x540F: {  /* TIOCGPGRP */
             if (!arg) return -1;
-            *(uint32_t*)arg = tty_console.fg_pgid;
+            *(uint32_t*)arg = con->fg_pgid;
             return 0;
         }
         case 0x5410: {  /* TIOCSPGRP */
             if (!arg) return -1;
-            tty_console.fg_pgid = *(uint32_t*)arg;
+            con->fg_pgid = *(uint32_t*)arg;
             return 0;
         }
         case 0x540E:
@@ -281,7 +408,7 @@ int tty_ioctl(uint32_t request, void *arg) {
         case 0x5422: {  /* TIOCSCTTY */
             process_t *p = process_current();
             if (p) {
-                tty_console.fg_pgid = p->pgid;
+                con->fg_pgid = p->pgid;
             }
             return 0;
         }
@@ -290,28 +417,32 @@ int tty_ioctl(uint32_t request, void *arg) {
     }
 }
 
+int tty_ioctl(uint32_t request, void *arg) {
+    return tty_ioctl_vt(active_vt, request, arg);
+}
+
 int tty_get_pgrp(void) {
-    return (int)tty_console.fg_pgid;
+    return (int)tty_consoles[active_vt].fg_pgid;
 }
 
 int tty_set_pgrp(uint32_t pgid) {
-    tty_console.fg_pgid = pgid;
+    tty_consoles[active_vt].fg_pgid = pgid;
     return 0;
 }
 
 void tty_get_termios(tty_termios_t *termios) {
     if (!termios) return;
-    *termios = tty_console.termios;
+    *termios = tty_consoles[active_vt].termios;
 }
 
 void tty_set_termios(const tty_termios_t *termios) {
     if (!termios) return;
-    tty_console.termios = *termios;
+    tty_consoles[active_vt].termios = *termios;
 }
 
 void tty_get_winsize(tty_winsize_t *winsize) {
     if (!winsize) return;
-    *winsize = tty_console.winsize;
+    *winsize = tty_consoles[active_vt].winsize;
 }
 
 int tty_input_pending(void) {
@@ -324,3 +455,4 @@ void tty_inject_raw(const char *buf, int len) {
     for (int i = 0; i < len; i++)
         tty_input_push(buf[i]);
 }
+

@@ -223,6 +223,7 @@ I386_C_SOURCES = \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \
+    kernel/kdbg.c \
   drivers/vga.c \
   drivers/vt100.c \
   drivers/keyboard.c \
@@ -249,6 +250,7 @@ I386_C_SOURCES = \
     kernel/swap.c \
     kernel/syslog.c \
     kernel/netcfg.c \
+    kernel/kdbg.c \
     kernel/poll.c \
     kernel/devev.c \
     drivers/vga.c \

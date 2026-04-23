@@ -6,6 +6,7 @@
 #include "process.h"
 #include "syscall.h"
 #include "syslog.h"
+#include "kdbg.h"
 
 #define SIGNAL_TRAMPOLINE_ADDR 0x7FFF0000u
 #define SIGNAL_FRAME_MAGIC     0x53494746u
@@ -67,7 +68,7 @@ static void signal_ensure_trampoline(void) {
     if (!signal_trampoline_phys) {
         signal_trampoline_phys = pmm_alloc_frame();
         if (!signal_trampoline_phys) {
-            kprintf("[SIG]  Failed to allocate trampoline page\n");
+            kdbg(KDBG_SIGNAL, "[SIG]  Failed to allocate trampoline page\n");
             return;
         }
     }
@@ -165,7 +166,7 @@ void signal_init(void) {
      */
     signal_ensure_trampoline();
     if (!signal_trampoline_ready) {
-        kprintf("[SIG]  WARNING: trampoline init failed, signals may not work\n");
+        kdbg(KDBG_SIGNAL, "[SIG]  WARNING: trampoline init failed, signals may not work\n");
     }
 }
 
@@ -199,7 +200,7 @@ int signal_send_pid(uint32_t pid, int sig) {
     }
 
     if (syslog_get_verbose() >= VERBOSE_INFO)
-        kprintf("[SIG]  Sent %s to pid=%u\n", signal_name(sig), pid);
+        kdbg(KDBG_SIGNAL, "[SIG]  Sent %s to pid=%u\n", signal_name(sig), pid);
     return 0;
 }
 

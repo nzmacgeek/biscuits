@@ -13,6 +13,7 @@
 #include "signal.h"
 #include "gdt.h"
 #include "syslog.h"
+#include "kdbg.h"
 
 // Physical memory manager: bitmap of frames (each bit = one 4KB page)
 // We support up to 128MB (32768 frames)
@@ -373,7 +374,7 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
 
     if (!child_page_dir) return 0;
 
-    kprintf("[PGE] paging_clone_address_space: src=0x%08x child=0x%08x\n",
+    kdbg(KDBG_PAGING, "[PGE] paging_clone_address_space: src=0x%08x child=0x%08x\n",
             src_page_dir_phys, child_page_dir);
 
     src_page_dir = paging_directory_ptr(src_page_dir_phys);
@@ -408,7 +409,7 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
 
             new_phys = pmm_alloc_frame();
             if (!new_phys) {
-                kprintf("[PGE] pmm_alloc_frame OOM at pd=%u pt=%u\n", pd_idx, pt_idx);
+                kdbg(KDBG_PAGING, "[PGE] pmm_alloc_frame OOM at pd=%u pt=%u\n", pd_idx, pt_idx);
                 paging_destroy_address_space(child_page_dir);
                 return 0;
             }
@@ -418,7 +419,7 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
         }
     }
 
-    kprintf("[PGE] paging_clone_address_space: done (used_frames=%u)\n",
+    kdbg(KDBG_PAGING, "[PGE] paging_clone_address_space: done (used_frames=%u)\n",
             pmm_used_frames());
     return child_page_dir;
 }

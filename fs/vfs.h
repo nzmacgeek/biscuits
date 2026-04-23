@@ -137,6 +137,7 @@ int  vfs_devev_open(void);           // open a device event channel fd
 int  vfs_socket_open(int socket_id); // attach a kernel socket to a VFS fd
 int  vfs_fd_is_devev(int fd);        // 1 if the fd is a device event channel
 int  vfs_fd_is_tty(int fd);          // 1 if the fd is a tty/console device
+int  vfs_fd_get_tty_vt(int fd);      // VT index (0-based) for a TTY fd; -1 if not TTY
 int  vfs_fd_is_socket(int fd);       // 1 if the fd is a socket endpoint
 int  vfs_fd_is_pipe(int fd);         // 1 if the fd is a pipe
 int  vfs_pipe_readable(int fd);      // 1 if pipe has data (or EOF)

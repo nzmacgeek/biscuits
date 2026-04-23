@@ -409,3 +409,44 @@ void vt100_puts(const char *s) {
 void vt100_write(const char *buf, int n) {
     for (int i = 0; i < n; i++) vt100_putchar(buf[i]);
 }
+
+void vt100_save_context(vt100_context_t *ctx) {
+    vga_context_t gctx;
+    if (!ctx) return;
+    ctx->vt_state     = (int)vt_state;
+    for (int i = 0; i < VT_PARAM_MAX; i++) ctx->vt_params[i] = vt_params[i];
+    ctx->vt_nparam    = vt_nparam;
+    ctx->vt_cur_row   = vt_cur_row;
+    ctx->vt_cur_col   = vt_cur_col;
+    ctx->vt_saved_row = vt_saved_row;
+    ctx->vt_saved_col = vt_saved_col;
+    ctx->sgr_fg       = sgr_fg;
+    ctx->sgr_bg       = sgr_bg;
+    ctx->sgr_bold     = sgr_bold;
+    vga_save_context(&gctx);
+    ctx->vga_row            = gctx.row;
+    ctx->vga_col            = gctx.col;
+    ctx->vga_color          = gctx.color;
+    ctx->vga_protected_rows = gctx.protected_rows;
+}
+
+void vt100_restore_context(const vt100_context_t *ctx) {
+    vga_context_t gctx;
+    if (!ctx) return;
+    vt_state     = (vt_state_t)ctx->vt_state;
+    for (int i = 0; i < VT_PARAM_MAX; i++) vt_params[i] = ctx->vt_params[i];
+    vt_nparam    = ctx->vt_nparam;
+    vt_cur_row   = ctx->vt_cur_row;
+    vt_cur_col   = ctx->vt_cur_col;
+    vt_saved_row = ctx->vt_saved_row;
+    vt_saved_col = ctx->vt_saved_col;
+    sgr_fg       = ctx->sgr_fg;
+    sgr_bg       = ctx->sgr_bg;
+    sgr_bold     = ctx->sgr_bold;
+    gctx.row            = ctx->vga_row;
+    gctx.col            = ctx->vga_col;
+    gctx.color          = ctx->vga_color;
+    gctx.protected_rows = ctx->vga_protected_rows;
+    vga_restore_context(&gctx);
+    apply_sgr();
+}
