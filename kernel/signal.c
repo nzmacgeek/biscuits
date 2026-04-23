@@ -73,6 +73,11 @@ static void signal_ensure_trampoline(void) {
     }
 
     mapped_phys = paging_virt_to_phys(SIGNAL_TRAMPOLINE_ADDR) & ~0xFFFu;
+
+    /* Already correctly set up — nothing more to do. */
+    if (mapped_phys == signal_trampoline_phys && signal_trampoline_ready)
+        return;
+
     if (mapped_phys != signal_trampoline_phys) {
         paging_map(SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_phys,
                    PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE);
@@ -84,14 +89,18 @@ static void signal_ensure_trampoline(void) {
         signal_trampoline_ready = 1;
     }
 
-    /* Keep the trampoline executable/readable to user mode, but not writable. */
+    /* Remove write permission now that the trampoline code is in place. */
     paging_map(SIGNAL_TRAMPOLINE_ADDR, signal_trampoline_phys, PAGE_PRESENT | PAGE_USER);
 }
 
 void signal_map_trampoline_in_current_dir(void) {
-    /* Force a fresh map check against the currently-active page directory.
-     * Called after paging_switch_directory() in execve so the new address
-     * space always has the trampoline mapped at SIGNAL_TRAMPOLINE_ADDR. */
+    /* The trampoline page table is part of kernel_page_dir (PDE 511) and is
+     * inherited automatically by every new address space via the memcpy in
+     * paging_create_address_space().  We only need to map it explicitly when
+     * the current directory was somehow created before signal_init ran, which
+     * should never happen in practice.  Call signal_ensure_trampoline() here
+     * purely as a no-op safety check — it returns immediately if the trampoline
+     * is already mapped and ready. */
     signal_ensure_trampoline();
 }
 

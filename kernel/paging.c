@@ -27,13 +27,17 @@ static int  pmm_test(uint32_t frame)  { return (pmm_bitmap[frame/32] >> (frame%3
 
 uint32_t pmm_alloc_frame(void) {
     for (uint32_t i = 1; i < PMM_FRAMES; i++) {
-        if (!pmm_test(i)) { pmm_set(i); return i * PAGE_SIZE; }
+        if (!pmm_test(i)) {
+            pmm_set(i);
+            return i * PAGE_SIZE;
+        }
     }
     return 0; // out of memory - "Bandit, we need more room!"
 }
 
 void pmm_free_frame(uint32_t phys) {
-    pmm_clear(phys / PAGE_SIZE);
+    uint32_t frame = phys / PAGE_SIZE;
+    pmm_clear(frame);
 }
 
 uint32_t pmm_total_frames(void) {
@@ -85,8 +89,13 @@ static uint32_t *paging_ensure_page_table(uint32_t *page_dir, uint32_t pd_idx, u
      * mappings. */
     uint32_t existing_pt = page_dir[pd_idx] & ~0xFFFu;
     uint32_t kernel_pt = kernel_page_dir[pd_idx] & ~0xFFFu;
-    if (existing_pt == kernel_pt) {
-        /* Duplicate kernel page table for this address space */
+    if (existing_pt == kernel_pt && page_dir != kernel_page_dir) {
+        /* Duplicate kernel page table for this user address space so that
+         * user mappings don't modify the shared kernel page table. */
+        if (pd_idx == 0) {
+            kprintf("[PGE] WARN: duplicating first_page_table for user pd=0x%08x flags=0x%x!\n",
+                    (uint32_t)(uintptr_t)page_dir, flags);
+        }
         page_table = (uint32_t*)kheap_alloc(PAGE_SIZE, 1);
         if (!page_table) {
             kprintf("[PGE] ERROR: out of memory duplicating page table!\n");
@@ -276,7 +285,15 @@ int paging_unmap_in_directory(uint32_t page_dir_phys, uint32_t virt) {
     uint32_t *pt = (uint32_t*)(uintptr_t)(page_dir[pd_idx] & ~0xFFFu);
     if (!(pt[pt_idx] & PAGE_PRESENT)) return -1;
 
-    pmm_free_frame(pt[pt_idx] & ~0xFFFu);
+    uint32_t phys = pt[pt_idx] & ~0xFFFu;
+    if (phys < 0x400000) {
+        /* Never free kernel identity-map frames — user can unmap the VA but
+         * the physical frame belongs to the kernel and must not be released. */
+        pt[pt_idx] = 0;
+        if (page_dir == current_page_dir) paging_refresh_active_directory(page_dir);
+        return 0;
+    }
+    pmm_free_frame(phys);
     pt[pt_idx] = 0;
 
     if (page_dir == current_page_dir) paging_refresh_active_directory(page_dir);
@@ -309,22 +326,56 @@ uint32_t paging_create_address_space(void) {
     return (uint32_t)page_dir;
 }
 
+/*
+ * Physical-frame copy using two scratch window slots in first_page_table.
+ *
+ * All page directories share first_page_table for the 0–4 MB identity window
+ * (PDE 0 is always a copy of kernel_page_dir[0], which points here).  We
+ * temporarily remap entries 1022 and 1023 to reach arbitrary physical frames
+ * without a CR3 switch.  Interrupts are masked for the duration so no other
+ * code sees the transient mapping.
+ *
+ * The slots are reserved: user space is never mapped below 4 MB in this OS,
+ * so nothing else modifies first_page_table[1022/1023] at runtime.
+ */
+#define PAGING_TMP_SRC_IDX 1022u
+#define PAGING_TMP_DST_IDX 1023u
+
+static void paging_copy_frame(uint32_t src_phys, uint32_t dst_phys)
+{
+    uint32_t eflags;
+    uint32_t old_src = first_page_table[PAGING_TMP_SRC_IDX];
+    uint32_t old_dst = first_page_table[PAGING_TMP_DST_IDX];
+    void *src_va = (void*)((uintptr_t)(PAGING_TMP_SRC_IDX << 12));
+    void *dst_va = (void*)((uintptr_t)(PAGING_TMP_DST_IDX << 12));
+
+    __asm__ volatile("pushfl; pop %0; cli" : "=r"(eflags));
+
+    first_page_table[PAGING_TMP_SRC_IDX] = (src_phys & ~0xFFFu) | PAGE_PRESENT | PAGE_WRITABLE;
+    first_page_table[PAGING_TMP_DST_IDX] = (dst_phys & ~0xFFFu) | PAGE_PRESENT | PAGE_WRITABLE;
+    __asm__ volatile("invlpg (%0)" :: "r"(src_va) : "memory");
+    __asm__ volatile("invlpg (%0)" :: "r"(dst_va) : "memory");
+
+    memcpy(dst_va, src_va, PAGE_SIZE);
+
+    first_page_table[PAGING_TMP_SRC_IDX] = old_src;
+    first_page_table[PAGING_TMP_DST_IDX] = old_dst;
+    __asm__ volatile("invlpg (%0)" :: "r"(src_va) : "memory");
+    __asm__ volatile("invlpg (%0)" :: "r"(dst_va) : "memory");
+
+    __asm__ volatile("push %0; popfl" :: "r"(eflags));
+}
+
 uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
     uint32_t child_page_dir = paging_create_address_space();
-    uint8_t *copy_buffer;
-    uint32_t old_page_dir;
     uint32_t *src_page_dir;
     uint32_t *dst_page_dir;
 
     if (!child_page_dir) return 0;
 
-    copy_buffer = (uint8_t*)kheap_alloc(PAGE_SIZE, 1);
-    if (!copy_buffer) {
-        paging_destroy_address_space(child_page_dir);
-        return 0;
-    }
+    kprintf("[PGE] paging_clone_address_space: src=0x%08x child=0x%08x\n",
+            src_page_dir_phys, child_page_dir);
 
-    old_page_dir = paging_current_directory();
     src_page_dir = paging_directory_ptr(src_page_dir_phys);
     dst_page_dir = paging_directory_ptr(child_page_dir);
 
@@ -334,13 +385,13 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
         uint32_t *dst_page_table;
 
         if (!(src_pde & PAGE_PRESENT)) continue;
-        if (kernel_page_dir[pd_idx] == src_pde) continue;
+        /* Skip PDEs that map the same physical page table as the kernel —
+         * these are shared kernel mappings (e.g., identity map, signal PT). */
+        if ((kernel_page_dir[pd_idx] & ~0xFFFu) == (src_pde & ~0xFFFu)) continue;
 
         src_page_table = (uint32_t*)(uintptr_t)(src_pde & ~0xFFFu);
         dst_page_table = (uint32_t*)kheap_alloc(PAGE_SIZE, 1);
         if (!dst_page_table) {
-            paging_switch_directory(old_page_dir);
-            kheap_free(copy_buffer);
             paging_destroy_address_space(child_page_dir);
             return 0;
         }
@@ -350,30 +401,25 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
 
         for (uint32_t pt_idx = 0; pt_idx < 1024; pt_idx++) {
             uint32_t src_pte = src_page_table[pt_idx];
-            uint32_t virt = (pd_idx << 22) | (pt_idx << 12);
             uint32_t new_phys;
 
             if (!(src_pte & PAGE_PRESENT)) continue;
+            if (!(src_pte & PAGE_USER))    continue;  /* skip kernel-only mappings */
 
             new_phys = pmm_alloc_frame();
             if (!new_phys) {
-                paging_switch_directory(old_page_dir);
-                kheap_free(copy_buffer);
+                kprintf("[PGE] pmm_alloc_frame OOM at pd=%u pt=%u\n", pd_idx, pt_idx);
                 paging_destroy_address_space(child_page_dir);
                 return 0;
             }
 
             dst_page_table[pt_idx] = new_phys | (src_pte & 0xFFFu);
-
-            paging_switch_directory(src_page_dir_phys);
-            memcpy(copy_buffer, (const void*)virt, PAGE_SIZE);
-            paging_switch_directory(child_page_dir);
-            memcpy((void*)virt, copy_buffer, PAGE_SIZE);
+            paging_copy_frame(src_pte & ~0xFFFu, new_phys);
         }
     }
 
-    paging_switch_directory(old_page_dir);
-    kheap_free(copy_buffer);
+    kprintf("[PGE] paging_clone_address_space: done (used_frames=%u)\n",
+            pmm_used_frames());
     return child_page_dir;
 }
 
@@ -388,12 +434,20 @@ void paging_destroy_address_space(uint32_t page_dir_phys) {
         uint32_t *page_table;
 
         if (!(pde & PAGE_PRESENT)) continue;
-        if (kernel_page_dir[pd_idx] == pde) continue;
+        /* Skip PDEs that share the same physical page table as the kernel
+         * (identity map, signal trampoline, etc.). Compare physical addresses
+         * only — flag bits may differ between the kernel PDE and a user PDE. */
+        if ((kernel_page_dir[pd_idx] & ~0xFFFu) == (pde & ~0xFFFu)) continue;
 
         page_table = (uint32_t*)(uintptr_t)(pde & ~0xFFFu);
         for (uint32_t pt_idx = 0; pt_idx < 1024; pt_idx++) {
             if (page_table[pt_idx] & PAGE_PRESENT) {
-                pmm_free_frame(page_table[pt_idx] & ~0xFFFu);
+                uint32_t phys = page_table[pt_idx] & ~0xFFFu;
+                /* Never release kernel identity-map frames (phys < 4MB).
+                 * They are permanently reserved at boot and must not be
+                 * returned to the free pool by any address-space teardown. */
+                if (phys < 0x400000) continue;
+                pmm_free_frame(phys);
             }
         }
 
