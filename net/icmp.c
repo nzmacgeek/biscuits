@@ -55,16 +55,7 @@ void icmp_close(int sock) {
 int icmp_send(int sock, uint32_t dst_ip, const uint8_t *data, uint16_t len) {
     if (sock < 0 || sock >= ICMP_MAX_SOCKETS || !icmp_sockets[sock].active) return -1;
     if (!data || len < sizeof(icmp_hdr_t)) return -1;
-
-    static uint8_t pkt[1500];
-    if (len > sizeof(pkt)) return -1;
-
-    memcpy(pkt, data, len);
-    icmp_hdr_t *hdr = (icmp_hdr_t *)pkt;
-    hdr->checksum = 0;
-    hdr->checksum = net_checksum(pkt, len);
-
-    return ip_send(IPPROTO_ICMP, dst_ip, pkt, len);
+    return ip_send(IPPROTO_ICMP, dst_ip, data, len);
 }
 
 int icmp_recv(int sock, uint8_t *buf, uint16_t max_len, uint32_t *src_ip) {
