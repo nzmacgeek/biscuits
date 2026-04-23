@@ -10,8 +10,76 @@
 #include "ip.h"
 #include "icmp.h"
 
+#define ICMP_MAX_SOCKETS   8
+#define ICMP_RECV_BUF_SIZE 1472
+
+typedef struct {
+    int      active;
+    uint8_t  rx_buf[ICMP_RECV_BUF_SIZE];
+    uint16_t rx_len;
+    int      rx_ready;
+    uint32_t remote_ip;
+} icmp_socket_t;
+
+static icmp_socket_t icmp_sockets[ICMP_MAX_SOCKETS];
+
 void icmp_init(void) {
+    for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
+        icmp_sockets[i].active = 0;
+        icmp_sockets[i].rx_ready = 0;
+    }
     kprintf("[ICMP] ICMP handler ready\n");
+}
+
+int icmp_open(int protocol) {
+    if (protocol != 0 && protocol != IPPROTO_ICMP) return -1;
+
+    for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
+        if (!icmp_sockets[i].active) {
+            icmp_sockets[i].active = 1;
+            icmp_sockets[i].rx_ready = 0;
+            icmp_sockets[i].rx_len = 0;
+            icmp_sockets[i].remote_ip = 0;
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+void icmp_close(int sock) {
+    if (sock < 0 || sock >= ICMP_MAX_SOCKETS) return;
+    icmp_sockets[sock].active = 0;
+}
+
+int icmp_send(int sock, uint32_t dst_ip, const uint8_t *data, uint16_t len) {
+    if (sock < 0 || sock >= ICMP_MAX_SOCKETS || !icmp_sockets[sock].active) return -1;
+    if (!data || len < sizeof(icmp_hdr_t)) return -1;
+
+    static uint8_t pkt[1500];
+    if (len > sizeof(pkt)) return -1;
+
+    memcpy(pkt, data, len);
+    icmp_hdr_t *hdr = (icmp_hdr_t *)pkt;
+    hdr->checksum = 0;
+    hdr->checksum = net_checksum(pkt, len);
+
+    return ip_send(IPPROTO_ICMP, dst_ip, pkt, len);
+}
+
+int icmp_recv(int sock, uint8_t *buf, uint16_t max_len, uint32_t *src_ip) {
+    if (sock < 0 || sock >= ICMP_MAX_SOCKETS || !icmp_sockets[sock].active) return -1;
+    if (!buf || max_len == 0) return -1;
+    if (!icmp_sockets[sock].rx_ready) return 0;
+
+    uint16_t n = icmp_sockets[sock].rx_len;
+    if (n > max_len) n = max_len;
+    memcpy(buf, icmp_sockets[sock].rx_buf, n);
+
+    if (src_ip) *src_ip = icmp_sockets[sock].remote_ip;
+
+    icmp_sockets[sock].rx_ready = 0;
+    return (int)n;
 }
 
 void icmp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len) {
@@ -21,6 +89,17 @@ void icmp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len) {
 
     // Verify checksum
     if (net_checksum(data, len) != 0) return;
+
+    // Deliver incoming ICMP payload to all active raw ICMP sockets.
+    for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
+        if (!icmp_sockets[i].active) continue;
+        uint16_t copy_len = len;
+        if (copy_len > ICMP_RECV_BUF_SIZE) copy_len = ICMP_RECV_BUF_SIZE;
+        memcpy(icmp_sockets[i].rx_buf, data, copy_len);
+        icmp_sockets[i].rx_len = copy_len;
+        icmp_sockets[i].remote_ip = src_ip;
+        icmp_sockets[i].rx_ready = 1;
+    }
 
     if (hdr->type == ICMP_ECHO_REQUEST) {
         // Build and send an echo reply
