@@ -27,13 +27,17 @@ static int  pmm_test(uint32_t frame)  { return (pmm_bitmap[frame/32] >> (frame%3
 
 uint32_t pmm_alloc_frame(void) {
     for (uint32_t i = 1; i < PMM_FRAMES; i++) {
-        if (!pmm_test(i)) { pmm_set(i); return i * PAGE_SIZE; }
+        if (!pmm_test(i)) {
+            pmm_set(i);
+            return i * PAGE_SIZE;
+        }
     }
     return 0; // out of memory - "Bandit, we need more room!"
 }
 
 void pmm_free_frame(uint32_t phys) {
-    pmm_clear(phys / PAGE_SIZE);
+    uint32_t frame = phys / PAGE_SIZE;
+    pmm_clear(frame);
 }
 
 uint32_t pmm_total_frames(void) {
@@ -85,8 +89,13 @@ static uint32_t *paging_ensure_page_table(uint32_t *page_dir, uint32_t pd_idx, u
      * mappings. */
     uint32_t existing_pt = page_dir[pd_idx] & ~0xFFFu;
     uint32_t kernel_pt = kernel_page_dir[pd_idx] & ~0xFFFu;
-    if (existing_pt == kernel_pt) {
-        /* Duplicate kernel page table for this address space */
+    if (existing_pt == kernel_pt && page_dir != kernel_page_dir) {
+        /* Duplicate kernel page table for this user address space so that
+         * user mappings don't modify the shared kernel page table. */
+        if (pd_idx == 0) {
+            kprintf("[PGE] WARN: duplicating first_page_table for user pd=0x%08x flags=0x%x!\n",
+                    (uint32_t)(uintptr_t)page_dir, flags);
+        }
         page_table = (uint32_t*)kheap_alloc(PAGE_SIZE, 1);
         if (!page_table) {
             kprintf("[PGE] ERROR: out of memory duplicating page table!\n");
@@ -276,7 +285,15 @@ int paging_unmap_in_directory(uint32_t page_dir_phys, uint32_t virt) {
     uint32_t *pt = (uint32_t*)(uintptr_t)(page_dir[pd_idx] & ~0xFFFu);
     if (!(pt[pt_idx] & PAGE_PRESENT)) return -1;
 
-    pmm_free_frame(pt[pt_idx] & ~0xFFFu);
+    uint32_t phys = pt[pt_idx] & ~0xFFFu;
+    if (phys < 0x400000) {
+        /* Never free kernel identity-map frames — user can unmap the VA but
+         * the physical frame belongs to the kernel and must not be released. */
+        pt[pt_idx] = 0;
+        if (page_dir == current_page_dir) paging_refresh_active_directory(page_dir);
+        return 0;
+    }
+    pmm_free_frame(phys);
     pt[pt_idx] = 0;
 
     if (page_dir == current_page_dir) paging_refresh_active_directory(page_dir);
@@ -368,7 +385,9 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
         uint32_t *dst_page_table;
 
         if (!(src_pde & PAGE_PRESENT)) continue;
-        if (kernel_page_dir[pd_idx] == src_pde) continue;  /* shared kernel mapping */
+        /* Skip PDEs that map the same physical page table as the kernel —
+         * these are shared kernel mappings (e.g., identity map, signal PT). */
+        if ((kernel_page_dir[pd_idx] & ~0xFFFu) == (src_pde & ~0xFFFu)) continue;
 
         src_page_table = (uint32_t*)(uintptr_t)(src_pde & ~0xFFFu);
         dst_page_table = (uint32_t*)kheap_alloc(PAGE_SIZE, 1);
@@ -389,6 +408,7 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
 
             new_phys = pmm_alloc_frame();
             if (!new_phys) {
+                kprintf("[PGE] pmm_alloc_frame OOM at pd=%u pt=%u\n", pd_idx, pt_idx);
                 paging_destroy_address_space(child_page_dir);
                 return 0;
             }
@@ -414,12 +434,20 @@ void paging_destroy_address_space(uint32_t page_dir_phys) {
         uint32_t *page_table;
 
         if (!(pde & PAGE_PRESENT)) continue;
-        if (kernel_page_dir[pd_idx] == pde) continue;
+        /* Skip PDEs that share the same physical page table as the kernel
+         * (identity map, signal trampoline, etc.). Compare physical addresses
+         * only — flag bits may differ between the kernel PDE and a user PDE. */
+        if ((kernel_page_dir[pd_idx] & ~0xFFFu) == (pde & ~0xFFFu)) continue;
 
         page_table = (uint32_t*)(uintptr_t)(pde & ~0xFFFu);
         for (uint32_t pt_idx = 0; pt_idx < 1024; pt_idx++) {
             if (page_table[pt_idx] & PAGE_PRESENT) {
-                pmm_free_frame(page_table[pt_idx] & ~0xFFFu);
+                uint32_t phys = page_table[pt_idx] & ~0xFFFu;
+                /* Never release kernel identity-map frames (phys < 4MB).
+                 * They are permanently reserved at boot and must not be
+                 * returned to the free pool by any address-space teardown. */
+                if (phys < 0x400000) continue;
+                pmm_free_frame(phys);
             }
         }
 
