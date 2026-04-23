@@ -541,7 +541,7 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
     if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_SOCKET)
         return socket_read(current_fd_table()[fd].fs_fd, buf, len);
     if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_TTY)
-        return tty_read((char*)buf, len);
+        return tty_read_vt(vfs_fd_get_tty_vt(fd), (char*)buf, len);
     if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_PIPE) {
         int pipe_idx = current_fd_table()[fd].fs_fd;
         if (pipe_idx < 0 || pipe_idx >= VFS_MAX_PIPES) return -1;
@@ -607,7 +607,7 @@ int vfs_write(int fd, const uint8_t *buf, size_t len) {
         return socket_write(current_fd_table()[fd].fs_fd, buf, len);
     }
     if (current_fd_table()[fd].fd_type == VFS_FD_TYPE_TTY) {
-        tty_write((const char*)buf, len);
+        tty_write_vt(vfs_fd_get_tty_vt(fd), (const char*)buf, len);
         tty_flush();
         return (int)len;
     }

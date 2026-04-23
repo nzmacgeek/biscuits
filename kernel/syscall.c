@@ -2199,7 +2199,7 @@ static int32_t sys_ioctl(int fd, uint32_t request, void *arg) {
              request == IOCTL_TIOCSPGRP) && !arg) {
             return -BLUEY_EFAULT;
         }
-        int vt = (fd <= 2) ? 0 : vfs_fd_get_tty_vt(fd);
+        int vt = vfs_fd_get_tty_vt(fd);
         if (vt < 0) vt = 0;
         return tty_ioctl_vt(vt, request, arg) == 0 ? 0 : -BLUEY_EINVAL;
     }
@@ -2930,17 +2930,19 @@ cleanup:
     return result;
 }
 
-// SYS_READ (0): fd=0 -> stdin -> TTY; fd>=3 -> VFS
+// SYS_READ (0): route through per-VT non-blocking read for TTY fds
 static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
-    /* If userspace remapped this descriptor via dup/dup2/fcntl(F_DUPFD),
-     * honor the VFS binding first (including fd 0/1/2). */
+    if (!buf) return -BLUEY_EFAULT;
+    if (len == 0) return 0;
+
+    /* All open fds (including dup'd 0/1/2) — route TTY fds through per-VT
+     * non-blocking read so multiple login processes on different virtual
+     * consoles don't steal each other's input from active_vt. */
     if (vfs_fd_is_open((int)fd)) {
-        if (!buf) return -BLUEY_EFAULT;
-        if (len == 0) return 0;
         if (vfs_fd_is_tty((int)fd)) {
-            /* Non-blocking TTY read: if no data is ready, sleep 1 ms and
-             * restart the syscall so the scheduler can run other processes. */
-            int r = tty_read_nb(buf, len);
+            int vt = vfs_fd_get_tty_vt((int)fd);
+            if (vt < 0) vt = 0;
+            int r = tty_read_vt_nb(vt, buf, len);
             if (r == 0) {
                 process_sleep(1);
                 return -BLUEY_ERESTART;
@@ -2956,10 +2958,8 @@ static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
         return r;
     }
 
+    /* Legacy fallback for unmapped fd 0 (before any dup2 remaps stdin). */
     if (fd == 0) {
-        if (!buf) return -BLUEY_EFAULT;
-        if (len == 0) return 0;
-        /* Non-blocking TTY read for fd 0 (unmapped stdin). */
         int r = tty_read_nb(buf, len);
         if (r == 0) {
             process_sleep(1);
@@ -2967,19 +2967,8 @@ static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
         }
         return r;
     }
-    if (vfs_fd_is_tty((int)fd)) {
-        if (!buf) return -BLUEY_EFAULT;
-        if (len == 0) return 0;
-        int r = tty_read_nb(buf, len);
-        if (r == 0) {
-            process_sleep(1);
-            return -BLUEY_ERESTART;
-        }
-        return r;
-    }
+
     if (fd >= 3) {
-        if (!buf) return -BLUEY_EFAULT;
-        if (len == 0) return 0;
         int r = vfs_read((int)fd, (uint8_t *)buf, len);
         if (r == -BLUEY_EAGAIN && vfs_fd_is_pipe((int)fd)) {
             process_sleep(1);

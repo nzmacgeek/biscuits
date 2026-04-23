@@ -279,11 +279,35 @@ int tty_read(char *buf, size_t len) {
     return (int)nread;
 }
 
-/* Read from a specific VT (non-blocking for background VTs). */
+/* Read from a specific VT. Active VT blocks (keyboard + serial input);
+ * background VTs sleep-poll until data arrives or they become active. */
 int tty_read_vt(int vt, char *buf, size_t len) {
     if (!buf || len == 0 || vt < 0 || vt >= NUM_VTYS) return 0;
     if (vt == active_vt) return tty_read(buf, len);
-    /* Background VT: non-blocking only */
+    /* Background VT: block until input arrives or VT becomes active. */
+    tty_console_t *con = &tty_consoles[vt];
+    for (;;) {
+        if (vt == active_vt) return tty_read(buf, len);
+        if (tty_input_available_vt(vt)) break;
+        process_sleep(10);
+    }
+    size_t nread = 0;
+    while (nread < len) {
+        if (!tty_input_available_vt(vt)) break;
+        char ch = (char)tty_input_pop_vt(vt);
+        buf[nread++] = ch;
+        if ((con->termios.c_lflag & TTY_LFLAG_ICANON) && ch == '\n') break;
+    }
+    return (int)nread;
+}
+
+/* Non-blocking read from a specific VT.
+ * Polls serial input first (so data arriving via serial is captured).
+ * Returns 0 if no input is ready, otherwise the number of bytes read. */
+int tty_read_vt_nb(int vt, char *buf, size_t len) {
+    if (!buf || len == 0 || vt < 0 || vt >= NUM_VTYS) return 0;
+    /* Always poll serial so we don't miss data that arrived since last poll. */
+    tty_poll_input_sources();
     tty_console_t *con = &tty_consoles[vt];
     size_t nread = 0;
     while (nread < len) {
