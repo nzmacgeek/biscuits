@@ -429,6 +429,14 @@ int vfs_open(const char *path, int flags) {
 
     tty_kind = tty_device_path_kind(path);
     if (tty_kind != TTY_PATH_NONE) {
+        /* /dev/tty → resolve to the process's controlling terminal. */
+        if (tty_kind == TTY_PATH_TTY) {
+            process_t *p = process_current();
+            int ctty = (p && p->ctty_vt >= 0) ? p->ctty_vt : 0;
+            if (ctty == 1)      { tty_kind = TTY_PATH_VT2;     path = "/dev/tty2"; }
+            else if (ctty == 2) { tty_kind = TTY_PATH_VT3;     path = "/dev/tty3"; }
+            else                { tty_kind = TTY_PATH_CONSOLE;  path = "/dev/tty1"; }
+        }
         fd = vfs_alloc_fd();
         if (fd < 0) return -1;
         current_fd_table()[fd].used = 1;

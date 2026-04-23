@@ -433,6 +433,7 @@ int tty_ioctl_vt(int vt, uint32_t request, void *arg) {
             process_t *p = process_current();
             if (p) {
                 con->fg_pgid = p->pgid;
+                p->ctty_vt   = vt;  /* record controlling terminal VT */
             }
             return 0;
         }

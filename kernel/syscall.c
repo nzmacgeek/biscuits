@@ -1909,6 +1909,37 @@ static int32_t sys_readlink(const char *path, char *buf, uint32_t bufsize) {
     char _rpath[512];
     if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
     path = _rpath;
+
+    /* Handle /proc/<pid>/fd/<n> and /proc/self/fd/<n> — return the path
+     * stored in that process's fd_table entry.  This enables ttyname(3)
+     * (which reads /proc/self/fd/N via readlink) to work correctly. */
+    if (strncmp(path, "/proc/", 6) == 0) {
+        const char *p = path + 6;
+        uint32_t pid = 0;
+        if (strncmp(p, "self/", 5) == 0) {
+            process_t *self = process_current();
+            pid = (uint32_t)(self ? self->pid : 0);
+            p += 5;
+        } else {
+            while (*p >= '0' && *p <= '9') pid = pid * 10u + (uint32_t)(*p++ - '0');
+            if (*p == '/') p++;
+        }
+        if (strncmp(p, "fd/", 3) == 0) {
+            p += 3;
+            int fdnum = 0;
+            while (*p >= '0' && *p <= '9') fdnum = fdnum * 10 + (*p++ - '0');
+            process_t *proc = pid ? process_get_by_pid((int)pid) : NULL;
+            if (!proc) return -BLUEY_ENOENT;
+            if (fdnum < 0 || fdnum >= (int)VFS_MAX_OPEN) return -BLUEY_EBADF;
+            vfs_fd_t *ent = &proc->fd_table[fdnum];
+            if (!ent->used || ent->path[0] == '\0') return -BLUEY_ENOENT;
+            uint32_t plen = (uint32_t)strlen(ent->path);
+            uint32_t copy = plen < bufsize ? plen : bufsize;
+            memcpy(buf, ent->path, copy);
+            return (int32_t)copy;
+        }
+    }
+
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     /* readlink(2) requires the target to be a symlink */

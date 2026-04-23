@@ -337,6 +337,7 @@ static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t 
     process->page_dir = paging_current_directory();
     process->cwd[0] = '/';
     process->cwd[1] = '\0';
+    process->ctty_vt  = -1;  /* no controlling terminal yet */
 
     process->next = proc_list;
     proc_list = process;
@@ -485,6 +486,7 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     child->blocked_signals = parent->blocked_signals;
     memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
     memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    child->ctty_vt = parent->ctty_vt;
     vfs_inherit_fd_table(parent, child);
     child->saved_regs = *regs;
     child->saved_regs.eax = 0;
@@ -558,6 +560,7 @@ process_t *process_clone_current(const registers_t *regs, uint32_t child_stack,
     child->blocked_signals = parent->blocked_signals;
     memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
     memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    child->ctty_vt = parent->ctty_vt;
     child->saved_regs = *regs;
     child->saved_regs.eax = 0;
     if (child_stack) child->saved_regs.useresp = child_stack;
@@ -628,6 +631,7 @@ process_t *process_vfork_current(const registers_t *regs, int32_t *error_out) {
     child->blocked_signals = parent->blocked_signals;
     memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
     memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    child->ctty_vt = parent->ctty_vt;
     child->saved_regs = *regs;
     child->saved_regs.eax = 0;
     child->eip = child->saved_regs.eip;

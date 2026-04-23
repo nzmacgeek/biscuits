@@ -85,6 +85,7 @@ typedef struct process {
     int32_t       futex_wait_result;
     uint8_t       futex_wait_private;
     char          cwd[256];          // current working directory
+    int           ctty_vt;           // controlling terminal VT index (-1 = none)
     vfs_fd_t      fd_table[VFS_MAX_OPEN]; // per-process file descriptor table
     registers_t   saved_regs;
     process_sigaction_t signal_actions[32];
