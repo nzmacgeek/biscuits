@@ -858,11 +858,11 @@ int32_t process_waitpid(int32_t pid, int *status, int options) {
                 process_complete_wait(current, process, 1);
                 return reaped_pid;
             }
-            /* Return immediately for a stopped child when WUNTRACED is set.
-             * stop_signal acts as a one-shot flag: we clear it on delivery so
-             * a subsequent waitpid() for the same stop event is not returned. */
-            if ((options & WUNTRACED) && process->state == PROC_STOPPED &&
-                    process->stop_signal) {
+            /* Return immediately for a child with a pending stop report when
+             * WUNTRACED is set. stop_signal acts as a one-shot flag: we clear
+             * it on delivery so a subsequent waitpid() for the same stop event
+             * is not returned, even if the child has since been continued. */
+            if ((options & WUNTRACED) && process->stop_signal) {
                 if (status) *status = ((int)process->stop_signal << 8) | 0x7f;
                 process->stop_signal = 0;
                 return (int32_t)process->pid;

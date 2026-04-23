@@ -45,6 +45,28 @@ monitoring tools had no `/proc` files to read.
 
 ---
 
+### K-13 🟠 `waitpid(WUNTRACED)` stopped-child events could be lost or duplicated
+**Status:** FIXED (this PR)
+
+Stopped-child reporting had two edge-case defects:
+
+- Re-sending stop signals (`SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`) to an
+  already stopped process overwrote `stop_signal` and could trigger duplicate
+  parent wake/report for the same stopped state.
+- `waitpid()` only consumed pending stop events when the child was currently
+  `PROC_STOPPED`. If the child stopped and then continued before the parent
+  called `waitpid(WUNTRACED)`, the event could remain unreportable.
+
+**Fix applied:**
+- `kernel/signal.c`: only transition to `PROC_STOPPED`, record `stop_signal`,
+  and notify the parent when the process transitions from non-stopped to
+  stopped.
+- `kernel/process.c`: treat `stop_signal` as the authoritative pending
+  one-shot stop report in `process_waitpid()`, independent of current process
+  state.
+
+---
+
 ### K-1 🔴 Heap initialised AFTER first module load
 **Status:** FIXED (this PR)
 

@@ -114,9 +114,11 @@ static int signal_apply_default_action(process_t *process, int sig) {
     if (signal_is_ignored_by_default(sig)) return 0;
 
     if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
-        process->stop_signal = (uint8_t)sig;
-        process->state = PROC_STOPPED;
-        process_notify_stopped_parent(process);
+        if (process->state != PROC_STOPPED) {
+            process->stop_signal = (uint8_t)sig;
+            process->state = PROC_STOPPED;
+            process_notify_stopped_parent(process);
+        }
         return 1;
     }
 
@@ -173,9 +175,11 @@ int signal_send_pid(uint32_t pid, int sig) {
     if (sig == SIGKILL) {
         process_mark_exited(process, 128 + sig);
     } else if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
-        process->stop_signal = (uint8_t)sig;
-        process->state = PROC_STOPPED;
-        process_notify_stopped_parent(process);
+        if (process->state != PROC_STOPPED) {
+            process->stop_signal = (uint8_t)sig;
+            process->state = PROC_STOPPED;
+            process_notify_stopped_parent(process);
+        }
     } else if (sig == SIGCONT) {
         process->pending_signals &= ~signal_bit(sig);
         if (process->state == PROC_STOPPED || process->state == PROC_WAITING) {
