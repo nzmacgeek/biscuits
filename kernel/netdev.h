@@ -19,11 +19,13 @@
 #define NETDEV_MAX_ADDRS        4   // Max addresses per interface
 
 // Device flags
-#define NETDEV_FLAG_UP          0x0001  // Interface is administratively up
-#define NETDEV_FLAG_RUNNING     0x0002  // Resources allocated
-#define NETDEV_FLAG_CARRIER     0x0004  // Physical link detected
-#define NETDEV_FLAG_LOOPBACK    0x0008  // Loopback interface
-#define NETDEV_FLAG_BROADCAST   0x0010  // Supports broadcast
+// Flag values intentionally match glibc IFF_* (net/if.h) so kernel flags can
+// be used directly in userspace without translation.
+#define NETDEV_FLAG_UP          0x0001  // Interface is administratively up (IFF_UP)
+#define NETDEV_FLAG_BROADCAST   0x0002  // Supports broadcast (IFF_BROADCAST)
+#define NETDEV_FLAG_CARRIER     0x0004  // Physical link detected (no IFF_ equiv)
+#define NETDEV_FLAG_LOOPBACK    0x0008  // Loopback interface (IFF_LOOPBACK)
+#define NETDEV_FLAG_RUNNING     0x0040  // Resources allocated, carrier present (IFF_RUNNING)
 
 // Forward declarations for driver operations
 struct netdev_device;

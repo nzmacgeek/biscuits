@@ -5,6 +5,7 @@
 #include "../../lib/stdio.h"
 #include "../../lib/string.h"
 #include "network.h"
+#include "../../kernel/netdev.h"
 
 static net_interface_t *ifaces[NET_MAX_INTERFACES];
 static int iface_count = 0;
@@ -55,6 +56,24 @@ void net_register_interface(net_interface_t *iface) {
     }
 
     ifaces[iface_count++] = iface;
+
+    // Bridge into the netdev registry so netctl/scoutctl can enumerate interfaces.
+    netdev_device_t netdev;
+    memset(&netdev, 0, sizeof(netdev));
+    strncpy(netdev.name, iface->name, NETDEV_NAME_LEN - 1);
+    memcpy(netdev.mac, iface->mac, 6);
+    netdev.carrier = iface->up;
+    netdev.mtu     = 1500;
+    if (iface->up)
+        netdev.flags = NETDEV_FLAG_UP | NETDEV_FLAG_RUNNING | NETDEV_FLAG_CARRIER;
+    if (strcmp(iface->name, "lo") == 0) {
+        netdev.flags |= NETDEV_FLAG_LOOPBACK;
+        netdev.mtu = 65536;
+    } else {
+        netdev.flags |= NETDEV_FLAG_BROADCAST;
+    }
+    netdev.driver_priv = iface;
+    netdev_register(&netdev);
 }
 
 net_interface_t *net_get_interface(const char *name) {
