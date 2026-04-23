@@ -126,6 +126,11 @@ kdbg=0xFFFFFFFF
 
 Parsed in `kernel/bootargs.c` at startup; applies before the first process runs.
 
+The GRUB menu includes a **"Debug Boot"** entry that passes `kdbg=0x3e` (all
+subsystems except paging) out of the box.  Select it at the GRUB menu for an
+immediate diagnostic boot without editing kernel command lines.  The preset is
+defined in `src/biscuits/boot/grub/grub.cfg` in the baker repo.
+
 ### Enabling flags at runtime (live system)
 
 Write a hex value to `/dev/kdbg` from the shell:
@@ -146,6 +151,21 @@ cat /dev/kdbg
 
 `/dev/kdbg` is a character device backed by `DEVNODE_KDBG` in `fs/devfs.c`.
 Writes set `kdbg_flags`; reads return the current value as a hex string.
+
+### Matey login daemon — MATEY_DBG
+
+`matey` has its own debug macro:
+
+```c
+MATEY_DBG(fmt, ...)   // expands to write_str when MATEY_VERBOSE is set
+```
+
+Enable via the `-v` flag in the service definition (set in
+`src/matey/pkg/payload/etc/claw/services.d/matey@tty1.yml`).  The file ships
+with `-v -v` (double-verbose) so matey debug output is visible on the serial
+console by default.  Remove one or both `-v` flags to quiet it.
+
+---
 
 ### What stays unconditional (never gated by kdbg)
 
@@ -171,6 +191,34 @@ Writes set `kdbg_flags`; reads return the current value as a hex string.
 ---
 
 ## 4. Build and test
+
+### Baker (biscuits-baker repo) — preferred workflow
+
+```bash
+cd /home/willi/projects/biscuits-baker
+
+# Full build (all recipes: kernel, musl, bash, matey, claw, …):
+./bin/python baker.py build
+
+# Kernel only (fast rebuild after kernel-only changes):
+./bin/python baker.py kernel
+
+# Rebuild disk image (required before any VM test run):
+./bin/python baker.py image
+
+# Baker unit test suite (208 tests expected):
+./bin/python -m pytest tests/ -v
+```
+
+Always rebuild the disk image (`baker.py image`) before running a VM test;
+the biscuitfs journal can corrupt the filesystem across sessions.
+
+Kill any stale QEMU instance before testing — it holds a write lock on the
+disk image.  Use `kill <PID>` (get PID from `pgrep qemu`).
+
+### Biscuits kernel repo (direct Makefile usage)
+
+### Biscuits kernel repo (direct Makefile usage)
 
 ```bash
 # Check if cross-toolchain is available:
