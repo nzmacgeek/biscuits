@@ -276,6 +276,29 @@ static void process_complete_wait(process_t *parent, process_t *child, int reap_
     }
 }
 
+/*
+ * When a child enters PROC_STOPPED, check if its parent is blocked in
+ * waitpid() with WUNTRACED and wake it if so.  Uses stop_signal as a
+ * one-shot flag: set by the stopper, cleared here after delivery so a
+ * second waitpid() call for the same stop event is not reported again.
+ */
+void process_notify_stopped_parent(process_t *child) {
+    process_t *parent;
+    if (!child || !child->stop_signal) return;
+    parent = child->parent_pid ? process_get_by_pid(child->parent_pid) : NULL;
+    if (!parent) return;
+    if (!(parent->wait_options & WUNTRACED)) return;
+    if (!process_wait_matches(parent, child)) return;
+
+    process_write_wait_status(parent, ((int)child->stop_signal << 8) | 0x7f);
+    child->stop_signal = 0; /* consumed — one-shot */
+    parent->saved_regs.eax = (int32_t)child->pid;
+    parent->state = PROC_READY;
+    parent->wait_pid = 0;
+    parent->wait_status_ptr = 0;
+    parent->wait_options = 0;
+}
+
 static void process_reap(process_t *process) {
     if (!process) return;
 
@@ -834,6 +857,15 @@ int32_t process_waitpid(int32_t pid, int *status, int options) {
                 if (status) *status = process->exit_code;
                 process_complete_wait(current, process, 1);
                 return reaped_pid;
+            }
+            /* Return immediately for a stopped child when WUNTRACED is set.
+             * stop_signal acts as a one-shot flag: we clear it on delivery so
+             * a subsequent waitpid() for the same stop event is not returned. */
+            if ((options & WUNTRACED) && process->state == PROC_STOPPED &&
+                    process->stop_signal) {
+                if (status) *status = ((int)process->stop_signal << 8) | 0x7f;
+                process->stop_signal = 0;
+                return (int32_t)process->pid;
             }
         }
 

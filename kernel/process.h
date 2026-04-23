@@ -76,6 +76,10 @@ typedef struct process {
     int32_t       wait_pid;
     uint32_t      wait_status_ptr;
     uint32_t      wait_options;
+    /* stop_signal: set to the stopping signal number when this process enters
+     * PROC_STOPPED; cleared to 0 after the parent's waitpid() has consumed
+     * the event (one-shot).  0 means no unreported stop. */
+    uint8_t       stop_signal;
     uint32_t      futex_wait_addr;
     uint32_t      futex_wait_deadline;
     int32_t       futex_wait_result;
@@ -145,3 +149,5 @@ void       process_enter_first_user(process_t *process);
 uint32_t   process_getppid(void);
 const char *process_get_cwd(void);
 void       process_set_cwd(const char *path);
+/* Notify a waiting parent that its child has stopped (called from signal.c). */
+void       process_notify_stopped_parent(process_t *child);
