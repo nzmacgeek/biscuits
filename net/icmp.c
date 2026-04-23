@@ -11,7 +11,7 @@
 #include "icmp.h"
 
 #define ICMP_MAX_SOCKETS   8
-#define ICMP_RECV_BUF_SIZE 1472
+#define ICMP_RECV_BUF_SIZE 1480
 
 typedef struct {
     int      active;
@@ -90,14 +90,47 @@ int icmp_recv(int sock, uint8_t *buf, uint16_t max_len, uint32_t *src_ip) {
 
     n = icmp_sockets[sock].rx_len;
     if (n > max_len) n = max_len;
-    memcpy(buf, icmp_sockets[sock].rx_buf, n);
     remote_ip = icmp_sockets[sock].remote_ip;
+    icmp_irq_restore(flags);
 
+    memcpy(buf, icmp_sockets[sock].rx_buf, n);
+
+    flags = icmp_irq_save();
     icmp_sockets[sock].rx_ready = 0;
     icmp_irq_restore(flags);
 
     if (src_ip) *src_ip = remote_ip;
     return (int)n;
+}
+
+int icmp_has_data(int sock) {
+    uint32_t flags;
+    int ready = 0;
+    if (sock < 0 || sock >= ICMP_MAX_SOCKETS) return 0;
+    flags = icmp_irq_save();
+    if (icmp_sockets[sock].active && icmp_sockets[sock].rx_ready) ready = 1;
+    icmp_irq_restore(flags);
+    return ready;
+}
+
+void icmp_raw_deliver(const uint8_t *ip_packet, uint16_t ip_len, uint32_t src_ip) {
+    if (!ip_packet || ip_len < sizeof(ip_hdr_t) + sizeof(icmp_hdr_t)) return;
+    uint16_t copy_len = ip_len;
+    if (copy_len > ICMP_RECV_BUF_SIZE) copy_len = ICMP_RECV_BUF_SIZE;
+
+    for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
+        uint32_t flags = icmp_irq_save();
+        if (!icmp_sockets[i].active || icmp_sockets[i].rx_ready) {
+            icmp_irq_restore(flags);
+            continue;
+        }
+
+        memcpy(icmp_sockets[i].rx_buf, ip_packet, copy_len);
+        icmp_sockets[i].rx_len = copy_len;
+        icmp_sockets[i].remote_ip = src_ip;
+        icmp_sockets[i].rx_ready = 1;
+        icmp_irq_restore(flags);
+    }
 }
 
 void icmp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len) {
@@ -107,20 +140,6 @@ void icmp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len) {
 
     // Verify checksum
     if (net_checksum(data, len) != 0) return;
-
-    // Deliver incoming ICMP payload to all active raw ICMP sockets.
-    uint32_t flags = icmp_irq_save();
-    for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
-        if (!icmp_sockets[i].active) continue;
-        if (icmp_sockets[i].rx_ready) continue; // preserve unread datagram
-        uint16_t copy_len = len;
-        if (copy_len > ICMP_RECV_BUF_SIZE) copy_len = ICMP_RECV_BUF_SIZE;
-        memcpy(icmp_sockets[i].rx_buf, data, copy_len);
-        icmp_sockets[i].rx_len = copy_len;
-        icmp_sockets[i].remote_ip = src_ip;
-        icmp_sockets[i].rx_ready = 1;
-    }
-    icmp_irq_restore(flags);
 
     if (hdr->type == ICMP_ECHO_REQUEST) {
         // Build and send an echo reply

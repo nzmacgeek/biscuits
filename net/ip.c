@@ -123,6 +123,7 @@ void ip_handle(const uint8_t *frame, uint16_t len) {
 
     switch (ip->protocol) {
         case IPPROTO_ICMP:
+            icmp_raw_deliver((const uint8_t *)ip, ntohs(ip->total_len), ip->src_ip);
             icmp_handle(ip->src_ip, data, data_len);
             break;
         case IPPROTO_UDP:

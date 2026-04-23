@@ -36,5 +36,8 @@ int udp_send(int sock, uint32_t dst_ip, uint16_t dst_port,
 int udp_recv(int sock, uint8_t *buf, uint16_t max_len,
              uint32_t *src_ip, uint16_t *src_port);
 
+// True when a datagram is pending for this UDP socket.
+int udp_has_data(int sock);
+
 // Called by ip_handle() for incoming UDP packets
 void udp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len);

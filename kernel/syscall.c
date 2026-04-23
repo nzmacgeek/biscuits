@@ -1298,7 +1298,7 @@ static int32_t sys_socket_bind(int fd, const void *addr, uint32_t addrlen) {
         if (!addr || addrlen < sizeof(*in)) return -BLUEY_EINVAL;
         if (in->sin_family != BLUEY_AF_INET) return -BLUEY_EAFNOSUPPORT;
         uint16_t port = ntohs(in->sin_port);
-        uint32_t ip   = ntohl(in->sin_addr);
+        uint32_t ip   = in->sin_addr;
         rc = socket_inet_bind(socket_id, ip, port);
         return rc == 0 ? 0 : -BLUEY_EINVAL;
     }
@@ -1307,7 +1307,7 @@ static int32_t sys_socket_bind(int fd, const void *addr, uint32_t addrlen) {
         const k_sockaddr_in_t *in = (const k_sockaddr_in_t *)addr;
         if (!addr || addrlen < sizeof(*in)) return -BLUEY_EINVAL;
         if (in->sin_family != BLUEY_AF_INET) return -BLUEY_EAFNOSUPPORT;
-        uint32_t ip = ntohl(in->sin_addr);
+        uint32_t ip = in->sin_addr;
         rc = socket_inet_raw_bind(socket_id, ip);
         return rc == 0 ? 0 : -BLUEY_EINVAL;
     }
@@ -1403,7 +1403,7 @@ static int32_t sys_sendmsg(int fd, const struct bluey_msghdr *msg, int flags) {
         iov = (const struct bluey_iovec *)msg->msg_iov;
         if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
         uint16_t port = ntohs(in->sin_port);
-        uint32_t ip   = ntohl(in->sin_addr);
+        uint32_t ip   = in->sin_addr;
         int rc = socket_inet_sendto(socket_id, ip, port, iov->iov_base, iov->iov_len);
         return rc < 0 ? -BLUEY_EIO : rc;
     }
@@ -1415,7 +1415,7 @@ static int32_t sys_sendmsg(int fd, const struct bluey_msghdr *msg, int flags) {
         if (msg->msg_iovlen != 1) return -BLUEY_EINVAL;
         iov = (const struct bluey_iovec *)msg->msg_iov;
         if (!iov->iov_base || iov->iov_len == 0) return -BLUEY_EINVAL;
-        uint32_t ip = ntohl(in->sin_addr);
+        uint32_t ip = in->sin_addr;
         int rc = socket_inet_raw_sendto(socket_id, ip, iov->iov_base, iov->iov_len);
         return rc < 0 ? -BLUEY_EIO : rc;
     }
@@ -1472,7 +1472,7 @@ static int32_t sys_recvmsg(int fd, struct bluey_msghdr *msg, int flags) {
             k_sockaddr_in_t *in = (k_sockaddr_in_t *)msg->msg_name;
             in->sin_family = BLUEY_AF_INET;
             in->sin_port = htons(src_port);
-            in->sin_addr = htonl(src_ip);
+            in->sin_addr = src_ip;
         }
         return rc;
     }
@@ -1488,7 +1488,7 @@ static int32_t sys_recvmsg(int fd, struct bluey_msghdr *msg, int flags) {
             k_sockaddr_in_t *in = (k_sockaddr_in_t *)msg->msg_name;
             in->sin_family = BLUEY_AF_INET;
             in->sin_port = 0;
-            in->sin_addr = htonl(src_ip);
+            in->sin_addr = src_ip;
         }
         return rc;
     }

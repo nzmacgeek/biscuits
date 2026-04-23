@@ -100,6 +100,11 @@ int udp_recv(int sock, uint8_t *buf, uint16_t max_len,
     return (int)n;
 }
 
+int udp_has_data(int sock) {
+    if (sock < 0 || sock >= UDP_MAX_SOCKETS || !udp_sockets[sock].active) return 0;
+    return udp_sockets[sock].rx_ready ? 1 : 0;
+}
+
 void udp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len) {
     if (len < sizeof(udp_hdr_t)) return;
 

@@ -381,6 +381,12 @@ int socket_is_readable(int socket_id) {
 
     if (!socket_valid_id(socket_id)) return 0;
     sock = &socket_table[socket_id];
+    if (sock->domain == BLUEY_AF_INET && sock->type == BLUEY_SOCK_DGRAM && sock->inet_udp_id >= 0) {
+        return udp_has_data(sock->inet_udp_id);
+    }
+    if (sock->domain == BLUEY_AF_INET && sock->type == BLUEY_SOCK_RAW && sock->inet_icmp_id >= 0) {
+        return icmp_has_data(sock->inet_icmp_id);
+    }
     if (sock->state == SOCKET_STATE_LISTENING) return sock->pending_count > 0;
     if (sock->state == SOCKET_STATE_CONNECTED) return sock->rx_count > 0 || sock->peer_closed;
     return 0;
