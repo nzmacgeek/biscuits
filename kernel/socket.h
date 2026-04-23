@@ -7,6 +7,8 @@
 #define BLUEY_AF_INET      3
 #define BLUEY_SOCK_STREAM  1
 #define BLUEY_SOCK_DGRAM   2
+// Socket type values are interpreted in the context of domain.
+// Keep RAW as 3 for Linux ABI compatibility (SOCK_RAW=3 on i386).
 #define BLUEY_SOCK_RAW     3
 #define BLUEY_SOCK_NETCTL  3  // Message-oriented netctl socket
 

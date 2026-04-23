@@ -93,6 +93,7 @@ void icmp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len) {
     // Deliver incoming ICMP payload to all active raw ICMP sockets.
     for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
         if (!icmp_sockets[i].active) continue;
+        if (icmp_sockets[i].rx_ready) continue; // preserve unread datagram
         uint16_t copy_len = len;
         if (copy_len > ICMP_RECV_BUF_SIZE) copy_len = ICMP_RECV_BUF_SIZE;
         memcpy(icmp_sockets[i].rx_buf, data, copy_len);
