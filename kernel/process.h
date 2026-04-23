@@ -88,6 +88,10 @@ typedef struct process {
     struct process *sched_next;
 } process_t;
 
+/* waitpid() option flags — match POSIX / musl values */
+#define WNOHANG    1  /* return immediately if no child has changed state */
+#define WUNTRACED  2  /* also report stopped children */
+
 #define PROC_FLAG_USER_MODE 0x00000001u
 #define PROC_FLAG_SIGNAL_ACTIVE 0x00000002u
 #define PROC_FLAG_VFORK_SHARED_VM 0x00000004u
