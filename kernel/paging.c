@@ -309,22 +309,56 @@ uint32_t paging_create_address_space(void) {
     return (uint32_t)page_dir;
 }
 
+/*
+ * Physical-frame copy using two scratch window slots in first_page_table.
+ *
+ * All page directories share first_page_table for the 0–4 MB identity window
+ * (PDE 0 is always a copy of kernel_page_dir[0], which points here).  We
+ * temporarily remap entries 1022 and 1023 to reach arbitrary physical frames
+ * without a CR3 switch.  Interrupts are masked for the duration so no other
+ * code sees the transient mapping.
+ *
+ * The slots are reserved: user space is never mapped below 4 MB in this OS,
+ * so nothing else modifies first_page_table[1022/1023] at runtime.
+ */
+#define PAGING_TMP_SRC_IDX 1022u
+#define PAGING_TMP_DST_IDX 1023u
+
+static void paging_copy_frame(uint32_t src_phys, uint32_t dst_phys)
+{
+    uint32_t eflags;
+    uint32_t old_src = first_page_table[PAGING_TMP_SRC_IDX];
+    uint32_t old_dst = first_page_table[PAGING_TMP_DST_IDX];
+    void *src_va = (void*)((uintptr_t)(PAGING_TMP_SRC_IDX << 12));
+    void *dst_va = (void*)((uintptr_t)(PAGING_TMP_DST_IDX << 12));
+
+    __asm__ volatile("pushfl; pop %0; cli" : "=r"(eflags));
+
+    first_page_table[PAGING_TMP_SRC_IDX] = (src_phys & ~0xFFFu) | PAGE_PRESENT | PAGE_WRITABLE;
+    first_page_table[PAGING_TMP_DST_IDX] = (dst_phys & ~0xFFFu) | PAGE_PRESENT | PAGE_WRITABLE;
+    __asm__ volatile("invlpg (%0)" :: "r"(src_va) : "memory");
+    __asm__ volatile("invlpg (%0)" :: "r"(dst_va) : "memory");
+
+    memcpy(dst_va, src_va, PAGE_SIZE);
+
+    first_page_table[PAGING_TMP_SRC_IDX] = old_src;
+    first_page_table[PAGING_TMP_DST_IDX] = old_dst;
+    __asm__ volatile("invlpg (%0)" :: "r"(src_va) : "memory");
+    __asm__ volatile("invlpg (%0)" :: "r"(dst_va) : "memory");
+
+    __asm__ volatile("push %0; popfl" :: "r"(eflags));
+}
+
 uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
     uint32_t child_page_dir = paging_create_address_space();
-    uint8_t *copy_buffer;
-    uint32_t old_page_dir;
     uint32_t *src_page_dir;
     uint32_t *dst_page_dir;
 
     if (!child_page_dir) return 0;
 
-    copy_buffer = (uint8_t*)kheap_alloc(PAGE_SIZE, 1);
-    if (!copy_buffer) {
-        paging_destroy_address_space(child_page_dir);
-        return 0;
-    }
+    kprintf("[PGE] paging_clone_address_space: src=0x%08x child=0x%08x\n",
+            src_page_dir_phys, child_page_dir);
 
-    old_page_dir = paging_current_directory();
     src_page_dir = paging_directory_ptr(src_page_dir_phys);
     dst_page_dir = paging_directory_ptr(child_page_dir);
 
@@ -334,13 +368,11 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
         uint32_t *dst_page_table;
 
         if (!(src_pde & PAGE_PRESENT)) continue;
-        if (kernel_page_dir[pd_idx] == src_pde) continue;
+        if (kernel_page_dir[pd_idx] == src_pde) continue;  /* shared kernel mapping */
 
         src_page_table = (uint32_t*)(uintptr_t)(src_pde & ~0xFFFu);
         dst_page_table = (uint32_t*)kheap_alloc(PAGE_SIZE, 1);
         if (!dst_page_table) {
-            paging_switch_directory(old_page_dir);
-            kheap_free(copy_buffer);
             paging_destroy_address_space(child_page_dir);
             return 0;
         }
@@ -350,30 +382,24 @@ uint32_t paging_clone_address_space(uint32_t src_page_dir_phys) {
 
         for (uint32_t pt_idx = 0; pt_idx < 1024; pt_idx++) {
             uint32_t src_pte = src_page_table[pt_idx];
-            uint32_t virt = (pd_idx << 22) | (pt_idx << 12);
             uint32_t new_phys;
 
             if (!(src_pte & PAGE_PRESENT)) continue;
+            if (!(src_pte & PAGE_USER))    continue;  /* skip kernel-only mappings */
 
             new_phys = pmm_alloc_frame();
             if (!new_phys) {
-                paging_switch_directory(old_page_dir);
-                kheap_free(copy_buffer);
                 paging_destroy_address_space(child_page_dir);
                 return 0;
             }
 
             dst_page_table[pt_idx] = new_phys | (src_pte & 0xFFFu);
-
-            paging_switch_directory(src_page_dir_phys);
-            memcpy(copy_buffer, (const void*)virt, PAGE_SIZE);
-            paging_switch_directory(child_page_dir);
-            memcpy((void*)virt, copy_buffer, PAGE_SIZE);
+            paging_copy_frame(src_pte & ~0xFFFu, new_phys);
         }
     }
 
-    paging_switch_directory(old_page_dir);
-    kheap_free(copy_buffer);
+    kprintf("[PGE] paging_clone_address_space: done (used_frames=%u)\n",
+            pmm_used_frames());
     return child_page_dir;
 }
 
