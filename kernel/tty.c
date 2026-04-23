@@ -167,14 +167,19 @@ void tty_init(void) {
     int i;
     tty_serial_init();
     for (i = 0; i < NUM_VTYS; i++) {
+        uint32_t cell_idx;
+        uint16_t blank_cell;
         tty_console_init(&tty_consoles[i]);
-        memset(vt_vga_buf[i], 0, sizeof(vt_vga_buf[i]));
         memset(&vt_ctx[i], 0, sizeof(vt_ctx[i]));
         vt_ctx[i].sgr_fg = VGA_WHITE;
         vt_ctx[i].sgr_bg = VGA_BLACK;
         vt_ctx[i].vga_color = (uint8_t)((VGA_BLACK << 4) | VGA_LIGHT_GREY);
         vt_ctx[i].vga_row = 0;
         vt_ctx[i].vga_col = 0;
+        blank_cell = (uint16_t)' ' | ((uint16_t)vt_ctx[i].vga_color << 8);
+        for (cell_idx = 0; cell_idx < (sizeof(vt_vga_buf[i]) / sizeof(vt_vga_buf[i][0])); cell_idx++) {
+            vt_vga_buf[i][cell_idx] = blank_cell;
+        }
     }
     vt100_init();
     vt100_set_enabled(1);

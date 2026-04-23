@@ -11,11 +11,13 @@
 
 #include "devfs.h"
 #include "../include/types.h"
+#include "../include/bluey.h"
 #include "../lib/string.h"
 #include "../lib/stdio.h"
 #include "../kernel/tty.h"
 #include "../kernel/timer.h"
 #include "../kernel/kdbg.h"
+#include "../kernel/process.h"
 #include "vfs.h"
 
 // ---------------------------------------------------------------------------
@@ -274,6 +276,8 @@ static int devfs_write_cb(int fd, const uint8_t *buf, size_t len) {
             return -1;   /* stdin is not writable */
 
         case DEVNODE_KDBG: {
+            /* Only root (euid 0) may update debug flags */
+            if (process_get_euid() != 0) return -BLUEY_EPERM;
             /* Write hex value to set kdbg_flags, e.g. "echo 0x3 > /dev/kdbg" */
             if (len == 0) return 0;
             uint32_t v = 0;
@@ -307,7 +311,15 @@ static int devfs_write_cb(int fd, const uint8_t *buf, size_t len) {
 }
 
 static int devfs_read_at_cb(int fd, uint8_t *buf, size_t len, uint32_t offset) {
-    /* Character devices have no meaningful offset — delegate to sequential read */
+    /* For /dev/kdbg, implement one-shot sysfs-style read semantics:
+     * return the flags string at offset 0, and EOF (0) for any later offset
+     * so tools like `cat /dev/kdbg` do not loop indefinitely. */
+    if (fd >= 0 && fd < DEVFS_MAX_OPEN && devfs_fds[fd].used &&
+        devfs_fds[fd].node_type == DEVNODE_KDBG) {
+        if (offset > 0) return 0;  /* EOF after first read */
+        return devfs_read_cb(fd, buf, len);
+    }
+    /* All other character devices have no meaningful offset */
     (void)offset;
     return devfs_read_cb(fd, buf, len);
 }

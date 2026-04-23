@@ -48,7 +48,9 @@ uint32_t syscall_saved_fs = 0;
 uint32_t syscall_saved_gs = 0;
 
 #define BLUEY_ENOSYS 38
+#ifndef BLUEY_EPERM
 #define BLUEY_EPERM   1
+#endif
 #define BLUEY_ENOENT  2
 #define BLUEY_ESRCH   3
 #define BLUEY_EFAULT 14
@@ -2223,7 +2225,12 @@ typedef struct { uint16_t ws_row; uint16_t ws_col;
                  uint16_t ws_xpixel; uint16_t ws_ypixel; } k_winsize_t;
 
 static int32_t sys_ioctl(int fd, uint32_t request, void *arg) {
-    if (fd == 0 || fd == 1 || fd == 2 || vfs_fd_is_tty(fd)) {
+    /* Route to TTY ioctl handler only when the fd is a real TTY.
+     * For fd 0/1/2, use TTY fallback only when the descriptor is not open
+     * (i.e. not remapped via dup2/fcntl to a non-TTY fd). */
+    int is_tty_fd = vfs_fd_is_tty(fd) ||
+                    ((fd == 0 || fd == 1 || fd == 2) && !vfs_fd_is_open(fd));
+    if (is_tty_fd) {
         if ((request == IOCTL_TIOCGWINSZ || request == IOCTL_TCGETS ||
              request == IOCTL_TCSETS || request == IOCTL_TCSETSW ||
              request == IOCTL_TCSETSF || request == IOCTL_TIOCGPGRP ||

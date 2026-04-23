@@ -120,6 +120,7 @@ void vga_restore_context(const vga_context_t *ctx) {
     vga_col            = ctx->col;
     vga_color          = ctx->color;
     vga_protected_rows = ctx->protected_rows;
+    vga_update_cursor();
 }
 
 void vga_set_target(uint16_t *target) {
