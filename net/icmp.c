@@ -23,6 +23,16 @@ typedef struct {
 
 static icmp_socket_t icmp_sockets[ICMP_MAX_SOCKETS];
 
+static uint32_t icmp_irq_save(void) {
+    uint32_t flags;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static void icmp_irq_restore(uint32_t flags) {
+    __asm__ volatile("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
 void icmp_init(void) {
     for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
         icmp_sockets[i].active = 0;
@@ -32,24 +42,32 @@ void icmp_init(void) {
 }
 
 int icmp_open(int protocol) {
+    uint32_t flags;
     if (protocol != 0 && protocol != IPPROTO_ICMP) return -1;
 
+    flags = icmp_irq_save();
     for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
         if (!icmp_sockets[i].active) {
             icmp_sockets[i].active = 1;
             icmp_sockets[i].rx_ready = 0;
             icmp_sockets[i].rx_len = 0;
             icmp_sockets[i].remote_ip = 0;
+            icmp_irq_restore(flags);
             return i;
         }
     }
+    icmp_irq_restore(flags);
 
     return -1;
 }
 
 void icmp_close(int sock) {
+    uint32_t flags;
     if (sock < 0 || sock >= ICMP_MAX_SOCKETS) return;
+    flags = icmp_irq_save();
     icmp_sockets[sock].active = 0;
+    icmp_sockets[sock].rx_ready = 0;
+    icmp_irq_restore(flags);
 }
 
 int icmp_send(int sock, uint32_t dst_ip, const uint8_t *data, uint16_t len) {
@@ -59,17 +77,26 @@ int icmp_send(int sock, uint32_t dst_ip, const uint8_t *data, uint16_t len) {
 }
 
 int icmp_recv(int sock, uint8_t *buf, uint16_t max_len, uint32_t *src_ip) {
+    uint32_t flags;
+    uint16_t n;
+    uint32_t remote_ip;
     if (sock < 0 || sock >= ICMP_MAX_SOCKETS || !icmp_sockets[sock].active) return -1;
     if (!buf || max_len == 0) return -1;
-    if (!icmp_sockets[sock].rx_ready) return 0;
+    flags = icmp_irq_save();
+    if (!icmp_sockets[sock].rx_ready) {
+        icmp_irq_restore(flags);
+        return 0;
+    }
 
-    uint16_t n = icmp_sockets[sock].rx_len;
+    n = icmp_sockets[sock].rx_len;
     if (n > max_len) n = max_len;
     memcpy(buf, icmp_sockets[sock].rx_buf, n);
-
-    if (src_ip) *src_ip = icmp_sockets[sock].remote_ip;
+    remote_ip = icmp_sockets[sock].remote_ip;
 
     icmp_sockets[sock].rx_ready = 0;
+    icmp_irq_restore(flags);
+
+    if (src_ip) *src_ip = remote_ip;
     return (int)n;
 }
 
@@ -82,6 +109,7 @@ void icmp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len) {
     if (net_checksum(data, len) != 0) return;
 
     // Deliver incoming ICMP payload to all active raw ICMP sockets.
+    uint32_t flags = icmp_irq_save();
     for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
         if (!icmp_sockets[i].active) continue;
         if (icmp_sockets[i].rx_ready) continue; // preserve unread datagram
@@ -92,6 +120,7 @@ void icmp_handle(uint32_t src_ip, const uint8_t *data, uint16_t len) {
         icmp_sockets[i].remote_ip = src_ip;
         icmp_sockets[i].rx_ready = 1;
     }
+    icmp_irq_restore(flags);
 
     if (hdr->type == ICMP_ECHO_REQUEST) {
         // Build and send an echo reply
