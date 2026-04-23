@@ -117,13 +117,15 @@ int icmp_has_data(int sock) {
     int ready = 0;
     if (sock < 0 || sock >= ICMP_MAX_SOCKETS) return 0;
     flags = icmp_irq_save();
+    // Ready means: socket is active, has queued packet, and no in-flight copy.
     if (icmp_sockets[sock].active && icmp_sockets[sock].rx_ready && !icmp_sockets[sock].rx_busy) ready = 1;
     icmp_irq_restore(flags);
     return ready;
 }
 
 void icmp_raw_deliver(const uint8_t *ip_packet, uint16_t ip_len, uint32_t src_ip) {
-    if (!ip_packet || ip_len < sizeof(ip_hdr_t) + sizeof(icmp_hdr_t)) return;
+    // Raw sockets receive full IPv4 packet bytes for ICMP protocol traffic.
+    if (!ip_packet || ip_len < sizeof(ip_hdr_t) + 1u) return;
     uint16_t copy_len = ip_len;
     if (copy_len > ICMP_RECV_BUF_SIZE) copy_len = ICMP_RECV_BUF_SIZE;
 
@@ -139,6 +141,7 @@ void icmp_raw_deliver(const uint8_t *ip_packet, uint16_t ip_len, uint32_t src_ip
         memcpy(icmp_sockets[i].rx_buf, ip_packet, copy_len);
 
         flags = icmp_irq_save();
+        // Re-check active state: socket may have been closed while copy happened.
         if (icmp_sockets[i].active) {
             icmp_sockets[i].rx_len = copy_len;
             icmp_sockets[i].remote_ip = src_ip;
