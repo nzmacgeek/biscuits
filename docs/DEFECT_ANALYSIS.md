@@ -21,8 +21,8 @@
 ### K-15 🟡 VT100 cursor tracking/control filtering mismatched VGA behavior
 **Status:** FIXED (this PR)
 
-In VT100 normal mode, BEL was already fixed as non-printing, but control
-character compatibility still had gaps:
+In VT100 normal mode, this follow-up addresses remaining control-character
+compatibility gaps beyond the BEL fix in K-14:
 
 - HT (`\t`) was passed to VGA but did not update VT100 cursor tracking, causing
   state drift versus hardware cursor position.

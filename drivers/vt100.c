@@ -327,8 +327,9 @@ void vt100_putchar(char c) {
             if (c == '\x1B') {          // ESC
                 vt_state  = VT_ESC;
             } else if (c == '\a') {     // BEL (terminal bell)
-                /* Beep is emitted on the serial/debug output path.
-                 * Keep BEL non-printing on the VGA terminal. */
+                /* Keep BEL non-printing on the VGA terminal.
+                 * If BEL is forwarded on a serial/debug path, any audible
+                 * bell is typically produced by the host terminal emulator. */
             } else if (c == '\n' || c == '\r' || c == '\b' || c == '\t' ||
                        (((uint8_t)c) >= 0x20 && c != 0x7F)) {
                 // Printable or supported control character — pass to VGA
