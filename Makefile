@@ -168,6 +168,10 @@ else
   LDFLAGS = -m elf_i386 -T linker.ld --no-warn-rwx-segments
 endif
 
+# Header dependency tracking: generate .d files alongside .o files so that
+# changes to any included header trigger recompilation of all affected .c files.
+CFLAGS += -MMD -MP
+
 ifeq ($(DEBUG),1)
   # For reliable debug builds that interact correctly with inline asm
   # use -O0 (no optimization) and preserve the frame pointer to keep
@@ -345,6 +349,7 @@ $(BUILD_USERS_DIR): ; @mkdir -p $(BUILD_USERS_DIR)
 $(BUILD_SYSROOT): ; @mkdir -p $(BUILD_SYSROOT)
 
 C_OBJECTS   = $(C_SOURCES:.c=.o)
+DEPS        = $(C_OBJECTS:.o=.d)
 ASM_OBJECTS_C = $(M68K_ASM_SOURCES:.S=.o) $(PPC_ASM_SOURCES:.S=.o)
 ifeq ($(ARCH),m68k)
   ASM_OBJECTS = $(M68K_ASM_SOURCES:.S=.o)
@@ -573,3 +578,7 @@ help:
 .PHONY: test-boot
 test-boot:
 	@bash tools/boot-test.sh
+
+# Pull in auto-generated header dependency files so that any change to an
+# included header triggers recompilation of all affected .c files.
+-include $(DEPS)
