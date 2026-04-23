@@ -18,6 +18,20 @@
 
 ## Kernel (nzmacgeek/biscuits)
 
+### K-14 🟡 VT100 path rendered BEL (`\a`) as a screen glyph
+**Status:** FIXED (this PR)
+
+The VT100 normal-state path forwarded BEL (`0x07`) to `vga_putchar()`, which
+made terminal bell events appear as visible control glyphs instead of staying a
+non-printing beep event.
+
+**Fix applied:**
+- `drivers/vt100.c`: special-case BEL in `vt100_putchar()` as a non-printing
+  control code so it no longer reaches VGA rendering.
+- `drivers/vt100.h`: documented BEL support behaviour.
+
+---
+
 ### K-12 🟢 procfs lacked monitoring files (uptime, meminfo, version, loadavg, per-pid, net/dev)
 **Status:** FIXED (this PR)
 
