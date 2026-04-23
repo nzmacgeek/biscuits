@@ -77,6 +77,86 @@ add a verbosity guard if the message is debug-only.
 
 ---
 
+## 2b. Kernel debug flags (`kdbg`) — per-subsystem runtime control
+
+For subsystem-level tracing (paging, process lifecycle, syscall trace, signal
+delivery, filesystem ops), the kernel uses a **bitmask flag system** via
+`kernel/kdbg.h` / `kernel/kdbg.c`.  This is separate from the syslog
+verbosity level: `kdbg` is about *what* is traced, `verbose=` is about *how
+much* the syslog layer echoes.
+
+### Defined flags
+
+| Constant | Bit | Subsystem covered |
+|---|---|---|
+| `KDBG_PAGING`  | 0 | `paging.c` — page table clone/destroy/map |
+| `KDBG_PROCESS` | 1 | `process.c` — fork/exec/exit lifecycle |
+| `KDBG_SYSCALL` | 2 | `syscall.c` — per-call entry/exit traces |
+| `KDBG_SIGNAL`  | 3 | `signal.c` — signal delivery and trampolines |
+| `KDBG_FS`      | 4 | `vfs.c`, `devfs.c` — open/read/write/ioctl |
+| `KDBG_SCHED`   | 5 | `scheduler.c` — task switch decisions |
+| `KDBG_ALL`     | 0xFFFFFFFF | Enable everything |
+
+### Usage in kernel code
+
+```c
+#include "kernel/kdbg.h"
+
+// Cheap: no output unless the flag is set at runtime
+kdbg(KDBG_PAGING,  "[PGE] cloning pd=0x%08x\n", pd);
+kdbg(KDBG_PROCESS, "[PRC] fork pid=%u → child pid=%u\n", p->pid, child->pid);
+kdbg(KDBG_SYSCALL, "[SYS] execve path=%s\n", path);
+```
+
+**Rule: every new debug `kprintf` in kernel/drivers/fs code MUST use `kdbg()`
+with the appropriate flag.  Unconditional `kprintf` is reserved for boot-time
+init messages, error conditions, and fault handlers (panic, OOPS, page fault).**
+
+### Enabling flags at boot
+
+Pass `kdbg=0xN` on the kernel command line (GRUB or QEMU `-append`):
+
+```
+# Enable paging + process debug:
+kdbg=0x3
+
+# Enable everything:
+kdbg=0xFFFFFFFF
+```
+
+Parsed in `kernel/bootargs.c` at startup; applies before the first process runs.
+
+### Enabling flags at runtime (live system)
+
+Write a hex value to `/dev/kdbg` from the shell:
+
+```sh
+# Enable syscall tracing at runtime:
+echo 0x4 > /dev/kdbg
+
+# Enable all flags:
+echo 0xFFFFFFFF > /dev/kdbg
+
+# Disable everything:
+echo 0 > /dev/kdbg
+
+# Read current flags:
+cat /dev/kdbg
+```
+
+`/dev/kdbg` is a character device backed by `DEVNODE_KDBG` in `fs/devfs.c`.
+Writes set `kdbg_flags`; reads return the current value as a hex string.
+
+### What stays unconditional (never gated by kdbg)
+
+- `kprintf` in `kernel/isr.c`, `kernel/gdt.c`, `kernel/idt.c` (hardware setup)
+- Boot banner lines (`[BISCUIT]`, `[PMM]`, `[HEAP]`, `[VFS] Mounted at …`)
+- `[OOPS]` / panic / page-fault dump lines
+- Driver init one-liners (`[KBD] Keyboard initialised`, `[ATA] …`)
+- Any `kprintf` guarded by `syslog_get_verbose() >= VERBOSE_INFO`
+
+---
+
 ## 3. Coding conventions
 
 - Kernel is C11 (`-std=gnu11`), freestanding, no libc.
