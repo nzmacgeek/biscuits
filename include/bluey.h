@@ -86,6 +86,7 @@ void bluey_panic(const char *msg);
 // Kernel errno values (POSIX subset used by the BlueyOS kernel)
 // These match standard Linux errno values so userspace musl sees the right codes.
 // ---------------------------------------------------------------------------
+#define BLUEY_EPERM    1  /* Operation not permitted */
 #define BLUEY_EEXIST  17  /* File/directory already exists */
 #define BLUEY_ENODEV  19  /* No such device */
 #define BLUEY_ENOTDIR 20  /* Not a directory */

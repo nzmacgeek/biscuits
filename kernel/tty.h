@@ -23,20 +23,28 @@ enum {
 	TTY_PATH_NONE = 0,
 	TTY_PATH_CONSOLE = 1,
 	TTY_PATH_TTY = 2,
+	TTY_PATH_VT2 = 3,
+	TTY_PATH_VT3 = 4,
 };
 
 void tty_init(void);
 int  tty_is_ready(void);
 void tty_putchar(char c);
 void tty_write(const char *buf, size_t len);
+void tty_write_vt(int vt, const char *buf, size_t len);
+int  tty_read_vt(int vt, char *buf, size_t len);
 char tty_getchar(void);
 int  tty_getchar_nb(char *out); /* non-blocking: 0=no data, 1=got char */
 int  tty_read(char *buf, size_t len);
+int  tty_read_vt_nb(int vt, char *buf, size_t len); /* non-blocking, per-VT: 0=no data */
 int  tty_read_nb(char *buf, size_t len); /* non-blocking: 0=no data */
 void tty_flush(void);
 void tty_input_char(char c);
 int  tty_device_path_kind(const char *path);
 int  tty_ioctl(uint32_t request, void *arg);
+int  tty_ioctl_vt(int vt, uint32_t request, void *arg);
+void tty_switch_vt(int new_vt);
+int  tty_get_active_vt(void);
 int  tty_get_pgrp(void);
 int  tty_set_pgrp(uint32_t pgid);
 void tty_get_termios(tty_termios_t *termios);

@@ -31,6 +31,7 @@
 #include "socket.h"
 #include "module.h"
 #include "syslog.h"
+#include "kdbg.h"
 #include "../net/tcpip.h"
 #include "../fs/vfs.h"
 #include "../fs/blueyfs.h"
@@ -47,7 +48,6 @@ uint32_t syscall_saved_fs = 0;
 uint32_t syscall_saved_gs = 0;
 
 #define BLUEY_ENOSYS 38
-#define BLUEY_EPERM   1
 #define BLUEY_ENOENT  2
 #define BLUEY_ESRCH   3
 #define BLUEY_EFAULT 14
@@ -267,33 +267,33 @@ static int32_t sys_fork(const registers_t *regs) {
     int32_t fork_error = -BLUEY_EAGAIN;
 
     if (!regs) {
-        kprintf("[SYS] fork denied: null regs\n");
+        kdbg(KDBG_SYSCALL, "[SYS] fork denied: null regs\n");
         return -BLUEY_EPERM;
     }
     current = process_current();
     if (!current) {
-        kprintf("[SYS] fork denied: no current process\n");
+        kdbg(KDBG_SYSCALL, "[SYS] fork denied: no current process\n");
         return -BLUEY_EPERM;
     }
     if (!(current->flags & PROC_FLAG_USER_MODE)) {
-        kprintf("[SYS] fork denied: current process is not user mode (pid=%u flags=0x%x cs=0x%x)\n",
+        kdbg(KDBG_SYSCALL, "[SYS] fork denied: current process is not user mode (pid=%u flags=0x%x cs=0x%x)\n",
                 current->pid, current->flags, regs->cs);
         return -BLUEY_EPERM;
     }
     if (syscall_is_kernel_mode(regs)) {
-        kprintf("[SYS] fork warning: user-mode process pid=%u entered with kernel cs=0x%x; allowing based on process flags\n",
+        kdbg(KDBG_SYSCALL, "[SYS] fork warning: user-mode process pid=%u entered with kernel cs=0x%x; allowing based on process flags\n",
                 current->pid, regs->cs);
     }
 
     child = process_fork_current(regs, &fork_error);
     if (!child) {
         if (fork_error == 0) fork_error = -BLUEY_EAGAIN;
-        kprintf("[SYS] fork failed for pid=%u: returning %d\n", current->pid, -fork_error);
+        kdbg(KDBG_SYSCALL, "[SYS] fork failed for pid=%u: returning %d\n", current->pid, -fork_error);
         return fork_error;
     }
 
     scheduler_add(child);
-    kprintf("[SYS]  Forked pid=%u from pid=%u\n", child->pid, current->pid);
+    kdbg(KDBG_SYSCALL, "[SYS]  Forked pid=%u from pid=%u\n", child->pid, current->pid);
     return (int32_t)child->pid;
 }
 
@@ -303,28 +303,28 @@ static int32_t sys_vfork(const registers_t *regs) {
     int32_t fork_error = -BLUEY_EAGAIN;
 
     if (!regs) {
-        kprintf("[SYS] vfork denied: null regs\n");
+        kdbg(KDBG_SYSCALL, "[SYS] vfork denied: null regs\n");
         return -BLUEY_EPERM;
     }
     current = process_current();
     if (!current) {
-        kprintf("[SYS] vfork denied: no current process\n");
+        kdbg(KDBG_SYSCALL, "[SYS] vfork denied: no current process\n");
         return -BLUEY_EPERM;
     }
     if (!(current->flags & PROC_FLAG_USER_MODE)) {
-        kprintf("[SYS] vfork denied: current process is not user mode (pid=%u flags=0x%x cs=0x%x)\n",
+        kdbg(KDBG_SYSCALL, "[SYS] vfork denied: current process is not user mode (pid=%u flags=0x%x cs=0x%x)\n",
                 current->pid, current->flags, regs->cs);
         return -BLUEY_EPERM;
     }
     if (syscall_is_kernel_mode(regs)) {
-        kprintf("[SYS] vfork warning: user-mode process pid=%u entered with kernel cs=0x%x; allowing based on process flags\n",
+        kdbg(KDBG_SYSCALL, "[SYS] vfork warning: user-mode process pid=%u entered with kernel cs=0x%x; allowing based on process flags\n",
                 current->pid, regs->cs);
     }
 
     child = process_vfork_current(regs, &fork_error);
     if (!child) {
         if (fork_error == 0) fork_error = -BLUEY_EAGAIN;
-        kprintf("[SYS] vfork failed for pid=%u: returning %d\n", current->pid, -fork_error);
+        kdbg(KDBG_SYSCALL, "[SYS] vfork failed for pid=%u: returning %d\n", current->pid, -fork_error);
         return fork_error;
     }
 
@@ -338,7 +338,7 @@ static int32_t sys_vfork(const registers_t *regs) {
     process_set_current(child);
     paging_switch_directory(child->page_dir);
     gdt_set_tls_base(child->tls_base);
-    kprintf("[SYS]  vforked pid=%u from pid=%u\n", child->pid, current->pid);
+    kdbg(KDBG_SYSCALL, "[SYS]  vforked pid=%u from pid=%u\n", child->pid, current->pid);
     syscall_enter_user_frame(&child->saved_regs);
     return (int32_t)child->pid;
 }
@@ -367,12 +367,12 @@ static int32_t sys_clone(const registers_t *regs) {
     child_stack = regs->ecx;
 
     if ((flags & ~supported_flags) != 0u) {
-        kprintf("[SYS] clone unsupported flags=0x%x\n", flags);
+        kdbg(KDBG_SYSCALL, "[SYS] clone unsupported flags=0x%x\n", flags);
         return -BLUEY_ENOSYS;
     }
 
     if (exit_signal != SIGCHLD && exit_signal != 0u) {
-        kprintf("[SYS] clone unsupported exit signal=%u flags=0x%x\n", exit_signal, flags);
+        kdbg(KDBG_SYSCALL, "[SYS] clone unsupported exit signal=%u flags=0x%x\n", exit_signal, flags);
         return -BLUEY_ENOSYS;
     }
 
@@ -385,7 +385,7 @@ static int32_t sys_clone(const registers_t *regs) {
     }
 
     if ((flags & BLUEY_CLONE_THREAD) == 0u) {
-        kprintf("[SYS] clone currently only supports thread-style shared VM clones flags=0x%x\n", flags);
+        kdbg(KDBG_SYSCALL, "[SYS] clone currently only supports thread-style shared VM clones flags=0x%x\n", flags);
         return -BLUEY_ENOSYS;
     }
 
@@ -397,7 +397,7 @@ static int32_t sys_clone(const registers_t *regs) {
             BLUEY_CLONE_SIGHAND | BLUEY_CLONE_THREAD |
             BLUEY_CLONE_SYSVSEM | BLUEY_CLONE_SETTLS |
             BLUEY_CLONE_PARENT_SETTID | BLUEY_CLONE_CHILD_CLEARTID)) {
-        kprintf("[SYS] clone missing required thread flags=0x%x\n", flags);
+        kdbg(KDBG_SYSCALL, "[SYS] clone missing required thread flags=0x%x\n", flags);
         return -BLUEY_EINVAL;
     }
 
@@ -452,7 +452,7 @@ static int32_t sys_brk(uint32_t addr) {
         result = syscall_map_user_pages(process, map_start, map_end,
                                         PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE);
         if (result != 0) {
-            kprintf("[SYS] brk map failed pid=%d name=%s map_start=0x%x map_end=0x%x result=%d\n",
+            kdbg(KDBG_SYSCALL, "[SYS] brk map failed pid=%d name=%s map_start=0x%x map_end=0x%x result=%d\n",
                     process->pid, process->name, map_start, map_end, result);
             return (int32_t)process->brk_current;
         }
@@ -668,8 +668,8 @@ static int32_t sys_rt_sigaction(int sig, const bluey_sigaction_t *act,
 
     if (!process) return -BLUEY_EPERM;
     /* Linux rt_sigaction requires sigsetsize == sizeof(kernel_sigset_t).
-     * We support 4-byte signal masks (signals 1-31). */
-    if (sigsetsize != sizeof(uint32_t)) return -BLUEY_EINVAL;
+     * We support 4-byte signal masks (signals 1-31); accept 8 from musl. */
+    if (sigsetsize < sizeof(uint32_t)) return -BLUEY_EINVAL;
 
     /* Copy act from user memory before calling signal_sigaction so that
      * any corruption in user memory doesn't reach kernel internals via
@@ -1196,11 +1196,25 @@ typedef struct {
     uint32_t sn_groups;   // Multicast group bitmask (NETCTL_GROUP_*)
 } k_sockaddr_netctl_t;
 
-#define SOCKETCALL_SOCKET   1
-#define SOCKETCALL_BIND     2
-#define SOCKETCALL_CONNECT  3
-#define SOCKETCALL_LISTEN   4
-#define SOCKETCALL_ACCEPT   5
+#define SOCKETCALL_SOCKET      1
+#define SOCKETCALL_BIND        2
+#define SOCKETCALL_CONNECT     3
+#define SOCKETCALL_LISTEN      4
+#define SOCKETCALL_ACCEPT      5
+#define SOCKETCALL_GETSOCKNAME 6
+#define SOCKETCALL_GETPEERNAME 7
+#define SOCKETCALL_SEND        9
+#define SOCKETCALL_RECV        10
+#define SOCKETCALL_SENDTO      11
+#define SOCKETCALL_RECVFROM    12
+#define SOCKETCALL_SHUTDOWN    13
+#define SOCKETCALL_SETSOCKOPT  14
+#define SOCKETCALL_GETSOCKOPT  15
+#define SOCKETCALL_SENDMSG     16
+#define SOCKETCALL_RECVMSG     17
+#define SOCKETCALL_ACCEPT4     18
+
+#define BLUEY_ENOTCONN 107
 
 // Simple message header structure for sendmsg/recvmsg
 struct bluey_msghdr {
@@ -1509,8 +1523,18 @@ static int32_t sys_socketcall(int call, uint32_t *args) {
         case SOCKETCALL_LISTEN:
             return sys_socket_listen((int)args[0], (int)args[1]);
         case SOCKETCALL_ACCEPT:
+        case SOCKETCALL_ACCEPT4:
             return sys_socket_accept4((int)args[0], (void*)(uintptr_t)args[1],
-                                      (uint32_t*)(uintptr_t)args[2], 0);
+                                      (uint32_t*)(uintptr_t)args[2],
+                                      call == SOCKETCALL_ACCEPT4 ? (int)args[3] : 0);
+        case SOCKETCALL_GETSOCKNAME:
+        case SOCKETCALL_GETPEERNAME:
+            /* Return ENOTSOCK for non-socket fds so bash's isnetconn() correctly
+             * determines that TTY/file fds are not network connections. Without
+             * this, bash -c sources .bashrc (the rshd/sshd workaround path). */
+            if (!vfs_fd_is_socket((int)args[0])) return -BLUEY_ENOTSOCK;
+            /* Socket exists but has no connected peer (we don't support TCP). */
+            return -BLUEY_ENOTCONN;
         default:
             return -BLUEY_ENOSYS;
     }
@@ -1926,6 +1950,37 @@ static int32_t sys_readlink(const char *path, char *buf, uint32_t bufsize) {
     char _rpath[512];
     if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
     path = _rpath;
+
+    /* Handle /proc/<pid>/fd/<n> and /proc/self/fd/<n> — return the path
+     * stored in that process's fd_table entry.  This enables ttyname(3)
+     * (which reads /proc/self/fd/N via readlink) to work correctly. */
+    if (strncmp(path, "/proc/", 6) == 0) {
+        const char *p = path + 6;
+        uint32_t pid = 0;
+        if (strncmp(p, "self/", 5) == 0) {
+            process_t *self = process_current();
+            pid = (uint32_t)(self ? self->pid : 0);
+            p += 5;
+        } else {
+            while (*p >= '0' && *p <= '9') pid = pid * 10u + (uint32_t)(*p++ - '0');
+            if (*p == '/') p++;
+        }
+        if (strncmp(p, "fd/", 3) == 0) {
+            p += 3;
+            int fdnum = 0;
+            while (*p >= '0' && *p <= '9') fdnum = fdnum * 10 + (*p++ - '0');
+            process_t *proc = pid ? process_get_by_pid((int)pid) : NULL;
+            if (!proc) return -BLUEY_ENOENT;
+            if (fdnum < 0 || fdnum >= (int)VFS_MAX_OPEN) return -BLUEY_EBADF;
+            vfs_fd_t *ent = &proc->fd_table[fdnum];
+            if (!ent->used || ent->path[0] == '\0') return -BLUEY_ENOENT;
+            uint32_t plen = (uint32_t)strlen(ent->path);
+            uint32_t copy = plen < bufsize ? plen : bufsize;
+            memcpy(buf, ent->path, copy);
+            return (int32_t)copy;
+        }
+    }
+
     vfs_stat_t st;
     if (vfs_stat(path, &st) != 0) return -BLUEY_ENOENT;
     /* readlink(2) requires the target to be a symlink */
@@ -2004,8 +2059,13 @@ static int32_t sys_lseek(int fd, int32_t offset, int whence) {
         return -BLUEY_EINVAL;
     }
 
-    /* Delegate to VFS and return its result (or error code). */
-    return vfs_lseek(fd, offset, whence);
+    int32_t result = vfs_lseek(fd, offset, whence);
+    {
+        process_t *_p = process_current();
+        kdbg(KDBG_FS, "[VFS]  lseek pid=%u fd=%d offset=%d whence=%d -> %d\n",
+             _p ? _p->pid : 0u, fd, offset, whence, result);
+    }
+    return result;
 }
 
 /* Legacy _llseek syscall (i386 ABI):
@@ -2039,6 +2099,8 @@ static int32_t sys__llseek(uint32_t fd, uint32_t offset_hi, uint32_t offset_lo,
      * caller's page directory (same safe pattern as sys_prlimit64). */
     process_t *caller = process_current();
     if (!caller) return -BLUEY_EPERM;
+    kdbg(KDBG_FS, "[VFS]  llseek pid=%u fd=%u off_hi=%u off_lo=%u whence=%d -> %d\n",
+         caller->pid, fd, offset_hi, offset_lo, whence, newoff);
     old_dir = paging_current_directory();
     paging_switch_directory(caller->page_dir);
     *(uint32_t*)(uintptr_t)result_ptr = (uint32_t)newoff;
@@ -2202,14 +2264,21 @@ typedef struct { uint16_t ws_row; uint16_t ws_col;
                  uint16_t ws_xpixel; uint16_t ws_ypixel; } k_winsize_t;
 
 static int32_t sys_ioctl(int fd, uint32_t request, void *arg) {
-    if (fd == 0 || fd == 1 || fd == 2 || vfs_fd_is_tty(fd)) {
+    /* Route to TTY ioctl handler only when the fd is a real TTY.
+     * For fd 0/1/2, use TTY fallback only when the descriptor is not open
+     * (i.e. not remapped via dup2/fcntl to a non-TTY fd). */
+    int is_tty_fd = vfs_fd_is_tty(fd) ||
+                    ((fd == 0 || fd == 1 || fd == 2) && !vfs_fd_is_open(fd));
+    if (is_tty_fd) {
         if ((request == IOCTL_TIOCGWINSZ || request == IOCTL_TCGETS ||
              request == IOCTL_TCSETS || request == IOCTL_TCSETSW ||
              request == IOCTL_TCSETSF || request == IOCTL_TIOCGPGRP ||
              request == IOCTL_TIOCSPGRP) && !arg) {
             return -BLUEY_EFAULT;
         }
-        return tty_ioctl(request, arg) == 0 ? 0 : -BLUEY_EINVAL;
+        int vt = vfs_fd_get_tty_vt(fd);
+        if (vt < 0) vt = 0;
+        return tty_ioctl_vt(vt, request, arg) == 0 ? 0 : -BLUEY_EINVAL;
     }
 
     switch (request) {
@@ -2576,6 +2645,8 @@ static int32_t sys_nanosleep(const k_timespec_req_t *req, void *rem) {
 /* ---- exit_group --------------------------------------------------------- */
 
 static int32_t sys_exit_group(int code) {
+    process_t *_p = process_current();
+    kdbg(KDBG_PROCESS, "[PRC]  exit_group pid=%u code=%d\n", _p ? _p->pid : 0u, code);
     process_exit(code);
     return 0;
 }
@@ -2764,6 +2835,9 @@ static int32_t sys_open(const char *path, int flags) {
     if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
     path = _rpath;
 
+    kdbg(KDBG_FS, "[OPEN] pid=%u path=%s flags=0x%x\n",
+         process_current() ? process_current()->pid : 0, path, flags);
+
     access_mode = flags & 0x3;
     vfs_flags = access_mode | (flags & (VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND));
 
@@ -2833,6 +2907,9 @@ static int32_t sys_execve(registers_t *regs,
     if (!path) return -BLUEY_EFAULT;
     if (!(process->flags & PROC_FLAG_USER_MODE)) return -BLUEY_EPERM;
 
+    kdbg(KDBG_SYSCALL, "[SYS]  execve: ENTER pid=%u path=%p\n",
+         process->pid, (void*)(uintptr_t)path);
+
     path_copy = syscall_copy_string(path);
     if (!path_copy || !path_copy[0]) {
         result = path_copy ? -BLUEY_EINVAL : -BLUEY_E2BIG;
@@ -2862,13 +2939,14 @@ static int32_t sys_execve(registers_t *regs,
     }
 
     if (vfs_stat(path_copy, &stat) != 0) {
-        kprintf("[SYS] execve missing path: %s\n", path_copy);
+        kdbg(KDBG_SYSCALL, "[SYS]  execve: stat failed path='%s' pid=%u\n",
+             path_copy, process ? process->pid : 0u);
         result = -BLUEY_ENOENT;
         goto cleanup;
     }
     // Execute permission is still required even for setuid/setgid binaries.
     if (vfs_access(path_copy, VFS_ACCESS_EXEC) != 0 || stat.is_dir) {
-        kprintf("[SYS] execve denied path=%s is_dir=%u mode=0%o\n",
+        kdbg(KDBG_SYSCALL, "[SYS] execve denied path=%s is_dir=%u mode=0%o\n",
                 path_copy, stat.is_dir, stat.mode);
         result = -BLUEY_EPERM;
         goto cleanup;
@@ -2876,7 +2954,7 @@ static int32_t sys_execve(registers_t *regs,
 
     if (elf_load_image(path_copy, (const char *const *)argv_copy,
                        (const char *const *)envp_copy, &image) != 0) {
-        kprintf("[SYS] execve load failed path=%s\n", path_copy);
+        kdbg(KDBG_SYSCALL, "[SYS] execve load failed path=%s\n", path_copy);
         result = -1;
         goto cleanup;
     }
@@ -2905,14 +2983,14 @@ static int32_t sys_execve(registers_t *regs,
         process_set_effective_ids(process, new_euid, new_egid);
     }
     result = 0;
-    kprintf("[SYS] execve: launched pid=%u name=%s entry=0x%x esp=0x%x\n",
+    kdbg(KDBG_SYSCALL, "[SYS] execve: launched pid=%u name=%s entry=0x%x esp=0x%x\n",
             process->pid, process->name, process->eip, process->esp);
 
     if (old_page_dir && old_page_dir != image.page_dir) {
         if (!had_vfork_shared_vm) {
             paging_destroy_address_space(old_page_dir);
         } else {
-            kprintf("[SYS] execve: preserving shared vfork address space 0x%08x\n", old_page_dir);
+            kdbg(KDBG_SYSCALL, "[SYS] execve: preserving shared vfork address space 0x%08x\n", old_page_dir);
         }
     }
 
@@ -2929,17 +3007,19 @@ cleanup:
     return result;
 }
 
-// SYS_READ (0): fd=0 -> stdin -> TTY; fd>=3 -> VFS
+// SYS_READ (0): route through per-VT non-blocking read for TTY fds
 static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
-    /* If userspace remapped this descriptor via dup/dup2/fcntl(F_DUPFD),
-     * honor the VFS binding first (including fd 0/1/2). */
+    if (!buf) return -BLUEY_EFAULT;
+    if (len == 0) return 0;
+
+    /* All open fds (including dup'd 0/1/2) — route TTY fds through per-VT
+     * non-blocking read so multiple login processes on different virtual
+     * consoles don't steal each other's input from active_vt. */
     if (vfs_fd_is_open((int)fd)) {
-        if (!buf) return -BLUEY_EFAULT;
-        if (len == 0) return 0;
         if (vfs_fd_is_tty((int)fd)) {
-            /* Non-blocking TTY read: if no data is ready, sleep 1 ms and
-             * restart the syscall so the scheduler can run other processes. */
-            int r = tty_read_nb(buf, len);
+            int vt = vfs_fd_get_tty_vt((int)fd);
+            if (vt < 0) vt = 0;
+            int r = tty_read_vt_nb(vt, buf, len);
             if (r == 0) {
                 process_sleep(1);
                 return -BLUEY_ERESTART;
@@ -2955,10 +3035,8 @@ static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
         return r;
     }
 
+    /* Legacy fallback for unmapped fd 0 (before any dup2 remaps stdin). */
     if (fd == 0) {
-        if (!buf) return -BLUEY_EFAULT;
-        if (len == 0) return 0;
-        /* Non-blocking TTY read for fd 0 (unmapped stdin). */
         int r = tty_read_nb(buf, len);
         if (r == 0) {
             process_sleep(1);
@@ -2966,19 +3044,8 @@ static int32_t sys_read(uint32_t fd, char *buf, size_t len) {
         }
         return r;
     }
-    if (vfs_fd_is_tty((int)fd)) {
-        if (!buf) return -BLUEY_EFAULT;
-        if (len == 0) return 0;
-        int r = tty_read_nb(buf, len);
-        if (r == 0) {
-            process_sleep(1);
-            return -BLUEY_ERESTART;
-        }
-        return r;
-    }
+
     if (fd >= 3) {
-        if (!buf) return -BLUEY_EFAULT;
-        if (len == 0) return 0;
         int r = vfs_read((int)fd, (uint8_t *)buf, len);
         if (r == -BLUEY_EAGAIN && vfs_fd_is_pipe((int)fd)) {
             process_sleep(1);
@@ -3020,6 +3087,8 @@ static int32_t sys_gethostname(char *buf, size_t len) {
 /* ---- Process groups ---------------------------------------------------- */
 
 static int32_t sys_setpgid(uint32_t pid, uint32_t pgid) {
+    kdbg(KDBG_SYSCALL, "[SYS]  setpgid: pid=%u pgid=%u caller_pid=%u\n",
+         pid, pgid, process_current() ? process_current()->pid : 0u);
     return process_setpgid(pid, pgid);
 }
 
@@ -3340,10 +3409,13 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_KILL:
             ret = sys_kill((int32_t)regs->ebx, (int)regs->ecx);
             break;
-        case SYS_EXIT:
+        case SYS_EXIT: {
+            process_t *_ep = process_current();
+            kdbg(KDBG_PROCESS, "[PRC]  exit pid=%u code=%d\n", _ep ? _ep->pid : 0u, (int)regs->ebx);
             process_exit((int)regs->ebx);
             ret = 0;
             break;
+        }
         case SYS_EXIT_GROUP:
             ret = sys_exit_group((int)regs->ebx);
             break;
@@ -3695,11 +3767,11 @@ int32_t syscall_dispatch(registers_t *regs) {
             /* Unknown syscall - don't crash. Log caller info to help mapping. */
             process_t *caller = process_current();
             if (caller) {
-                kprintf("[SYS] Unknown syscall %d from pid=%d name=%s eip=0x%x args=0x%x,0x%x,0x%x\n",
+                kdbg(KDBG_SYSCALL, "[SYS] Unknown syscall %d from pid=%d name=%s eip=0x%x args=0x%x,0x%x,0x%x\n",
                         regs->eax, caller->pid, caller->name, regs->eip,
                         regs->ebx, regs->ecx, regs->edx);
             } else {
-                kprintf("[SYS] Unknown syscall %d (no process) eip=0x%x args=0x%x,0x%x,0x%x\n",
+                kdbg(KDBG_SYSCALL, "[SYS] Unknown syscall %d (no process) eip=0x%x args=0x%x,0x%x,0x%x\n",
                         regs->eax, regs->eip, regs->ebx, regs->ecx, regs->edx);
             }
             ret = -BLUEY_ENOSYS;

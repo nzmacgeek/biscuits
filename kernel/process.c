@@ -17,6 +17,7 @@
 #include "multiuser.h"
 #include "devev.h"
 #include "../fs/vfs.h"
+#include "kdbg.h"
 
 #define BLUEY_ECHILD 10
 #define BLUEY_EAGAIN 11
@@ -316,7 +317,7 @@ static void process_reap(process_t *process) {
 static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t gid) {
     process_t *process = (process_t*)kheap_alloc(sizeof(process_t), 0);
     if (!process) {
-        kprintf("[PRC] ERROR: out of memory for process!\n");
+        kdbg(KDBG_PROCESS, "[PRC] ERROR: out of memory for process!\n");
         return NULL;
     }
 
@@ -336,6 +337,7 @@ static process_t *process_alloc_common(const char *name, uint32_t uid, uint32_t 
     process->page_dir = paging_current_directory();
     process->cwd[0] = '/';
     process->cwd[1] = '\0';
+    process->ctty_vt  = -1;  /* no controlling terminal yet */
 
     process->next = proc_list;
     proc_list = process;
@@ -356,7 +358,7 @@ static uint8_t *process_alloc_kernel_stack(process_t *process) {
         return proc_kernel_stacks[index];
     }
 
-    kprintf("[PRC] ERROR: no kernel stacks available! max=%u\n", MAX_PROCESSES);
+    kdbg(KDBG_PROCESS, "[PRC] ERROR: no kernel stacks available! max=%u\n", MAX_PROCESSES);
     return NULL;
 }
 
@@ -383,7 +385,7 @@ process_t *process_create(const char *name, void (*entry)(void),
 
     process_init_kernel_frame(process, (uint32_t)entry);
 
-    kprintf("[PRC]  Created process '%s' (pid=%d uid=%d)\n",
+    kdbg(KDBG_PROCESS, "[PRC]  Created process '%s' (pid=%d uid=%d)\n",
             process->name, process->pid, process->uid);
     return process;
 }
@@ -417,7 +419,7 @@ process_t *process_create_image(const char *name, uint32_t entry, uint32_t user_
     process->page_dir = page_dir;
     process_init_user_frame(process, entry, user_esp);
 
-    kprintf("[PRC]  Created image '%s' (pid=%d uid=%d eip=0x%x esp=0x%x)\n",
+    kdbg(KDBG_PROCESS, "[PRC]  Created image '%s' (pid=%d uid=%d eip=0x%x esp=0x%x)\n",
             process->name, process->pid, process->uid, process->eip, process->esp);
     return process;
 }
@@ -432,7 +434,7 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
 
     if (!parent || !regs || !(parent->flags & PROC_FLAG_USER_MODE)) {
         if (error_out) *error_out = -BLUEY_EPERM;
-        kprintf("[PRC] fork failed: invalid parent/regs/user-mode state (parent=%p regs=%p flags=0x%x)\n",
+        kdbg(KDBG_PROCESS, "[PRC] fork failed: invalid parent/regs/user-mode state (parent=%p regs=%p flags=0x%x)\n",
                 (void*)parent, (void*)regs, parent ? parent->flags : 0u);
         return NULL;
     }
@@ -440,7 +442,7 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     page_dir = paging_clone_address_space(parent->page_dir);
     if (!page_dir) {
         if (error_out) *error_out = -BLUEY_ENOMEM;
-        kprintf("[PRC] fork failed: paging_clone_address_space for pid=%u (used_frames=%u total_frames=%u)\n",
+        kdbg(KDBG_PROCESS, "[PRC] fork failed: paging_clone_address_space for pid=%u (used_frames=%u total_frames=%u)\n",
                 parent->pid, pmm_used_frames(), pmm_total_frames());
         return NULL;
     }
@@ -448,7 +450,7 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     child = process_alloc_common(parent->name, parent->uid, parent->gid);
     if (!child) {
         if (error_out) *error_out = -BLUEY_ENOMEM;
-        kprintf("[PRC] fork failed: process_alloc_common for parent pid=%u\n", parent->pid);
+        kdbg(KDBG_PROCESS, "[PRC] fork failed: process_alloc_common for parent pid=%u\n", parent->pid);
         paging_destroy_address_space(page_dir);
         return NULL;
     }
@@ -456,7 +458,7 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     stack = process_alloc_kernel_stack(child);
     if (!stack) {
         if (error_out) *error_out = -BLUEY_ENOMEM;
-        kprintf("[PRC] fork failed: process_alloc_kernel_stack for child pid=%u parent pid=%u\n",
+        kdbg(KDBG_PROCESS, "[PRC] fork failed: process_alloc_kernel_stack for child pid=%u parent pid=%u\n",
                 child->pid, parent->pid);
         process_remove_from_list(child);
         kheap_free(child);
@@ -484,6 +486,7 @@ process_t *process_fork_current(const registers_t *regs, int32_t *error_out) {
     child->blocked_signals = parent->blocked_signals;
     memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
     memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    child->ctty_vt = parent->ctty_vt;
     vfs_inherit_fd_table(parent, child);
     child->saved_regs = *regs;
     child->saved_regs.eax = 0;
@@ -557,6 +560,7 @@ process_t *process_clone_current(const registers_t *regs, uint32_t child_stack,
     child->blocked_signals = parent->blocked_signals;
     memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
     memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    child->ctty_vt = parent->ctty_vt;
     child->saved_regs = *regs;
     child->saved_regs.eax = 0;
     if (child_stack) child->saved_regs.useresp = child_stack;
@@ -578,14 +582,14 @@ process_t *process_vfork_current(const registers_t *regs, int32_t *error_out) {
 
     if (!parent || !regs || !(parent->flags & PROC_FLAG_USER_MODE)) {
         if (error_out) *error_out = -BLUEY_EPERM;
-        kprintf("[PRC] vfork failed: invalid parent/regs/user-mode state (parent=%p regs=%p flags=0x%x)\n",
+        kdbg(KDBG_PROCESS, "[PRC] vfork failed: invalid parent/regs/user-mode state (parent=%p regs=%p flags=0x%x)\n",
                 (void*)parent, (void*)regs, parent ? parent->flags : 0u);
         return NULL;
     }
 
     if (parent->vfork_child_pid != 0) {
         if (error_out) *error_out = -BLUEY_EAGAIN;
-        kprintf("[PRC] vfork failed: parent pid=%u already has active child pid=%u\n",
+        kdbg(KDBG_PROCESS, "[PRC] vfork failed: parent pid=%u already has active child pid=%u\n",
                 parent->pid, parent->vfork_child_pid);
         return NULL;
     }
@@ -593,14 +597,14 @@ process_t *process_vfork_current(const registers_t *regs, int32_t *error_out) {
     child = process_alloc_common(parent->name, parent->uid, parent->gid);
     if (!child) {
         if (error_out) *error_out = -BLUEY_ENOMEM;
-        kprintf("[PRC] vfork failed: process_alloc_common for parent pid=%u\n", parent->pid);
+        kdbg(KDBG_PROCESS, "[PRC] vfork failed: process_alloc_common for parent pid=%u\n", parent->pid);
         return NULL;
     }
 
     stack = process_alloc_kernel_stack(child);
     if (!stack) {
         if (error_out) *error_out = -BLUEY_ENOMEM;
-        kprintf("[PRC] vfork failed: process_alloc_kernel_stack for child pid=%u parent pid=%u\n",
+        kdbg(KDBG_PROCESS, "[PRC] vfork failed: process_alloc_kernel_stack for child pid=%u parent pid=%u\n",
                 child->pid, parent->pid);
         process_remove_from_list(child);
         kheap_free(child);
@@ -627,6 +631,7 @@ process_t *process_vfork_current(const registers_t *regs, int32_t *error_out) {
     child->blocked_signals = parent->blocked_signals;
     memcpy(child->signal_actions, parent->signal_actions, sizeof(child->signal_actions));
     memcpy(child->cwd, parent->cwd, sizeof(child->cwd));
+    child->ctty_vt = parent->ctty_vt;
     child->saved_regs = *regs;
     child->saved_regs.eax = 0;
     child->eip = child->saved_regs.eip;
@@ -710,6 +715,9 @@ void process_mark_exited(process_t *process, int code) {
 
     if (!process || process->state == PROC_ZOMBIE || process->state == PROC_DEAD) return;
 
+    kdbg(KDBG_PROCESS, "[PRC]  mark_exited: pid=%u code=%d parent_pid=%u\n",
+         process->pid, code, process->parent_pid);
+
     process->state = PROC_ZOMBIE;
     process->exit_code = code;
     process->pending_signals = 0;
@@ -760,7 +768,7 @@ void process_exit(int code) {
     if (!proc_current) return;
     dying = proc_current;
     process_mark_exited(dying, code);
-    kprintf("[PRC]  Process '%s' (pid=%d) exited with code %d\n",
+    kdbg(KDBG_PROCESS, "[PRC]  Process '%s' (pid=%d) exited with code %d\n",
             dying->name, dying->pid, code);
     /* The process is now a zombie; rescheduling occurs on trap return. */
 }

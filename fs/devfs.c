@@ -11,10 +11,13 @@
 
 #include "devfs.h"
 #include "../include/types.h"
+#include "../include/bluey.h"
 #include "../lib/string.h"
 #include "../lib/stdio.h"
 #include "../kernel/tty.h"
 #include "../kernel/timer.h"
+#include "../kernel/kdbg.h"
+#include "../kernel/process.h"
 #include "vfs.h"
 
 // ---------------------------------------------------------------------------
@@ -32,6 +35,8 @@
 #define DEVNODE_STDIN    10  // /dev/stdin  — alias to TTY_CTL
 #define DEVNODE_STDOUT   11  // /dev/stdout — alias to TTY_CTL
 #define DEVNODE_STDERR   12  // /dev/stderr — alias to TTY_CTL
+#define DEVNODE_TTY_VT   13  // /dev/tty2, /dev/tty3 — additional VTs (stat/readdir; open intercepted by tty_device_path_kind)
+#define DEVNODE_KDBG     14  // /dev/kdbg — runtime debug flag control
 
 // ---------------------------------------------------------------------------
 // Static device node table
@@ -53,6 +58,8 @@ static const devfs_node_t devfs_nodes[] = {
     { "tty",     DEVNODE_TTY_CTL, VFS_S_IFCHR | 0666 },
     { "tty0",    DEVNODE_TTY_CON, VFS_S_IFCHR | 0620 },
     { "tty1",    DEVNODE_TTY_CON, VFS_S_IFCHR | 0620 },
+    { "tty2",    DEVNODE_TTY_VT,  VFS_S_IFCHR | 0620 },
+    { "tty3",    DEVNODE_TTY_VT,  VFS_S_IFCHR | 0620 },
     { "ttyS0",   DEVNODE_TTY_CON, VFS_S_IFCHR | 0620 },
     // stdio aliases
     { "stdin",   DEVNODE_STDIN,   VFS_S_IFCHR | 0666 },
@@ -79,6 +86,8 @@ static const devfs_node_t devfs_nodes[] = {
     // Wireless interfaces
     { "wifi0",   DEVNODE_NET,     VFS_S_IFCHR | 0640u },
     { "wifi1",   DEVNODE_NET,     VFS_S_IFCHR | 0640u },
+    // debug control
+    { "kdbg",    DEVNODE_KDBG,   VFS_S_IFCHR | 0600 },
 };
 #define DEVFS_NODE_COUNT ((int)(sizeof(devfs_nodes) / sizeof(devfs_nodes[0])))
 
@@ -177,6 +186,8 @@ static int devfs_open_cb(const char *path, int flags) {
     if (node->type == DEVNODE_DISK || node->type == DEVNODE_PART ||
         node->type == DEVNODE_FLOPPY || node->type == DEVNODE_NET) return -1;
 
+    /* tty2/tty3: open is intercepted by tty_device_path_kind in vfs_open before
+     * devfs is consulted. If we somehow get here, return a generic fd slot. */
     return devfs_alloc_fd(node->type);
 }
 
@@ -203,6 +214,7 @@ static int devfs_read_cb(int fd, uint8_t *buf, size_t len) {
 
         case DEVNODE_TTY_CON:
         case DEVNODE_TTY_CTL:
+        case DEVNODE_TTY_VT:
         case DEVNODE_STDIN:
             return tty_read((char*)buf, len);
 
@@ -210,6 +222,22 @@ static int devfs_read_cb(int fd, uint8_t *buf, size_t len) {
         case DEVNODE_STDERR:
             /* These aren't sensible to read from, but return 0 gracefully */
             return 0;
+
+        case DEVNODE_KDBG: {
+            /* Read returns current kdbg_flags as "0xNNNNNNNN\n" */
+            uint32_t flags = kdbg_get();
+            char tmp[12];
+            int pos = 0;
+            tmp[pos++] = '0'; tmp[pos++] = 'x';
+            for (int shift = 28; shift >= 0; shift -= 4) {
+                uint32_t nibble = (flags >> shift) & 0xF;
+                tmp[pos++] = (char)(nibble < 10 ? '0' + nibble : 'a' + nibble - 10);
+            }
+            tmp[pos++] = '\n';
+            size_t out = len < (size_t)pos ? len : (size_t)pos;
+            memcpy(buf, tmp, out);
+            return (int)out;
+        }
 
         default:
             return -1;
@@ -247,6 +275,30 @@ static int devfs_write_cb(int fd, const uint8_t *buf, size_t len) {
         case DEVNODE_STDIN:
             return -1;   /* stdin is not writable */
 
+        case DEVNODE_KDBG: {
+            /* Only root (euid 0) may update debug flags */
+            if (process_get_euid() != 0) return -BLUEY_EPERM;
+            /* Write hex value to set kdbg_flags, e.g. "echo 0x3 > /dev/kdbg" */
+            if (len == 0) return 0;
+            uint32_t v = 0;
+            const char *p = (const char *)buf;
+            size_t i = 0;
+            while (i < len && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) { p++; i++; }
+            if (i < len && p[0] == '0' && i + 1 < len && (p[1] == 'x' || p[1] == 'X')) { p += 2; i += 2; }
+            while (i < len) {
+                char c = *p++;
+                i++;
+                uint32_t nibble;
+                if (c >= '0' && c <= '9')      nibble = (uint32_t)(c - '0');
+                else if (c >= 'a' && c <= 'f') nibble = (uint32_t)(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') nibble = (uint32_t)(c - 'A' + 10);
+                else break;
+                v = (v << 4) | nibble;
+            }
+            kdbg_set(v);
+            return (int)len;
+        }
+
         case DEVNODE_DISK:
         case DEVNODE_PART:
         case DEVNODE_FLOPPY:
@@ -259,7 +311,15 @@ static int devfs_write_cb(int fd, const uint8_t *buf, size_t len) {
 }
 
 static int devfs_read_at_cb(int fd, uint8_t *buf, size_t len, uint32_t offset) {
-    /* Character devices have no meaningful offset — delegate to sequential read */
+    /* For /dev/kdbg, implement one-shot sysfs-style read semantics:
+     * return the flags string at offset 0, and EOF (0) for any later offset
+     * so tools like `cat /dev/kdbg` do not loop indefinitely. */
+    if (fd >= 0 && fd < DEVFS_MAX_OPEN && devfs_fds[fd].used &&
+        devfs_fds[fd].node_type == DEVNODE_KDBG) {
+        if (offset > 0) return 0;  /* EOF after first read */
+        return devfs_read_cb(fd, buf, len);
+    }
+    /* All other character devices have no meaningful offset */
     (void)offset;
     return devfs_read_cb(fd, buf, len);
 }

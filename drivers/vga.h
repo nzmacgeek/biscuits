@@ -20,6 +20,15 @@
 #define VGA_TEXT_HEIGHT   25
 #define BLUEY_BLUE   VGA_LIGHT_BLUE
 #define BINGO_ORANGE VGA_LIGHT_BROWN
+
+/* Saved state of the VGA driver (row, col, color, protected_rows). */
+typedef struct {
+    int     row;
+    int     col;
+    uint8_t color;
+    int     protected_rows;
+} vga_context_t;
+
 void vga_init(void);
 void vga_clear(void);
 void vga_putchar(char c);
@@ -29,3 +38,9 @@ void vga_set_color(uint8_t fg, uint8_t bg);
 void vga_set_cursor(int x, int y);
 void vga_write_cell(int x, int y, char c, uint8_t fg, uint8_t bg);
 void vga_set_protected_rows(int rows);
+
+/* Context save/restore + target redirect for virtual consoles. */
+void vga_save_context(vga_context_t *ctx);
+void vga_restore_context(const vga_context_t *ctx);
+void vga_set_target(uint16_t *target);   /* NULL = physical VGA_MEM */
+uint16_t *vga_get_target(void);

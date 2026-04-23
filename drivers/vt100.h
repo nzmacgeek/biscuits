@@ -45,3 +45,23 @@ void vt100_write(const char *buf, int n);
 // straight to vga_putchar() without escape-sequence processing.
 // Default: enabled.
 void vt100_set_enabled(int enabled);
+
+/* Saved VT100+VGA state for a single virtual console. */
+typedef struct {
+    /* vt100 state machine */
+    int     vt_state;
+    int     vt_params[8];
+    int     vt_nparam;
+    int     vt_cur_row, vt_cur_col;
+    int     vt_saved_row, vt_saved_col;
+    uint8_t sgr_fg, sgr_bg;
+    int     sgr_bold;
+    /* vga driver state */
+    int     vga_row, vga_col;
+    uint8_t vga_color;
+    int     vga_protected_rows;
+} vt100_context_t;
+
+/* Save / restore the complete vt100+vga rendering state. */
+void vt100_save_context(vt100_context_t *ctx);
+void vt100_restore_context(const vt100_context_t *ctx);

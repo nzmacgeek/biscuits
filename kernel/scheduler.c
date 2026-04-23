@@ -13,6 +13,7 @@
 #include "signal.h"
 #include "gdt.h"
 #include "timer.h"
+#include "kdbg.h"
 
 static process_t *run_queue   = NULL;   // circular linked list of runnable processes
 static process_t *sched_current = NULL;
@@ -282,6 +283,8 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
         if (next->tls_base) frame.gs = GDT_TLS_SEL;
         else if (!frame.gs) frame.gs = GDT_USER_DATA;
         if (signal_dispatch_pending(next, &frame) != 0) {
+            kdbg(KDBG_SCHED, "[SCHED] signal blocked pid=%u state=%d, repicking\n",
+                 next->pid, next->state);
             next = scheduler_pick_next_user(next, 1);
             continue;
         }
@@ -294,6 +297,8 @@ void scheduler_handle_trap(registers_t *regs, int rotate) {
         next->saved_regs = frame;
         next->state = PROC_RUNNING;
         sched_current = next;
+        kdbg(KDBG_SCHED, "[SCHED] -> pid=%u '%s' eip=0x%08x esp=0x%08x\n",
+             next->pid, next->name, frame.eip, frame.useresp);
         process_set_current(next);
         /* start accounting from current tick */
         next->cpu_last_tick = timer_get_ticks();

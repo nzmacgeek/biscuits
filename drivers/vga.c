@@ -3,8 +3,13 @@
 #include "../include/types.h"
 #include "../include/ports.h"
 #include "vga.h"
+#include "../lib/string.h"
 
 #define VGA_MEM    ((uint16_t*)0xB8000)
+
+/* vga_target: all writes go here. Normally == VGA_MEM; set to an off-screen
+ * buffer while rendering to an inactive virtual console. */
+static uint16_t *vga_target = VGA_MEM;
 
 static int vga_row, vga_col;
 static uint8_t vga_color;
@@ -15,6 +20,7 @@ static inline uint16_t vga_entry(char c, uint8_t color) {
 }
 
 static void vga_update_cursor(void) {
+    if (vga_target != VGA_MEM) return;  /* only move hw cursor on active VT */
     uint16_t pos = vga_row * VGA_TEXT_WIDTH + vga_col;
     outb(0x3D4, 14); outb(0x3D5, (uint8_t)(pos >> 8));
     outb(0x3D4, 15); outb(0x3D5, (uint8_t)(pos & 0xFF));
@@ -27,13 +33,14 @@ static void vga_scroll(void) {
     if (start_row < 0) start_row = 0;
     if (start_row >= VGA_TEXT_HEIGHT) start_row = VGA_TEXT_HEIGHT - 1;
     for (i = start_row * VGA_TEXT_WIDTH; i < (VGA_TEXT_HEIGHT - 1) * VGA_TEXT_WIDTH; i++)
-        VGA_MEM[i] = VGA_MEM[i + VGA_TEXT_WIDTH];
+        vga_target[i] = vga_target[i + VGA_TEXT_WIDTH];
     for (i = (VGA_TEXT_HEIGHT - 1) * VGA_TEXT_WIDTH; i < VGA_TEXT_HEIGHT * VGA_TEXT_WIDTH; i++)
-        VGA_MEM[i] = blank;
+        vga_target[i] = blank;
     vga_row = VGA_TEXT_HEIGHT - 1;
 }
 
 void vga_init(void) {
+    vga_target = VGA_MEM;
     vga_color = (VGA_BLACK << 4) | VGA_LIGHT_GREY;
     vga_protected_rows = 0;
     vga_row = 0; vga_col = 0;
@@ -43,7 +50,7 @@ void vga_init(void) {
 void vga_clear(void) {
     uint16_t blank = vga_entry(' ', vga_color);
     int i;
-    for (i = 0; i < VGA_TEXT_WIDTH * VGA_TEXT_HEIGHT; i++) VGA_MEM[i] = blank;
+    for (i = 0; i < VGA_TEXT_WIDTH * VGA_TEXT_HEIGHT; i++) vga_target[i] = blank;
     vga_protected_rows = 0;
     vga_row = 0; vga_col = 0;
     vga_update_cursor();
@@ -63,7 +70,7 @@ void vga_write_cell(int x, int y, char c, uint8_t fg, uint8_t bg) {
 
     if (x < 0 || x >= VGA_TEXT_WIDTH || y < 0 || y >= VGA_TEXT_HEIGHT) return;
     color = (uint8_t)((bg << 4) | (fg & 0x0F));
-    VGA_MEM[y * VGA_TEXT_WIDTH + x] = vga_entry(c, color);
+    vga_target[y * VGA_TEXT_WIDTH + x] = vga_entry(c, color);
 }
 
 void vga_set_protected_rows(int rows) {
@@ -83,7 +90,7 @@ void vga_putchar(char c) {
     else if (c == '\t') { vga_col = (vga_col + 8) & ~7; }
     else if (c == '\b') { if (vga_col > 0) vga_col--; }
     else {
-        VGA_MEM[vga_row * VGA_TEXT_WIDTH + vga_col] = vga_entry(c, vga_color);
+        vga_target[vga_row * VGA_TEXT_WIDTH + vga_col] = vga_entry(c, vga_color);
         vga_col++;
     }
     if (vga_col >= VGA_TEXT_WIDTH) { vga_col = 0; vga_row++; }
@@ -98,3 +105,29 @@ void vga_puts(const char *s) {
 
 void vga_flush(void) {
 }
+
+void vga_save_context(vga_context_t *ctx) {
+    if (!ctx) return;
+    ctx->row            = vga_row;
+    ctx->col            = vga_col;
+    ctx->color          = vga_color;
+    ctx->protected_rows = vga_protected_rows;
+}
+
+void vga_restore_context(const vga_context_t *ctx) {
+    if (!ctx) return;
+    vga_row            = ctx->row;
+    vga_col            = ctx->col;
+    vga_color          = ctx->color;
+    vga_protected_rows = ctx->protected_rows;
+    vga_update_cursor();
+}
+
+void vga_set_target(uint16_t *target) {
+    vga_target = target ? target : VGA_MEM;
+}
+
+uint16_t *vga_get_target(void) {
+    return vga_target;
+}
+

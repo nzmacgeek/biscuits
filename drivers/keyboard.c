@@ -118,6 +118,18 @@ static void kb_irq_handler(registers_t *regs) {
     }
     if (!extended && code == 0x3A) { caps_lock ^= 1; return; }     // caps lock toggle
 
+    /* Alt+F1-F3: switch virtual consoles (F1=0x3B, F2=0x3C, F3=0x3D).
+     * Must be checked BEFORE the `if (extended || code >= 128) return;` guard
+     * because F-key scancodes (0x3B-0x3E) are not extended (no E0 prefix) but
+     * are also not mapped in scancode_map_lower (they produce c==0). */
+    if (!extended && (alt_left_held || alt_right_held)) {
+        int new_vt = -1;
+        if (code == 0x3B) new_vt = 0;  /* Alt+F1 → VT0 (tty1) */
+        else if (code == 0x3C) new_vt = 1;  /* Alt+F2 → VT1 (tty2) */
+        else if (code == 0x3D) new_vt = 2;  /* Alt+F3 → VT2 (tty3) */
+        if (new_vt >= 0) { tty_switch_vt(new_vt); return; }
+    }
+
     if (extended && code == KB_SC_DELETE) {
         int ctrl_held = ctrl_left_held || ctrl_right_held;
         int alt_held = alt_left_held || alt_right_held;

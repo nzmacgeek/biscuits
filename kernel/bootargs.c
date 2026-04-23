@@ -110,6 +110,26 @@ void boot_args_init(boot_args_t *out, const uint32_t *mboot_info) {
             out->verbose = 0;
         }
     }
+    /* kdbg=0xN — initial kernel per-subsystem debug flags */
+    {
+        char kbuf[12] = {0};
+        out->kdbg_flags = 0;
+        if (boot_args_get_value(out->cmdline, "kdbg", kbuf, sizeof(kbuf))) {
+            uint32_t v = 0;
+            const char *p = kbuf;
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+            while (*p) {
+                char c = *p++;
+                uint32_t nibble;
+                if (c >= '0' && c <= '9')      nibble = (uint32_t)(c - '0');
+                else if (c >= 'a' && c <= 'f') nibble = (uint32_t)(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') nibble = (uint32_t)(c - 'A' + 10);
+                else break;
+                v = (v << 4) | nibble;
+            }
+            out->kdbg_flags = v;
+        }
+    }
 }
 
 const char *boot_args_cmdline(void) {

@@ -2,10 +2,10 @@
 
 #include "../lib/stdio.h"
 #include "../lib/string.h"
+#include "kdbg.h"
 #include "paging.h"
 #include "process.h"
 #include "syscall.h"
-#include "syslog.h"
 
 #define SIGNAL_TRAMPOLINE_ADDR 0x7FFF0000u
 #define SIGNAL_FRAME_MAGIC     0x53494746u
@@ -67,7 +67,7 @@ static void signal_ensure_trampoline(void) {
     if (!signal_trampoline_phys) {
         signal_trampoline_phys = pmm_alloc_frame();
         if (!signal_trampoline_phys) {
-            kprintf("[SIG]  Failed to allocate trampoline page\n");
+            kdbg(KDBG_SIGNAL, "[SIG]  Failed to allocate trampoline page\n");
             return;
         }
     }
@@ -120,6 +120,9 @@ static int signal_next_pending(process_t *process) {
 static int signal_apply_default_action(process_t *process, int sig) {
     if (!process) return -1;
 
+    kdbg(KDBG_SIGNAL, "[SIG]  apply_default: pid=%u sig=%d (%s)\n",
+         process->pid, sig, signal_name(sig));
+
     if (signal_is_ignored_by_default(sig)) return 0;
 
     if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
@@ -165,7 +168,7 @@ void signal_init(void) {
      */
     signal_ensure_trampoline();
     if (!signal_trampoline_ready) {
-        kprintf("[SIG]  WARNING: trampoline init failed, signals may not work\n");
+        kdbg(KDBG_SIGNAL, "[SIG]  WARNING: trampoline init failed, signals may not work\n");
     }
 }
 
@@ -183,12 +186,18 @@ int signal_send_pid(uint32_t pid, int sig) {
 
     if (sig == SIGKILL) {
         process_mark_exited(process, 128 + sig);
-    } else if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
+    } else if (sig == SIGSTOP) {
+        /* SIGSTOP cannot be ignored or caught — stop immediately. */
         if (process->state != PROC_STOPPED) {
             process->stop_signal = (uint8_t)sig;
             process->state = PROC_STOPPED;
             process_notify_stopped_parent(process);
         }
+    } else if (sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
+        /* These job-control signals can be caught or ignored.  Route them
+         * through the normal pending-signal path so that SIG_IGN and custom
+         * handlers are both respected (signal_dispatch_pending handles it). */
+        signal_mark_pending(process, sig);
     } else if (sig == SIGCONT) {
         process->pending_signals &= ~signal_bit(sig);
         if (process->state == PROC_STOPPED || process->state == PROC_WAITING) {
@@ -198,8 +207,7 @@ int signal_send_pid(uint32_t pid, int sig) {
         signal_mark_pending(process, sig);
     }
 
-    if (syslog_get_verbose() >= VERBOSE_INFO)
-        kprintf("[SIG]  Sent %s to pid=%u\n", signal_name(sig), pid);
+    kdbg(KDBG_SIGNAL, "[SIG]  Sent %s to pid=%u\n", signal_name(sig), pid);
     return 0;
 }
 
@@ -339,5 +347,10 @@ void signal_reset_on_exec(process_t *process) {
     if (!process) return;
     process->pending_signals = 0;
     process->flags &= ~PROC_FLAG_SIGNAL_ACTIVE;
-    memset(process->signal_actions, 0, sizeof(process->signal_actions));
+    /* POSIX: SIG_IGN disposition is preserved across exec; custom handlers
+     * are reset to SIG_DFL. */
+    for (size_t i = 0; i < ARRAY_SIZE(process->signal_actions); i++) {
+        if (process->signal_actions[i].handler != SIG_IGN)
+            memset(&process->signal_actions[i], 0, sizeof(process->signal_actions[i]));
+    }
 }

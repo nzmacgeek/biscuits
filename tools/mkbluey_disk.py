@@ -361,6 +361,11 @@ def build_boot_partition(repo: Path, image: Path, kernel_path: Path, boot_sector
         f"    multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
         "    boot\n"
         "}\n"
+        "menuentry \"BlueyOS - Debug Boot (kdbg=0x3e)\" {\n"
+        "    set gfxpayload=text\n"
+        f"    multiboot /boot/blueyos.elf root={root_device} rootfstype={root_fstype} init={init_kernel_path} kdbg=0x3e\n"
+        "    boot\n"
+        "}\n"
         "menuentry \"BlueyOS - Safe Mode\" {\n"
         "    set gfxpayload=text\n"
         f"    multiboot /boot/blueyos.elf safe root={root_device} rootfstype={root_fstype} init={init_kernel_path}\n"
@@ -504,30 +509,18 @@ def maybe_override_login_binary(repo: Path, root_extra: Path) -> None:
 
 
 def limit_claw_login_services(root_extra: Path) -> None:
-    manifest_path = root_extra / "etc" / "claw" / "units.manifest"
     target_path = root_extra / "etc" / "claw" / "targets.d" / "claw-multiuser.target.yml"
     basic_target_path = root_extra / "etc" / "claw" / "targets.d" / "claw-basic.target.yml"
 
-    if manifest_path.exists():
-        manifest_lines = [line.strip() for line in manifest_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        filtered_lines = []
-        for line in manifest_lines:
-            if line.endswith("matey@tty2.yml") or line.endswith("matey@tty3.yml"):
-                continue
-            filtered_lines.append(line)
-        if filtered_lines != manifest_lines:
-            manifest_path.write_text("\n".join(filtered_lines) + "\n", encoding="utf-8")
-            print("[DISK] Limited claw manifest to matey@tty1 for login validation")
+    # Virtual consoles (tty2, tty3) are now fully working — no manifest filtering needed.
 
-    if target_path.exists():
+    if target_path.exists() and not basic_target_path.exists():
         target_text = target_path.read_text(encoding="utf-8")
-        updated_text = target_text.replace("wants: matey@tty1 matey@tty2 matey@tty3", "wants: matey@tty1")
-        if not basic_target_path.exists():
-            updated_text = updated_text.replace("requires: claw-basic.target\n", "")
-            updated_text = updated_text.replace("after: claw-basic.target\n", "")
+        updated_text = target_text.replace("requires: claw-basic.target\n", "")
+        updated_text = updated_text.replace("after: claw-basic.target\n", "")
         if updated_text != target_text:
             target_path.write_text(updated_text, encoding="utf-8")
-            print("[DISK] Limited claw-multiuser.target to matey@tty1")
+            print("[DISK] Removed missing claw-basic.target deps from claw-multiuser.target")
 
     if not basic_target_path.exists():
         for service_name in ("matey@tty1.yml", "matey@tty2.yml", "matey@tty3.yml"):
