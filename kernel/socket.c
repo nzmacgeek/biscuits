@@ -455,10 +455,10 @@ int socket_is_inet_raw(int socket_id) {
 }
 
 int socket_inet_raw_bind(int socket_id, uint32_t ip) {
-    (void)ip;
     if (!socket_valid_id(socket_id)) return -SOCKET_EINVAL;
     bluey_socket_t *sock = &socket_table[socket_id];
     if (sock->domain != BLUEY_AF_INET || sock->type != BLUEY_SOCK_RAW) return -SOCKET_EINVAL;
+    if (ip != 0) return -SOCKET_EINVAL; // raw ICMP bind supports INADDR_ANY only
     return 0;
 }
 
