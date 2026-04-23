@@ -326,8 +326,13 @@ void vt100_putchar(char c) {
         case VT_NORMAL:
             if (c == '\x1B') {          // ESC
                 vt_state  = VT_ESC;
-            } else {
-                // Printable or control character — pass to VGA
+            } else if (c == '\a') {     // BEL (terminal bell)
+                /* Keep BEL non-printing on the VGA terminal.
+                 * If BEL is forwarded on a serial/debug path, any audible
+                 * bell is typically produced by the host terminal emulator. */
+            } else if (c == '\n' || c == '\r' || c == '\b' || c == '\t' ||
+                       (((uint8_t)c) >= 0x20 && c != 0x7F)) {
+                // Printable or supported control character — pass to VGA
                 vga_putchar(c);
                 // Track cursor position
                 if (c == '\n') {
@@ -338,7 +343,14 @@ void vt100_putchar(char c) {
                     vt_cur_col = 0;
                 } else if (c == '\b') {
                     if (vt_cur_col > 0) vt_cur_col--;
-                } else if (c >= 0x20) {
+                } else if (c == '\t') {
+                    vt_cur_col = (vt_cur_col + 8) & ~7;
+                    if (vt_cur_col >= VT_WIDTH) {
+                        vt_cur_col = 0;
+                        vt_cur_row++;
+                        if (vt_cur_row >= VT_HEIGHT) vt_cur_row = VT_HEIGHT - 1;
+                    }
+                } else {
                     vt_cur_col++;
                     if (vt_cur_col >= VT_WIDTH) {
                         vt_cur_col = 0;
@@ -346,6 +358,8 @@ void vt100_putchar(char c) {
                         if (vt_cur_row >= VT_HEIGHT) vt_cur_row = VT_HEIGHT - 1;
                     }
                 }
+            } else {
+                // Other C0 controls are non-printing in terminal mode.
             }
             break;
 

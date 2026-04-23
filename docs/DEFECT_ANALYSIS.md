@@ -18,6 +18,40 @@
 
 ## Kernel (nzmacgeek/biscuits)
 
+### K-15 🟡 VT100 cursor tracking/control filtering mismatched VGA behavior
+**Status:** FIXED (this PR)
+
+In VT100 normal mode, this follow-up addresses remaining control-character
+compatibility gaps beyond the BEL fix in K-14:
+
+- HT (`\t`) was passed to VGA but did not update VT100 cursor tracking, causing
+  state drift versus hardware cursor position.
+- DEL (`0x7F`) and unsupported C0 controls could still flow to VGA as printable
+  bytes.
+
+**Fix applied:**
+- `drivers/vt100.c`: explicit handling for BS/HT/CR/LF and printable bytes,
+  including tab-stop cursor math consistent with VGA behavior.
+- `drivers/vt100.c`: unsupported C0 controls and DEL are now non-printing in
+  terminal mode.
+- `drivers/vt100.h`: documented control-character compatibility behavior.
+
+---
+
+### K-14 🟡 VT100 path rendered BEL (`\a`) as a screen glyph
+**Status:** FIXED (this PR)
+
+The VT100 normal-state path forwarded BEL (`0x07`) to `vga_putchar()`, which
+made terminal bell events appear as visible control glyphs instead of staying a
+non-printing beep event.
+
+**Fix applied:**
+- `drivers/vt100.c`: special-case BEL in `vt100_putchar()` as a non-printing
+  control code so it no longer reaches VGA rendering.
+- `drivers/vt100.h`: documented BEL support behaviour.
+
+---
+
 ### K-12 🟢 procfs lacked monitoring files (uptime, meminfo, version, loadavg, per-pid, net/dev)
 **Status:** FIXED (this PR)
 

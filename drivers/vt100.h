@@ -17,6 +17,9 @@
 //   ESC [ n m            — SGR: colours & attributes (bold, reset, fg, bg)
 //   ESC [ 6 n            — DSR: report cursor position as ESC [ row ; col R
 //   ESC c                — full reset (RIS)
+//   BEL (0x07, \a)       — terminal bell (non-printing on VGA path)
+//   BS/HT/CR/LF          — handled as terminal controls; other C0 controls
+//                           (and DEL 0x7F) are non-printing
 //
 // ⚠️  VIBE CODED RESEARCH PROJECT — NOT FOR PRODUCTION USE ⚠️
 //
