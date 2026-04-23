@@ -48,9 +48,6 @@ uint32_t syscall_saved_fs = 0;
 uint32_t syscall_saved_gs = 0;
 
 #define BLUEY_ENOSYS 38
-#ifndef BLUEY_EPERM
-#define BLUEY_EPERM   1
-#endif
 #define BLUEY_ENOENT  2
 #define BLUEY_ESRCH   3
 #define BLUEY_EFAULT 14

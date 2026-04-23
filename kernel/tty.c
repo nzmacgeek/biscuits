@@ -165,6 +165,7 @@ static void tty_signal_foreground_group(int sig) {
 
 void tty_init(void) {
     int i;
+    const uint32_t vga_buf_cells = sizeof(vt_vga_buf[0]) / sizeof(vt_vga_buf[0][0]);
     tty_serial_init();
     for (i = 0; i < NUM_VTYS; i++) {
         uint32_t cell_idx;
@@ -177,7 +178,7 @@ void tty_init(void) {
         vt_ctx[i].vga_row = 0;
         vt_ctx[i].vga_col = 0;
         blank_cell = (uint16_t)' ' | ((uint16_t)vt_ctx[i].vga_color << 8);
-        for (cell_idx = 0; cell_idx < (sizeof(vt_vga_buf[i]) / sizeof(vt_vga_buf[i][0])); cell_idx++) {
+        for (cell_idx = 0; cell_idx < vga_buf_cells; cell_idx++) {
             vt_vga_buf[i][cell_idx] = blank_cell;
         }
     }
