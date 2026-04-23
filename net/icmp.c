@@ -128,7 +128,6 @@ void icmp_raw_deliver(const uint8_t *ip_packet, uint16_t ip_len, uint32_t src_ip
     if (copy_len > ICMP_RECV_BUF_SIZE) copy_len = ICMP_RECV_BUF_SIZE;
 
     for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
-        if (!icmp_sockets[i].active) continue;
         uint32_t flags = icmp_irq_save();
         if (!icmp_sockets[i].active || icmp_sockets[i].rx_ready || icmp_sockets[i].rx_busy) {
             icmp_irq_restore(flags);
