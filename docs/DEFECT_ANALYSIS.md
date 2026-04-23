@@ -296,6 +296,25 @@ handlers (`fchdir`, `setreuid32`, `setregid32`, `getgroups32`, `setgroups32`,
 
 ---
 
+### K-14 🟠 AF_INET raw ICMP sockets missing, breaking userspace `ping`
+**Status:** FIXED (this PR)
+
+BlueyOS handled ICMP inside the kernel network stack, but socket syscalls only
+accepted AF_INET datagram sockets (UDP-backed). Userspace `ping` expects
+`socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)` plus `sendmsg/recvmsg` on that fd.
+
+**Fix applied:**
+- Added AF_INET + SOCK_RAW socket support in `kernel/socket.c` and
+  `kernel/socket.h`.
+- Added ICMP raw-socket queueing API (`icmp_open/close/send/recv`) in
+  `net/icmp.c` / `net/icmp.h`.
+- Updated `icmp_handle()` to deliver incoming ICMP payloads to active raw ICMP
+  sockets.
+- Extended socket syscalls in `kernel/syscall.c` so AF_INET raw ICMP sockets
+  can be opened, bound, sent to, and received from via `sendmsg/recvmsg`.
+
+---
+
 ## claw (nzmacgeek/claw)
 
 ### C-1 🟡 No `chdir("/")` at startup

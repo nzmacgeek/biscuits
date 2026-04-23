@@ -7,6 +7,9 @@
 #define BLUEY_AF_INET      3
 #define BLUEY_SOCK_STREAM  1
 #define BLUEY_SOCK_DGRAM   2
+// Socket type values are interpreted in the context of domain.
+// Keep RAW as 3 for Linux ABI compatibility (SOCK_RAW=3 on i386).
+#define BLUEY_SOCK_RAW     3
 #define BLUEY_SOCK_NETCTL  3  // Message-oriented netctl socket
 
 void socket_init(void);
@@ -34,6 +37,12 @@ int  socket_inet_sendto(int socket_id, uint32_t dst_ip, uint16_t dst_port,
 						const void *msg, size_t len);
 int  socket_inet_recvfrom(int socket_id, void *buf, size_t len,
 						 uint32_t *src_ip, uint16_t *src_port);
+int  socket_is_inet_raw(int socket_id);
+int  socket_inet_raw_bind(int socket_id, uint32_t ip);
+int  socket_inet_raw_sendto(int socket_id, uint32_t dst_ip,
+                            const void *msg, size_t len);
+int  socket_inet_raw_recvfrom(int socket_id, void *buf, size_t len,
+                              uint32_t *src_ip);
 
 // AF_UNIX datagram helpers
 int  socket_is_unix_dgram(int socket_id);

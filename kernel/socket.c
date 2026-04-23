@@ -2,6 +2,7 @@
 #include "netctl.h"
 
 #include "../net/udp.h"
+#include "../net/icmp.h"
 
 #include "../lib/string.h"
 
@@ -29,6 +30,7 @@ typedef struct {
     int      protocol;
     int      state;
     int      inet_udp_id; // for BLUEY_AF_INET + DGRAM -> udp socket index
+    int      inet_icmp_id; // for BLUEY_AF_INET + RAW(ICMP) -> icmp socket index
     int      peer_id;
     int      listener_id;
     int      peer_closed;
@@ -55,6 +57,7 @@ static void socket_reset(bluey_socket_t *sock) {
     sock->listener_id = -1;
     sock->netctl_id = -1;
     sock->inet_udp_id = -1;
+    sock->inet_icmp_id = -1;
     sock->rx_src_path[0] = '\0';
 }
 
@@ -161,6 +164,25 @@ int socket_create(int domain, int type, int protocol) {
         }
         return socket_id;
     }
+
+    // Handle INET raw sockets (ICMP-backed)
+    if (domain == BLUEY_AF_INET && type == BLUEY_SOCK_RAW) {
+        socket_id = socket_alloc();
+        if (socket_id < 0) return -1;
+        sock = &socket_table[socket_id];
+        sock->domain = domain;
+        sock->type = type;
+        sock->protocol = protocol;
+        sock->state = SOCKET_STATE_INIT;
+        sock->inet_icmp_id = icmp_open(protocol);
+        if (sock->inet_icmp_id < 0) {
+            socket_reset(sock);
+            return -1;
+        }
+        return socket_id;
+    }
+
+    return -1;
 }
 
 int socket_add_ref(int socket_id) {
@@ -292,6 +314,15 @@ int socket_close(int socket_id) {
         return 0;
     }
 
+    if (sock->domain == BLUEY_AF_INET && sock->type == BLUEY_SOCK_DGRAM && sock->inet_udp_id >= 0) {
+        udp_close(sock->inet_udp_id);
+        sock->inet_udp_id = -1;
+    }
+    if (sock->domain == BLUEY_AF_INET && sock->type == BLUEY_SOCK_RAW && sock->inet_icmp_id >= 0) {
+        icmp_close(sock->inet_icmp_id);
+        sock->inet_icmp_id = -1;
+    }
+
     peer_id = sock->peer_id;
     if (peer_id >= 0 && socket_valid_id(peer_id)) {
         socket_table[peer_id].peer_id = -1;
@@ -350,6 +381,12 @@ int socket_is_readable(int socket_id) {
 
     if (!socket_valid_id(socket_id)) return 0;
     sock = &socket_table[socket_id];
+    if (sock->domain == BLUEY_AF_INET && sock->type == BLUEY_SOCK_DGRAM && sock->inet_udp_id >= 0) {
+        return udp_has_data(sock->inet_udp_id);
+    }
+    if (sock->domain == BLUEY_AF_INET && sock->type == BLUEY_SOCK_RAW && sock->inet_icmp_id >= 0) {
+        return icmp_has_data(sock->inet_icmp_id);
+    }
     if (sock->state == SOCKET_STATE_LISTENING) return sock->pending_count > 0;
     if (sock->state == SOCKET_STATE_CONNECTED) return sock->rx_count > 0 || sock->peer_closed;
     return 0;
@@ -415,6 +452,40 @@ int socket_inet_recvfrom(int socket_id, void *buf, size_t len,
     if (sock->domain != BLUEY_AF_INET || sock->type != BLUEY_SOCK_DGRAM) return -1;
     if (sock->inet_udp_id < 0) return -1;
     return udp_recv(sock->inet_udp_id, (uint8_t*)buf, (uint16_t)len, src_ip, src_port);
+}
+
+int socket_is_inet_raw(int socket_id) {
+    if (!socket_valid_id(socket_id)) return 0;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    return sock->domain == BLUEY_AF_INET && sock->type == BLUEY_SOCK_RAW;
+}
+
+int socket_inet_raw_bind(int socket_id, uint32_t ip) {
+    if (!socket_valid_id(socket_id)) return -SOCKET_EINVAL;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_INET || sock->type != BLUEY_SOCK_RAW) return -SOCKET_EINVAL;
+    if (ip != 0) return -SOCKET_EINVAL; // raw ICMP bind supports INADDR_ANY only
+    return 0;
+}
+
+int socket_inet_raw_sendto(int socket_id, uint32_t dst_ip,
+                           const void *msg, size_t len) {
+    if (!socket_valid_id(socket_id) || !msg) return -1;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_INET || sock->type != BLUEY_SOCK_RAW) return -1;
+    if (sock->inet_icmp_id < 0) return -1;
+    if (len > 0xFFFFu) return -1;
+    return icmp_send(sock->inet_icmp_id, dst_ip, (const uint8_t*)msg, (uint16_t)len);
+}
+
+int socket_inet_raw_recvfrom(int socket_id, void *buf, size_t len,
+                             uint32_t *src_ip) {
+    if (!socket_valid_id(socket_id) || !buf) return -1;
+    bluey_socket_t *sock = &socket_table[socket_id];
+    if (sock->domain != BLUEY_AF_INET || sock->type != BLUEY_SOCK_RAW) return -1;
+    if (sock->inet_icmp_id < 0) return -1;
+    if (len > 0xFFFFu) len = 0xFFFFu;
+    return icmp_recv(sock->inet_icmp_id, (uint8_t*)buf, (uint16_t)len, src_ip);
 }
 
 int socket_is_unix_dgram(int socket_id) {
