@@ -841,7 +841,7 @@ int32_t process_waitpid(int32_t pid, int *status, int options) {
     }
 
     if (!found_child) return -BLUEY_ECHILD;
-    if (options) return 0;
+    if (options & WNOHANG) return 0;
 
     current->state = PROC_WAITING;
     current->wait_pid = pid;
