@@ -1197,11 +1197,25 @@ typedef struct {
     uint32_t sn_groups;   // Multicast group bitmask (NETCTL_GROUP_*)
 } k_sockaddr_netctl_t;
 
-#define SOCKETCALL_SOCKET   1
-#define SOCKETCALL_BIND     2
-#define SOCKETCALL_CONNECT  3
-#define SOCKETCALL_LISTEN   4
-#define SOCKETCALL_ACCEPT   5
+#define SOCKETCALL_SOCKET      1
+#define SOCKETCALL_BIND        2
+#define SOCKETCALL_CONNECT     3
+#define SOCKETCALL_LISTEN      4
+#define SOCKETCALL_ACCEPT      5
+#define SOCKETCALL_GETSOCKNAME 6
+#define SOCKETCALL_GETPEERNAME 7
+#define SOCKETCALL_SEND        9
+#define SOCKETCALL_RECV        10
+#define SOCKETCALL_SENDTO      11
+#define SOCKETCALL_RECVFROM    12
+#define SOCKETCALL_SHUTDOWN    13
+#define SOCKETCALL_SETSOCKOPT  14
+#define SOCKETCALL_GETSOCKOPT  15
+#define SOCKETCALL_SENDMSG     16
+#define SOCKETCALL_RECVMSG     17
+#define SOCKETCALL_ACCEPT4     18
+
+#define BLUEY_ENOTCONN 107
 
 // Simple message header structure for sendmsg/recvmsg
 struct bluey_msghdr {
@@ -1468,8 +1482,18 @@ static int32_t sys_socketcall(int call, uint32_t *args) {
         case SOCKETCALL_LISTEN:
             return sys_socket_listen((int)args[0], (int)args[1]);
         case SOCKETCALL_ACCEPT:
+        case SOCKETCALL_ACCEPT4:
             return sys_socket_accept4((int)args[0], (void*)(uintptr_t)args[1],
-                                      (uint32_t*)(uintptr_t)args[2], 0);
+                                      (uint32_t*)(uintptr_t)args[2],
+                                      call == SOCKETCALL_ACCEPT4 ? (int)args[3] : 0);
+        case SOCKETCALL_GETSOCKNAME:
+        case SOCKETCALL_GETPEERNAME:
+            /* Return ENOTSOCK for non-socket fds so bash's isnetconn() correctly
+             * determines that TTY/file fds are not network connections. Without
+             * this, bash -c sources .bashrc (the rshd/sshd workaround path). */
+            if (!vfs_fd_is_socket((int)args[0])) return -BLUEY_ENOTSOCK;
+            /* Socket exists but has no connected peer (we don't support TCP). */
+            return -BLUEY_ENOTCONN;
         default:
             return -BLUEY_ENOSYS;
     }
