@@ -1152,6 +1152,19 @@ static int biscuitfs_addref_cb(int fd) {
     return 0;
 }
 
+/* Shared-offset callbacks: the FS-level slot offset is shared across all
+ * forked/dup'd VFS fds that reference the same biscuitfs open slot.
+ * This gives POSIX fork() shared-file-description semantics. */
+static uint32_t biscuitfs_get_offset_cb(int fd) {
+    if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return 0;
+    return fd_table[fd].offset;
+}
+
+static void biscuitfs_set_offset_cb(int fd, uint32_t new_off) {
+    if (fd < 0 || fd >= BISCUITFS_MAX_OPEN || !fd_table[fd].used) return;
+    fd_table[fd].offset = new_off;
+}
+
 static int biscuitfs_readdir_cb(const char *path, vfs_dirent_t *out, int max) {
     uint32_t dir_ino = path_to_inode(path);
     if (!dir_ino) return -1;
@@ -1579,6 +1592,8 @@ static filesystem_t biscuitfs_driver = {
     .readlink = biscuitfs_readlink_cb,
     .chmod    = biscuitfs_chmod_cb,
     .chown    = biscuitfs_chown_cb,
+    .get_offset = biscuitfs_get_offset_cb,
+    .set_offset = biscuitfs_set_offset_cb,
 };
 
 filesystem_t *biscuitfs_get_filesystem(void) {

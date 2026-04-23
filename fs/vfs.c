@@ -13,6 +13,7 @@
 #include "../kernel/tty.h"
 #include "vfs.h"
 #include "../kernel/syslog.h"
+#include "../kernel/kdbg.h"
 #include "../kernel/process.h"
 
 #define BLUEY_EAGAIN 11
@@ -560,14 +561,28 @@ int vfs_read(int fd, uint8_t *buf, size_t len) {
         return (int)avail;
     }
     vfs_mount_t *m = &mounts[current_fd_table()[fd].fs_idx];
+    int fs_fd = current_fd_table()[fd].fs_fd;
     if (!m->fs->read_at) {
         if (!m->fs->read) return -1;
-        int r = m->fs->read(current_fd_table()[fd].fs_fd, buf, len);
+        int r = m->fs->read(fs_fd, buf, len);
         if (r > 0) current_fd_table()[fd].offset += (uint32_t)r;
         return r;
     }
-    int r = m->fs->read_at(current_fd_table()[fd].fs_fd, buf, len, current_fd_table()[fd].offset);
-    if (r > 0) current_fd_table()[fd].offset += (uint32_t)r;
+    /* Use the FS-level shared offset when available (gives POSIX shared open
+     * file description semantics across fork/dup). Fall back to per-process
+     * VFS offset for filesystems that don't implement get/set_offset. */
+    int use_shared = (m->fs->get_offset != NULL && fs_fd >= 0);
+    uint32_t off = use_shared ? m->fs->get_offset(fs_fd) : current_fd_table()[fd].offset;
+    int r = m->fs->read_at(fs_fd, buf, len, off);
+    {
+        process_t *_p = process_current();
+        kdbg(KDBG_FS, "[VFS]  read pid=%u fd=%d fs_fd=%d offset=%u len=%u -> %d\n",
+             _p ? _p->pid : 0u, fd, fs_fd, off, (unsigned)len, r);
+    }
+    if (r > 0) {
+        if (use_shared) m->fs->set_offset(fs_fd, off + (uint32_t)r);
+        else            current_fd_table()[fd].offset += (uint32_t)r;
+    }
     return r;
 }
 
@@ -622,7 +637,11 @@ int vfs_write(int fd, const uint8_t *buf, size_t len) {
 #endif
 
     int r = m->fs->write(current_fd_table()[fd].fs_fd, buf, len);
-    if (r > 0) current_fd_table()[fd].offset += (uint32_t)r;
+    /* Only update the VFS per-process offset for filesystems that don't
+     * implement shared-offset semantics (e.g. FAT). For filesystems like
+     * biscuitfs that implement get/set_offset, the FS-internal f->offset is
+     * already updated by the write callback and is the authoritative source. */
+    if (r > 0 && !m->fs->get_offset) current_fd_table()[fd].offset += (uint32_t)r;
     return r;
 }
 
@@ -656,12 +675,20 @@ int32_t vfs_lseek(int fd, int32_t offset, int whence) {
     if (fd < 0 || fd >= current_fd_capacity() || !current_fd_table()[fd].used) return -1;
     if (current_fd_table()[fd].fd_type != VFS_FD_TYPE_FILE) return -1;
 
+    int fs_fd  = current_fd_table()[fd].fs_fd;
+    int fs_idx = current_fd_table()[fd].fs_idx;
+    /* Use shared FS-level offset when the filesystem supports it and has a
+     * real FS handle (fs_fd >= 0). Directory fds have fs_fd == -1. */
+    int use_shared = (fs_fd >= 0 && fs_idx >= 0 &&
+                      mounts[fs_idx].fs->get_offset != NULL);
+
     uint32_t new_offset;
     if (whence == VFS_SEEK_SET) {
         if (offset < 0) return -1;
         new_offset = (uint32_t)offset;
     } else if (whence == VFS_SEEK_CUR) {
-        int32_t cur = (int32_t)current_fd_table()[fd].offset;
+        int32_t cur = use_shared ? (int32_t)mounts[fs_idx].fs->get_offset(fs_fd)
+                                 : (int32_t)current_fd_table()[fd].offset;
         int32_t result = cur + offset;
         if (result < 0) return -1; /* would underflow */
         new_offset = (uint32_t)result;
@@ -675,7 +702,8 @@ int32_t vfs_lseek(int fd, int32_t offset, int whence) {
     } else {
         return -1;
     }
-    current_fd_table()[fd].offset = new_offset;
+    if (use_shared) mounts[fs_idx].fs->set_offset(fs_fd, new_offset);
+    else            current_fd_table()[fd].offset = new_offset;
     return (int32_t)new_offset;
 }
 

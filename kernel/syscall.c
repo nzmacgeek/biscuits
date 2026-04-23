@@ -669,8 +669,8 @@ static int32_t sys_rt_sigaction(int sig, const bluey_sigaction_t *act,
 
     if (!process) return -BLUEY_EPERM;
     /* Linux rt_sigaction requires sigsetsize == sizeof(kernel_sigset_t).
-     * We support 4-byte signal masks (signals 1-31). */
-    if (sigsetsize != sizeof(uint32_t)) return -BLUEY_EINVAL;
+     * We support 4-byte signal masks (signals 1-31); accept 8 from musl. */
+    if (sigsetsize < sizeof(uint32_t)) return -BLUEY_EINVAL;
 
     /* Copy act from user memory before calling signal_sigaction so that
      * any corruption in user memory doesn't reach kernel internals via
@@ -1963,8 +1963,13 @@ static int32_t sys_lseek(int fd, int32_t offset, int whence) {
         return -BLUEY_EINVAL;
     }
 
-    /* Delegate to VFS and return its result (or error code). */
-    return vfs_lseek(fd, offset, whence);
+    int32_t result = vfs_lseek(fd, offset, whence);
+    {
+        process_t *_p = process_current();
+        kdbg(KDBG_FS, "[VFS]  lseek pid=%u fd=%d offset=%d whence=%d -> %d\n",
+             _p ? _p->pid : 0u, fd, offset, whence, result);
+    }
+    return result;
 }
 
 /* Legacy _llseek syscall (i386 ABI):
@@ -1998,6 +2003,8 @@ static int32_t sys__llseek(uint32_t fd, uint32_t offset_hi, uint32_t offset_lo,
      * caller's page directory (same safe pattern as sys_prlimit64). */
     process_t *caller = process_current();
     if (!caller) return -BLUEY_EPERM;
+    kdbg(KDBG_FS, "[VFS]  llseek pid=%u fd=%u off_hi=%u off_lo=%u whence=%d -> %d\n",
+         caller->pid, fd, offset_hi, offset_lo, whence, newoff);
     old_dir = paging_current_directory();
     paging_switch_directory(caller->page_dir);
     *(uint32_t*)(uintptr_t)result_ptr = (uint32_t)newoff;
@@ -2537,6 +2544,8 @@ static int32_t sys_nanosleep(const k_timespec_req_t *req, void *rem) {
 /* ---- exit_group --------------------------------------------------------- */
 
 static int32_t sys_exit_group(int code) {
+    process_t *_p = process_current();
+    kdbg(KDBG_PROCESS, "[PRC]  exit_group pid=%u code=%d\n", _p ? _p->pid : 0u, code);
     process_exit(code);
     return 0;
 }
@@ -2725,6 +2734,9 @@ static int32_t sys_open(const char *path, int flags) {
     if (resolve_normalize_path(path, _rpath, sizeof(_rpath)) != 0) return -BLUEY_EINVAL;
     path = _rpath;
 
+    kdbg(KDBG_FS, "[OPEN] pid=%u path=%s flags=0x%x\n",
+         process_current() ? process_current()->pid : 0, path, flags);
+
     access_mode = flags & 0x3;
     vfs_flags = access_mode | (flags & (VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND));
 
@@ -2794,6 +2806,9 @@ static int32_t sys_execve(registers_t *regs,
     if (!path) return -BLUEY_EFAULT;
     if (!(process->flags & PROC_FLAG_USER_MODE)) return -BLUEY_EPERM;
 
+    kdbg(KDBG_SYSCALL, "[SYS]  execve: ENTER pid=%u path=%p\n",
+         process->pid, (void*)(uintptr_t)path);
+
     path_copy = syscall_copy_string(path);
     if (!path_copy || !path_copy[0]) {
         result = path_copy ? -BLUEY_EINVAL : -BLUEY_E2BIG;
@@ -2823,7 +2838,8 @@ static int32_t sys_execve(registers_t *regs,
     }
 
     if (vfs_stat(path_copy, &stat) != 0) {
-        kdbg(KDBG_SYSCALL, "[SYS] execve missing path: %s\n", path_copy);
+        kdbg(KDBG_SYSCALL, "[SYS]  execve: stat failed path='%s' pid=%u\n",
+             path_copy, process ? process->pid : 0u);
         result = -BLUEY_ENOENT;
         goto cleanup;
     }
@@ -2981,6 +2997,8 @@ static int32_t sys_gethostname(char *buf, size_t len) {
 /* ---- Process groups ---------------------------------------------------- */
 
 static int32_t sys_setpgid(uint32_t pid, uint32_t pgid) {
+    kdbg(KDBG_SYSCALL, "[SYS]  setpgid: pid=%u pgid=%u caller_pid=%u\n",
+         pid, pgid, process_current() ? process_current()->pid : 0u);
     return process_setpgid(pid, pgid);
 }
 
@@ -3301,10 +3319,13 @@ int32_t syscall_dispatch(registers_t *regs) {
         case SYS_KILL:
             ret = sys_kill((int32_t)regs->ebx, (int)regs->ecx);
             break;
-        case SYS_EXIT:
+        case SYS_EXIT: {
+            process_t *_ep = process_current();
+            kdbg(KDBG_PROCESS, "[PRC]  exit pid=%u code=%d\n", _ep ? _ep->pid : 0u, (int)regs->ebx);
             process_exit((int)regs->ebx);
             ret = 0;
             break;
+        }
         case SYS_EXIT_GROUP:
             ret = sys_exit_group((int)regs->ebx);
             break;

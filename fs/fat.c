@@ -9,6 +9,7 @@
 #include "fat.h"
 #include "vfs.h"
 #include "../kernel/syslog.h"
+#include "../kernel/kdbg.h"
 #include "../drivers/ata.h"
 #include "../kernel/kheap.h"
 
@@ -27,9 +28,9 @@ static int         fat_loaded = 0;
 #define FAT_MAX_OPEN 1024
 typedef struct {
     int      used;
+    int      refcount;      // number of VFS fds sharing this slot (fork/dup)
     uint16_t first_cluster;
     uint32_t file_size;
-    uint32_t offset;        // current read position
     uint16_t cur_cluster;
 } fat_file_t;
 
@@ -150,9 +151,9 @@ static int fat_vfs_open(const char *path, int flags) {
     for (int i = 0; i < FAT_MAX_OPEN; i++) {
         if (!fat_files[i].used) {
             fat_files[i].used          = 1;
+            fat_files[i].refcount      = 1;
             fat_files[i].first_cluster = ent.first_cluster;
             fat_files[i].file_size     = ent.file_size;
-            fat_files[i].offset        = 0;
             fat_files[i].cur_cluster   = ent.first_cluster;
             return i;
         }
@@ -160,39 +161,11 @@ static int fat_vfs_open(const char *path, int flags) {
     return -1; // no free slot
 }
 
-static int fat_vfs_read(int fd, uint8_t *buf, size_t len) {
+static int fat_vfs_addref(int fd) {
     if (fd < 0 || fd >= FAT_MAX_OPEN || !fat_files[fd].used) return -1;
-    fat_file_t *f = &fat_files[fd];
-
-    uint32_t remaining = f->file_size - f->offset;
-    if (len > remaining) len = remaining;
-    if (len == 0) return 0;
-
-    uint8_t sector[512];
-    size_t  read_total = 0;
-
-    while (read_total < len && f->cur_cluster < 0xFFF8) {
-        uint32_t cluster_offset = f->offset % bytes_per_cluster;
-        uint32_t sector_in_cluster = cluster_offset / 512;
-        uint32_t byte_in_sector    = cluster_offset % 512;
-        uint32_t lba = cluster_to_lba(f->cur_cluster) + sector_in_cluster;
-
-        if (read_sector(lba, sector) != 0) break;
-
-        uint32_t avail = 512 - byte_in_sector;
-        uint32_t want  = (uint32_t)(len - read_total);
-        if (avail > want) avail = want;
-
-        memcpy(buf + read_total, sector + byte_in_sector, avail);
-        read_total   += avail;
-        f->offset    += avail;
-
-        // Advance to next cluster if needed
-        if ((f->offset % bytes_per_cluster) == 0) {
-            f->cur_cluster = fat_next_cluster(f->cur_cluster);
-        }
-    }
-    return (int)read_total;
+    fat_files[fd].refcount++;
+    kdbg(KDBG_FS, "[FAT]  addref fd=%d refcount->%d\n", fd, fat_files[fd].refcount);
+    return 0;
 }
 
 static int fat_vfs_read_at(int fd, uint8_t *buf, size_t len, uint32_t offset) {
@@ -242,7 +215,15 @@ static int fat_vfs_write(int fd, const uint8_t *buf, size_t len) {
 }
 
 static int fat_vfs_close(int fd) {
-    if (fd >= 0 && fd < FAT_MAX_OPEN) fat_files[fd].used = 0;
+    if (fd < 0 || fd >= FAT_MAX_OPEN || !fat_files[fd].used) return 0;
+    kdbg(KDBG_FS, "[FAT]  close fd=%d refcount->%d\n", fd, fat_files[fd].refcount - 1);
+    if (--fat_files[fd].refcount <= 0) {
+        fat_files[fd].used          = 0;
+        fat_files[fd].refcount      = 0;
+        fat_files[fd].first_cluster = 0;
+        fat_files[fd].file_size     = 0;
+        fat_files[fd].cur_cluster   = 0;
+    }
     return 0;
 }
 
@@ -306,10 +287,10 @@ static filesystem_t fat16_fs = {
     .name    = "fat16",
     .mount   = fat_vfs_mount,
     .open    = fat_vfs_open,
-    .read    = fat_vfs_read,
     .read_at = fat_vfs_read_at,
     .write   = fat_vfs_write,
     .close   = fat_vfs_close,
+    .addref  = fat_vfs_addref,
     .readdir = fat_vfs_readdir,
     .mkdir   = NULL,
     .unlink  = NULL,

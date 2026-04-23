@@ -91,6 +91,12 @@ typedef struct filesystem {
     int (*readlink)(const char *path, char *buf, size_t bufsz);
     int (*chmod)(const char *path, uint16_t mode);
     int (*chown)(const char *path, uint32_t uid, uint32_t gid);
+    /* Shared-offset ops: if a filesystem implements these, VFS uses the FS-level
+     * offset (shared across all forked/dup'd descriptors pointing to the same
+     * underlying open slot) instead of the per-process VFS fd table offset.
+     * This gives POSIX "shared open file description" semantics for fork(). */
+    uint32_t (*get_offset)(int fs_fd);
+    void     (*set_offset)(int fs_fd, uint32_t new_off);
 } filesystem_t;
 
 // Mount point descriptor

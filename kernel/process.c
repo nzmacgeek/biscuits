@@ -711,6 +711,9 @@ void process_mark_exited(process_t *process, int code) {
 
     if (!process || process->state == PROC_ZOMBIE || process->state == PROC_DEAD) return;
 
+    kdbg(KDBG_PROCESS, "[PRC]  mark_exited: pid=%u code=%d parent_pid=%u\n",
+         process->pid, code, process->parent_pid);
+
     process->state = PROC_ZOMBIE;
     process->exit_code = code;
     process->pending_signals = 0;
