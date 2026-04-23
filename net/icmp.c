@@ -18,6 +18,7 @@ typedef struct {
     uint8_t  rx_buf[ICMP_RECV_BUF_SIZE];
     uint16_t rx_len;
     int      rx_ready;
+    int      rx_busy;
     uint32_t remote_ip;
 } icmp_socket_t;
 
@@ -50,6 +51,7 @@ int icmp_open(int protocol) {
         if (!icmp_sockets[i].active) {
             icmp_sockets[i].active = 1;
             icmp_sockets[i].rx_ready = 0;
+            icmp_sockets[i].rx_busy = 0;
             icmp_sockets[i].rx_len = 0;
             icmp_sockets[i].remote_ip = 0;
             icmp_irq_restore(flags);
@@ -67,6 +69,7 @@ void icmp_close(int sock) {
     flags = icmp_irq_save();
     icmp_sockets[sock].active = 0;
     icmp_sockets[sock].rx_ready = 0;
+    icmp_sockets[sock].rx_busy = 0;
     icmp_irq_restore(flags);
 }
 
@@ -87,6 +90,11 @@ int icmp_recv(int sock, uint8_t *buf, uint16_t max_len, uint32_t *src_ip) {
         icmp_irq_restore(flags);
         return 0;
     }
+    if (icmp_sockets[sock].rx_busy) {
+        icmp_irq_restore(flags);
+        return 0;
+    }
+    icmp_sockets[sock].rx_busy = 1;
 
     n = icmp_sockets[sock].rx_len;
     if (n > max_len) n = max_len;
@@ -97,6 +105,7 @@ int icmp_recv(int sock, uint8_t *buf, uint16_t max_len, uint32_t *src_ip) {
 
     flags = icmp_irq_save();
     icmp_sockets[sock].rx_ready = 0;
+    icmp_sockets[sock].rx_busy = 0;
     icmp_irq_restore(flags);
 
     if (src_ip) *src_ip = remote_ip;
@@ -108,7 +117,7 @@ int icmp_has_data(int sock) {
     int ready = 0;
     if (sock < 0 || sock >= ICMP_MAX_SOCKETS) return 0;
     flags = icmp_irq_save();
-    if (icmp_sockets[sock].active && icmp_sockets[sock].rx_ready) ready = 1;
+    if (icmp_sockets[sock].active && icmp_sockets[sock].rx_ready && !icmp_sockets[sock].rx_busy) ready = 1;
     icmp_irq_restore(flags);
     return ready;
 }
@@ -119,16 +128,24 @@ void icmp_raw_deliver(const uint8_t *ip_packet, uint16_t ip_len, uint32_t src_ip
     if (copy_len > ICMP_RECV_BUF_SIZE) copy_len = ICMP_RECV_BUF_SIZE;
 
     for (int i = 0; i < ICMP_MAX_SOCKETS; i++) {
+        if (!icmp_sockets[i].active) continue;
         uint32_t flags = icmp_irq_save();
-        if (!icmp_sockets[i].active || icmp_sockets[i].rx_ready) {
+        if (!icmp_sockets[i].active || icmp_sockets[i].rx_ready || icmp_sockets[i].rx_busy) {
             icmp_irq_restore(flags);
             continue;
         }
+        icmp_sockets[i].rx_busy = 1;
+        icmp_irq_restore(flags);
 
         memcpy(icmp_sockets[i].rx_buf, ip_packet, copy_len);
-        icmp_sockets[i].rx_len = copy_len;
-        icmp_sockets[i].remote_ip = src_ip;
-        icmp_sockets[i].rx_ready = 1;
+
+        flags = icmp_irq_save();
+        if (icmp_sockets[i].active) {
+            icmp_sockets[i].rx_len = copy_len;
+            icmp_sockets[i].remote_ip = src_ip;
+            icmp_sockets[i].rx_ready = 1;
+        }
+        icmp_sockets[i].rx_busy = 0;
         icmp_irq_restore(flags);
     }
 }
